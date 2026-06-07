@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{5F55F85F-8627-41D5-8B18-BD6C93741143}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <RootNamespace>VeradeAddin</RootNamespace>
+    <AssemblyName>VeradeAddin</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <RegisterForComInterop>true</RegisterForComInterop>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|x64'">
+    <PlatformTarget>x64</PlatformTarget>
+    <OutputPath>bin\x64\Debug\</OutputPath>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release|x64'">
+    <PlatformTarget>x64</PlatformTarget>
+    <OutputPath>bin\x64\Release\</OutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="SolidWorks.Interop.sldworks">
+      <HintPath>..\..\..\..\..\..\Program Files\SOLIDWORKS Corp\SOLIDWORKS\SolidWorks.Interop.sldworks.dll</HintPath>
+      <EmbedInteropTypes>True</EmbedInteropTypes>
+    </Reference>
+    <Reference Include="SolidWorks.Interop.swconst">
+      <HintPath>..\..\..\..\..\..\Program Files\SOLIDWORKS Corp\SOLIDWORKS\SolidWorks.Interop.swconst.dll</HintPath>
+      <EmbedInteropTypes>True</EmbedInteropTypes>
+    </Reference>
+    <Reference Include="SolidWorks.Interop.swpublished">
+      <HintPath>..\..\..\..\..\..\Program Files\SOLIDWORKS Corp\SOLIDWORKS\SolidWorks.Interop.swpublished.dll</HintPath>
+      <EmbedInteropTypes>True</EmbedInteropTypes>
+    </Reference>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Xml.Linq" />
+    <Reference Include="System.Data.DataSetExtensions" />
+    <Reference Include="Microsoft.CSharp" />
+    <Reference Include="System.Data" />
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Xml" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Commands\ICommand.cs" />
+    <Compile Include="Commands\CommandRegistry.cs" />
+    <Compile Include="Commands\OpenFolderCommand.cs" />
+    <Compile Include="Commands\MostrarRoscaCommand.cs" />
+    <Compile Include="Commands\ExtraerPiezaCommand.cs" />
+    <Compile Include="Commands\CapturaPantallaCommand.cs" />
+    <Compile Include="Commands\ExportarCommand.cs" />
+    <Compile Include="Infrastructure\CompositionRoot.cs" />
+    <Compile Include="Infrastructure\CommandRegistrar.cs" />
+    <Compile Include="Infrastructure\ComRelease.cs" />
+    <Compile Include="Infrastructure\RibbonIds.cs" />
+    <Compile Include="Logging\ILogger.cs" />
+    <Compile Include="Logging\ILogSink.cs" />
+    <Compile Include="Logging\Logger.cs" />
+    <Compile Include="Logging\JsonLinesFileSink.cs" />
+    <Compile Include="Logging\LogEntry.cs" />
+    <Compile Include="Logging\LogOutcome.cs" />
+    <Compile Include="Models\ActiveDocument.cs" />
+    <Compile Include="Models\ComponentNode.cs" />
+    <Compile Include="Models\ComponentExtractionPlan.cs" />
+    <Compile Include="Models\CosmeticThreadResult.cs" />
+    <Compile Include="Models\ExtractComponentResult.cs" />
+    <Compile Include="Models\ScreenshotResult.cs" />
+    <Compile Include="Models\ScreenshotAction.cs" />
+    <Compile Include="Models\DrawingExportInfo.cs" />
+    <Compile Include="Models\ExportRequest.cs" />
+    <Compile Include="Models\ExportResult.cs" />
+    <Compile Include="Models\DocumentKind.cs" />
+    <Compile Include="Services\IDialogService.cs" />
+    <Compile Include="Services\IFileSystemService.cs" />
+    <Compile Include="Services\FileSystemService.cs" />
+    <Compile Include="Services\FileSystemOpenResult.cs" />
+    <Compile Include="Services\ISolidWorksService.cs" />
+    <Compile Include="Services\SolidWorksService.cs" />
+    <Compile Include="Services\IScreenCaptureService.cs" />
+    <Compile Include="Services\ScreenCaptureService.cs" />
+    <Compile Include="UI\ComponentTreeDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\ScreenshotDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\ExportOptionsDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\AffixDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\WinFormsDialogService.cs" />
+    <Compile Include="UI\IconStripFactory.cs" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="SwAddin.cs" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>
