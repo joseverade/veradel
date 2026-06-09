@@ -73,6 +73,7 @@
     <Compile Include="Commands\ExportarCommand.cs" />
     <Compile Include="Commands\ColorearAristasCommand.cs" />
     <Compile Include="Commands\LimpiarColoresCommand.cs" />
+    <Compile Include="Commands\DespieceCalderiaCommand.cs" />
     <Compile Include="Infrastructure\CompositionRoot.cs" />
     <Compile Include="Infrastructure\CommandRegistrar.cs" />
     <Compile Include="Infrastructure\ComRelease.cs" />
@@ -96,6 +97,8 @@
     <Compile Include="Models\EdgeColoringPlan.cs" />
     <Compile Include="Models\EdgeColorRequest.cs" />
     <Compile Include="Models\EdgeColoringResult.cs" />
+    <Compile Include="Models\BoilermakingPlan.cs" />
+    <Compile Include="Models\BoilermakingResult.cs" />
     <Compile Include="Models\DocumentKind.cs" />
     <Compile Include="Services\IDialogService.cs" />
     <Compile Include="Services\IFileSystemService.cs" />
@@ -104,6 +107,7 @@
     <Compile Include="Services\ISolidWorksService.cs" />
     <Compile Include="Services\SolidWorksService.cs" />
     <Compile Include="Services\SolidWorksService.EdgeColoring.cs" />
+    <Compile Include="Services\SolidWorksService.Boilermaking.cs" />
     <Compile Include="Services\IScreenCaptureService.cs" />
     <Compile Include="Services\ScreenCaptureService.cs" />
     <Compile Include="UI\ComponentTreeDialog.cs">
@@ -119,6 +123,9 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="UI\EdgeColoringDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\ListChoiceDialog.cs">
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="UI\WinFormsDialogService.cs" />

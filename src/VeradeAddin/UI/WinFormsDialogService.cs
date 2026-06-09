@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Windows.Forms;
 using VeradeAddin.Models;
 using VeradeAddin.Services;
@@ -69,6 +70,14 @@ namespace VeradeAddin.UI
             using (var dialog = new EdgeColoringDialog(plan))
             {
                 return dialog.ShowDialog() == DialogResult.OK ? dialog.Request : null;
+            }
+        }
+
+        public string ChooseFromList(string title, string prompt, IReadOnlyList<string> options)
+        {
+            using (var dialog = new ListChoiceDialog(title, prompt, options))
+            {
+                return dialog.ShowDialog() == DialogResult.OK ? dialog.SelectedItem : null;
             }
         }
     }

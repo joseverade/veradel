@@ -277,6 +277,47 @@ refactor of the legacy EdgeColoring code into the COM-isolated service: `SolidWo
 
 ---
 
+### "Despiece de calderería" — drawing-only (part drawings), DESTRUCTIVE/experimental
+
+Generates the boilermaking part breakdown of the part referenced by the active drawing, on **new
+sheets**. `DespieceCalderiaCommand` (tab "Veradel Dibujo") → `SolidWorksService.Boilermaking.cs`
+(partial, COM-isolated). Command stays thin (validate → config pick → destructive confirm → run → summary).
+
+- **Validate / abort (logged):** active doc is a drawing; it references a **part** (assembly or no
+  reference → abort); the part has bodies; a cut list exists (else fall back to the whole part as one
+  item); new-sheet creation succeeds. "Doesn't fit on A0" is **not** an abort — it paginates.
+- **Configuration:** `IModelDoc2.GetConfigurationNames`. >1 → mandatory `IDialogService.ChooseFromList`
+  picker; exactly 1 → used silently. Activated with `ShowConfiguration2` before reading/drawing.
+- **Weldment (DESTRUCTIVE):** multibody **and** not `IPartDoc.IsWeldment()` → `FeatureManager.
+  InsertWeldmentFeature()` directly on the part + `ForceRebuild3` (no copy, no rollback — logged as
+  irreversible; only with explicit confirmation). The part **and** drawing are `Save3`-d at the end.
+- **Cut list:** walk features (`FirstFeature`/`GetNextFeature` + sub-features); each cut-list folder is
+  a `BodyFolder` (`GetCutListType` ∈ {weldment, sheet-metal, solid}); per item → `GetBodies` (model
+  bodies), `GetBodyCount` (qty), `Feature.CustomPropertyManager.Get5("Mark")` (mark, else running index).
+- **3-view groups:** per item a base **front** `CreateDrawViewFromModelView3(model,"*Front",x,y,0)`
+  with the bodies isolated via `IView.Bodies = Body2[]`; **side**/**top** by selecting the front
+  (`ActivateView`) and `CreateUnfoldedViewAt3` (first angle: side right, top below). `Bodies` is set on
+  **all three** (not assumed to inherit). Sheet-metal items also get a flat pattern panel
+  (`CreateFlatPatternViewFromModelView3`, isolated to the item — best-effort).
+- **Exploded view + balloons + table** (summary sheet): `AddPartExplodeStep(...,autoSpace,...)` if the
+  config has none, isometric `CreateDrawViewFromModelView3(...,"*Isometric",...)` + `IView.ShowExploded`,
+  own scale fitted from `GetOutline`/`ScaleDecimal`; `AutoBalloon5` (one per item, numbered from the
+  table); cut-list table via `IView.InsertWeldmentTable` anchored bottom-right above the title block.
+- **Scale & layout:** single global scale for all groups, chosen from a standard ladder
+  (1:1…1:1000) so the largest group fits the A0 usable area. `IView.Position` = view **centre** in
+  metres from the sheet **lower-left**. Uniform cells sized to the largest group (→ no overlaps);
+  groups packed row-major, paginated onto additional **A0** sheets (`NewSheet4`, name `""` so SW
+  auto-numbers, first sheet's `GetTemplateName` as the sheet format). Summary sheet first, then group
+  sheets. Each group labelled "Marca N / Cant." via `InsertNote` + `SetTextPoint`.
+- **Silent:** `ModelView.EnableGraphicsUpdate = false` + `ISldWorks.CommandInProgress = true` during bulk
+  insertion (restored in `finally`).
+- **Best-effort / simplifications (documented for iteration):** sheets default to **A0** (minimal
+  A-size selection not yet implemented — pagination only); part auto-explode quality and per-body flat
+  pattern isolation depend on the model and are warn-and-continue (not aborts); balloon number follows
+  the cut-list table item order (= mark when the table is mark-numbered).
+
+---
+
 ## 5. How to add a new command
 
 1. **Create the class** under `Commands/`, implementing `ICommand`:
@@ -415,6 +456,15 @@ signatures) and are confirmed working on the user's SolidWorks 2026:
   `ISldWorks.SetSelectionFilter`/`SetSelectionFilters`/`GetSelectionFilters`/`GetApplySelectionFilter`/`SetApplySelectionFilter`;
   `ISelectionMgr.AddSelectionListObject`/`CreateSelectData`/`SuspendSelectionList`/`ResumeSelectionList2`/`GetSelectedObject6`/`GetSelectedObjectType3`;
   `SilhouetteEdge.GetStartPoint`/`GetEndPoint`.
+- Boilermaking breakdown ("Despiece de calderería"): `IModelDoc2.GetConfigurationNames`/`ShowConfiguration2`/`GetActiveConfiguration`/`FirstFeature`/`InsertNote`/`Save3(swSaveAsOptions_Silent=1)`;
+  `IPartDoc.IsWeldment`/`GetBodies2(swAllBodies=-1, visibleOnly)`; `IFeatureManager.InsertWeldmentFeature`; `IModelDoc2.ForceRebuild3`;
+  `IFeature.GetSpecificFeature2`/`GetFirstSubFeature`/`GetNextSubFeature`/`CustomPropertyManager`; `IBodyFolder.GetCutListType`(`swCutListType_e`: solid=1/sheetmetal=2/weldment=3)/`GetBodies`/`GetBodyCount`;
+  `ICustomPropertyManager.Get5`; `IBody2.GetBodyBox`(→`double[6]`)/`IsSheetMetal`; `Entity.Select4`;
+  `IConfiguration.GetNumberOfPartExplodeSteps`/`AddPartExplodeStep(view, dist, dirIdx, reverse, autoSpace, ref err)`;
+  `IDrawingDoc.NewSheet4`(name `""`=auto, `swDwgPaperA0size=11`, `swDwgTemplateCustom=12`/`A0size=11`, firstAngle=true)/`GetSheetNames`/`ActivateSheet`/`GetCurrentSheet`/`GetFirstView`/`ActivateView`/`CreateDrawViewFromModelView3`/`CreateUnfoldedViewAt3`/`CreateFlatPatternViewFromModelView3`/`CreateAutoBalloonOptions`/`AutoBalloon5`;
+  `ISheet.GetTemplateName`/`GetName`; `IView.Bodies`(set `Body2[]`)/`ScaleRatio`/`Position`(centre, m, from lower-left)/`GetOutline`/`ScaleDecimal`/`GetName2`/`ShowExploded`/`InsertWeldmentTable(useAnchor,x,y,anchorType,template,config)`;
+  `IAutoBalloonOptions.Layout`(`swDetailingBalloonLayout_Circle=2`)/`Style`/`ItemNumberStart`; `INote.SetTextPoint`+`IAnnotation.SetPosition`;
+  `ModelView.EnableGraphicsUpdate`+`ISldWorks.CommandInProgress` (silent). `IView.Bodies` per the *Set Body for View* example; child views do **not** inherit isolation → set on all 3.
 - `IModelDoc2`: `FirstFeature`, `ViewZoomtofit2`. `IFeature`: `GetNextFeature`,
   `GetFirstSubFeature`/`GetNextSubFeature`, `GetSpecificFeature2`,
   `SetSuppression2(swSuppressFeature, swThisConfiguration, null)`.

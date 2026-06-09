@@ -46,7 +46,8 @@ namespace VeradeAddin.Infrastructure
                 .Add(new CapturaPantallaCommand(swService, captureService, fsService, _dialog, Logger))
                 .Add(new ExportarCommand(swService, _dialog, Logger))
                 .Add(new ColorearAristasCommand(swService, _dialog, Logger))
-                .Add(new LimpiarColoresCommand(swService, _dialog, Logger));
+                .Add(new LimpiarColoresCommand(swService, _dialog, Logger))
+                .Add(new DespieceCalderiaCommand(swService, _dialog, Logger));
 
             // --- Ribbon registrar ----------------------------------------------------
             CommandRegistrar = new CommandRegistrar(sw, cookie, _registry, Logger);

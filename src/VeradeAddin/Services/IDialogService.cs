@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using VeradeAddin.Models;
 
 namespace VeradeAddin.Services
@@ -48,5 +49,11 @@ namespace VeradeAddin.Services
         /// cancelled.
         /// </summary>
         EdgeColorRequest ShowEdgeColoring(EdgeColoringPlan plan);
+
+        /// <summary>
+        /// Single-choice modal picker (e.g. choosing a configuration). Returns the chosen option, or
+        /// null if the user cancelled.
+        /// </summary>
+        string ChooseFromList(string title, string prompt, IReadOnlyList<string> options);
     }
 }

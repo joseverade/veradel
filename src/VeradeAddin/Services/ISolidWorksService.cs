@@ -92,5 +92,22 @@ namespace VeradeAddin.Services
 
         /// <summary>Resets the colour of all view edges in the active drawing to black (default).</summary>
         EdgeColoringResult ClearEdgeColors();
+
+        /// <summary>
+        /// Inspects the active drawing for "Despiece de calderería": the referenced part, its
+        /// configurations and whether a destructive weldment insertion would be required. Returns a
+        /// result with <see cref="BoilermakingPlan.IsDrawing"/> false when the active doc is not a drawing.
+        /// </summary>
+        BoilermakingPlan InspectDrawingForBreakdown();
+
+        /// <summary>
+        /// Generates the boilermaking part breakdown of the referenced part on NEW sheets: a group of
+        /// 3 views (front/side/top) per cut-list item with the body isolated (all groups share one
+        /// global scale), plus an isometric exploded view with one balloon per item and the cut-list
+        /// table, paginated across A0 sheets. DESTRUCTIVE: if the part is multibody and not a weldment
+        /// it inserts the weldment feature (only when <paramref name="allowWeldmentInsertion"/> is true)
+        /// and saves the part and drawing at the end. Returns a COM-free summary.
+        /// </summary>
+        BoilermakingResult GenerateBoilermakingBreakdown(string configName, bool allowWeldmentInsertion);
     }
 }
