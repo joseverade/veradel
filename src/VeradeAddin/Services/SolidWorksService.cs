@@ -22,7 +22,7 @@ namespace VeradeAddin.Services
     ///   IDrawingDoc.GetCurrentSheet/InsertModelAnnotations3, ISheet.GetViews,
     ///   IView.Name/ReferencedDocument.
     /// </summary>
-    public sealed class SolidWorksService : ISolidWorksService
+    public sealed partial class SolidWorksService : ISolidWorksService
     {
         private readonly ISldWorks _sw;
         private readonly ILogger _log;

@@ -71,6 +71,8 @@
     <Compile Include="Commands\ExtraerPiezaCommand.cs" />
     <Compile Include="Commands\CapturaPantallaCommand.cs" />
     <Compile Include="Commands\ExportarCommand.cs" />
+    <Compile Include="Commands\ColorearAristasCommand.cs" />
+    <Compile Include="Commands\LimpiarColoresCommand.cs" />
     <Compile Include="Infrastructure\CompositionRoot.cs" />
     <Compile Include="Infrastructure\CommandRegistrar.cs" />
     <Compile Include="Infrastructure\ComRelease.cs" />
@@ -91,6 +93,9 @@
     <Compile Include="Models\DrawingExportInfo.cs" />
     <Compile Include="Models\ExportRequest.cs" />
     <Compile Include="Models\ExportResult.cs" />
+    <Compile Include="Models\EdgeColoringPlan.cs" />
+    <Compile Include="Models\EdgeColorRequest.cs" />
+    <Compile Include="Models\EdgeColoringResult.cs" />
     <Compile Include="Models\DocumentKind.cs" />
     <Compile Include="Services\IDialogService.cs" />
     <Compile Include="Services\IFileSystemService.cs" />
@@ -98,6 +103,7 @@
     <Compile Include="Services\FileSystemOpenResult.cs" />
     <Compile Include="Services\ISolidWorksService.cs" />
     <Compile Include="Services\SolidWorksService.cs" />
+    <Compile Include="Services\SolidWorksService.EdgeColoring.cs" />
     <Compile Include="Services\IScreenCaptureService.cs" />
     <Compile Include="Services\ScreenCaptureService.cs" />
     <Compile Include="UI\ComponentTreeDialog.cs">
@@ -110,6 +116,9 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="UI\AffixDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\EdgeColoringDialog.cs">
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="UI\WinFormsDialogService.cs" />

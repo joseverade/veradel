@@ -63,5 +63,13 @@ namespace VeradeAddin.UI
                 return true;
             }
         }
+
+        public EdgeColorRequest ShowEdgeColoring(EdgeColoringPlan plan)
+        {
+            using (var dialog = new EdgeColoringDialog(plan))
+            {
+                return dialog.ShowDialog() == DialogResult.OK ? dialog.Request : null;
+            }
+        }
     }
 }

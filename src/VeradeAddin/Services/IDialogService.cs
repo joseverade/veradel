@@ -41,5 +41,12 @@ namespace VeradeAddin.Services
         /// the prefix and suffix (each empty when not used).
         /// </summary>
         bool ShowAffixPrompt(string baseName, out string prefix, out string suffix);
+
+        /// <summary>
+        /// "Colorear aristas": shows the detected part colours and lets the user pick which to carry
+        /// to the edges and the target palette colour for each. Returns the request, or null if
+        /// cancelled.
+        /// </summary>
+        EdgeColorRequest ShowEdgeColoring(EdgeColoringPlan plan);
     }
 }

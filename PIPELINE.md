@@ -63,12 +63,13 @@ ISwAddin.DisconnectFromSW()  -> CommandRegistrar.Unregister(), release COM
 | **Commands** | `Commands/ICommand.cs`, `CommandRegistry.cs`, `OpenFolderCommand.cs` | Command pattern. Each command implements `ICommand`; registered once in the registry. Commands orchestrate services and log their per-branch outcomes (Success/Cancel); unhandled errors are caught by the dispatcher. |
 | **Services** | `Services/*` | `ISolidWorksService` (COM isolation boundary — returns plain models), `IFileSystemService` (Explorer/shell, file copy/delete), `IScreenCaptureService` (GDI screen grab of the SW window), `IDialogService` (UI abstraction). |
 | **Logging** | `Logging/*` | `ILogger` abstraction, `Logger` (timestamps + fan-out), `ILogSink` (swappable destination), `JsonLinesFileSink` (local NDJSON), `LogEntry`/`LogOutcome`. |
-| **Models** | `Models/*` | COM-free DTOs: `ActiveDocument`, `ComponentNode`, `DocumentKind`, `CosmeticThreadResult`, `ComponentExtractionPlan`, `ExtractComponentResult`, `ScreenshotResult`, `ScreenshotAction`, `DrawingExportInfo`, `ExportRequest`, `ExportResult`/`ExportItem`. |
+| **Models** | `Models/*` | COM-free DTOs: `ActiveDocument`, `ComponentNode`, `DocumentKind`, `CosmeticThreadResult`, `ComponentExtractionPlan`, `ExtractComponentResult`, `ScreenshotResult`, `ScreenshotAction`, `DrawingExportInfo`, `ExportRequest`, `ExportResult`/`ExportItem`, `EdgeColoringPlan`/`EdgeColorPartInfo`/`DetectedColor`, `EdgeColorRequest`/`EdgeColorMapping`, `EdgeColoringResult`. |
 | **UI** | `UI/ComponentTreeDialog.cs`, `WinFormsDialogService.cs`, `IconStripFactory.cs` | WinForms modal TreeView (Spanish, icons, path display), dialog service, runtime icon-strip generation. |
 | **COM utility** | `Infrastructure/ComRelease.cs` | Safe `Marshal.ReleaseComObject` wrapper for deterministic release of SW COM objects. |
 
 **Key rule:** SolidWorks COM types appear **only** in `SwAddin.cs`, `CommandRegistrar.cs`,
-and `SolidWorksService.cs`. Everything else works with plain models.
+and `SolidWorksService.cs` (including its partial `SolidWorksService.EdgeColoring.cs`).
+Everything else works with plain models.
 
 ---
 
@@ -235,6 +236,45 @@ Then `ISolidWorksService.ExportActiveDrawing(ExportRequest)`:
 - Returns a COM-free `ExportResult` (one `ExportItem` per format: success + path or error); the command
   logs the aggregate and shows a per-format summary.
 
+### "Colorear aristas" / "Limpiar colores" — drawing-only (part drawings)
+
+Carries the appearance colours of a part's **faces** onto the corresponding **edges** of its drawing.
+`ColorearAristasCommand` + `LimpiarColoresCommand` (tab "Veradel Dibujo"). The whole algorithm is the
+refactor of the legacy EdgeColoring code into the COM-isolated service: `SolidWorksService.EdgeColoring.cs`
+(partial class). Commands stay thin.
+
+- **Geometric principle:** a planar face whose normal is **perpendicular** to the view normal is seen
+  edge-on, so its edges are candidate lines in that view.
+- **Flow:** `InspectDrawingForEdgeColoring()` → `EdgeColoringPlan` (referenced part(s) + appearance
+  colours via `IModelDocExtension.GetRenderMaterials2` → `RenderMaterial.PrimaryColor`). The dialog
+  (`EdgeColoringDialog`, WinForms) lists each colour with a checkbox + target palette combo
+  (6 colours, pre-suggested by **hue**). Before applying, an **experimental / may-be-slow** warning
+  (`IDialogService.Confirm`) shows the part's face count (`EdgeColoringPlan.TotalFaceCount`, summed from
+  `Body2.GetFaceCount`) and tells the user to save first. Then `ApplyEdgeColoring(EdgeColorRequest)`.
+- **Per source colour:** gather the faces carrying that appearance (`RenderMaterial.GetEntities` →
+  faces / feature faces / **whole bodies** (`Body2.GetFaces`) / components). If the appearance lists
+  **no** specific entities it is **part-level**, so every visible body's faces are used
+  (`PartDoc.GetBodies2(swAllBodies, true)`). Classify by `Surface.Identity()` (planar / cylinder /
+  cone), compute face normals (`Face2.Normal`) and boxes (`Face2.GetBox`) and index them in a spatial hash grid.
+  Per view (`IView.ModelToViewTransform` → view normal):
+  - **Real view** (maps 3D→2D): edges of the candidate faces (isometric = all; orthographic = planar
+    faces ⟂ view + cylinder + cone) → `IView.GetCorrespondingEntity` → select → `DrawingDoc.SetLineColor`.
+  - **Synthetic view** (sections/detail): `IView.GetVisibleEntities2` edges, classify by adjacent
+    faces, take the edge midpoint (`Edge.GetCurve` + `Curve.Evaluate2`/`ReverseEvaluate`) and look it up
+    in the grid (`Face2.GetClosestPointOn` within tolerance) → select.
+  - **Silhouettes** (curved-face outlines): a `swSelSILHOUETTES` selection filter + `SelectAll`, midpoint vs
+    the cylinder **and cone** grids.
+- **"Limpiar colores":** selects all edges + silhouettes (selection filter + `SelectAll`) and
+  `SetLineColor(black)` to reset.
+- **Best-effort:** the 3D→2D mapping is inherently partial (corresponding-entity gaps, sections,
+  silhouettes), so it won't colour 100% of edges — `LimpiarColores` resets. **Bugs fixed vs. legacy:**
+  `IsRealView` no longer crashes on views with < 5 edges (samples what's available); conical faces use
+  their own grid; COM objects are released via `ComRelease`; **part-/body-level appearances are now
+  honoured** (previously only per-face appearances coloured anything); **cone silhouettes** are coloured,
+  not just cylinder ones; section views colour correctly (`SelectData.View` set, colour by real selection
+  count). **API limit:** `IDrawingDoc` exposes only `SetLineColor(int)` — there is no "remove override"
+  / "by-layer" reset, so `LimpiarColores` writes black (matches the legacy add-in).
+
 ---
 
 ## 5. How to add a new command
@@ -365,6 +405,16 @@ signatures) and are confirmed working on the user's SolidWorks 2026:
   with `swRebuildOnActivation_e.swDontRebuildActiveDoc = 1`; `ISldWorks.OpenDoc6` / `CloseDoc`.
   `IDrawingDoc.GetFirstView`, `IView.GetNextView`, `IView.ReferencedDocument` / `GetReferencedModelName`.
   `IAssemblyDoc.GetComponentCount(toplevelOnly)` for the >10 STEP guard.
+- Edge coloring ("Colorear aristas"): `IModelDocExtension.GetRenderMaterials2`,
+  `RenderMaterial.PrimaryColor`/`GetEntities`/`FileName`; `Entity.GetType()` (→ swSelectType);
+  `Feature.GetFaces`; `Face2.GetSurface`/`Normal`/`GetBox`/`GetEdges`/`GetClosestPointOn`;
+  `Surface.Identity()` (`PLANE_TYPE=4001`/`CYLINDER_TYPE=4002`/`CONE_TYPE=4003`);
+  `Edge.GetTwoAdjacentFaces2`/`GetCurve`/`GetStartVertex`/`GetEndVertex`; `Curve.Evaluate2`/`ReverseEvaluate`/`GetEndParams`;
+  `IView.ModelToViewTransform`/`GetCorrespondingEntity`/`GetVisibleEntities2`/`GetVisibleComponents`/`GetOrientationName`/`GetBreakOutSectionCount`/`Type`;
+  `IModelDocExtension.GetCorrespondingEntity2`/`SelectAll`; `IDrawingDoc.SetLineColor`;
+  `ISldWorks.SetSelectionFilter`/`SetSelectionFilters`/`GetSelectionFilters`/`GetApplySelectionFilter`/`SetApplySelectionFilter`;
+  `ISelectionMgr.AddSelectionListObject`/`CreateSelectData`/`SuspendSelectionList`/`ResumeSelectionList2`/`GetSelectedObject6`/`GetSelectedObjectType3`;
+  `SilhouetteEdge.GetStartPoint`/`GetEndPoint`.
 - `IModelDoc2`: `FirstFeature`, `ViewZoomtofit2`. `IFeature`: `GetNextFeature`,
   `GetFirstSubFeature`/`GetNextSubFeature`, `GetSpecificFeature2`,
   `SetSuppression2(swSuppressFeature, swThisConfiguration, null)`.

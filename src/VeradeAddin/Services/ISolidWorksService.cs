@@ -76,5 +76,21 @@ namespace VeradeAddin.Services
         /// drawing is reactivated). Returns a COM-free per-format result.
         /// </summary>
         ExportResult ExportActiveDrawing(ExportRequest request);
+
+        /// <summary>
+        /// Inspects the active drawing for "Colorear aristas": the referenced part(s) and the
+        /// appearance colours found on each. <see cref="EdgeColoringPlan.IsDrawing"/> is false when
+        /// the active doc is not a drawing.
+        /// </summary>
+        EdgeColoringPlan InspectDrawingForEdgeColoring();
+
+        /// <summary>
+        /// Carries the chosen face colours onto the corresponding drawing edges. Best-effort
+        /// (the 3D→2D mapping is inherently partial). Returns a COM-free per-run summary.
+        /// </summary>
+        EdgeColoringResult ApplyEdgeColoring(EdgeColorRequest request);
+
+        /// <summary>Resets the colour of all view edges in the active drawing to black (default).</summary>
+        EdgeColoringResult ClearEdgeColors();
     }
 }
