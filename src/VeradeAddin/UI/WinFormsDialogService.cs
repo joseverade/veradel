@@ -80,5 +80,13 @@ namespace VeradeAddin.UI
                 return dialog.ShowDialog() == DialogResult.OK ? dialog.SelectedItem : null;
             }
         }
+
+        public PartConfiguratorSelection ShowPartConfigurator()
+        {
+            using (var dialog = new PartConfiguratorDialog())
+            {
+                return dialog.ShowDialog() == DialogResult.OK ? dialog.Selection : null;
+            }
+        }
     }
 }

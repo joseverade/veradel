@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.IO;
 using System.Windows.Forms;
 using VeradeAddin.Models;
 
@@ -138,7 +139,7 @@ namespace VeradeAddin.UI
 
         private static TreeNode CreateTreeNode(ComponentNode node)
         {
-            string label = node.Name;
+            string label = DisplayName(node);
             if (node.IsVirtual) label += "  [virtual]";
             else if (node.IsSuppressed) label += "  [suprimido]";
             else if (node.IsLightweight) label += "  [ligero]";
@@ -163,6 +164,20 @@ namespace VeradeAddin.UI
                 tn.ForeColor = Color.Gray;
             }
             return tn;
+        }
+
+        /// <summary>
+        /// Nombre a mostrar: nombre de archivo sin extensión a partir de la ruta. Si no hay
+        /// ruta (componente virtual / sin guardar), se mantiene el nombre de instancia.
+        /// </summary>
+        private static string DisplayName(ComponentNode node)
+        {
+            if (!string.IsNullOrWhiteSpace(node.FilePath))
+            {
+                string name = Path.GetFileNameWithoutExtension(node.FilePath);
+                if (!string.IsNullOrWhiteSpace(name)) return name;
+            }
+            return node.Name;
         }
 
         private static TreeNode FindSelectedTarget(TreeNode node)

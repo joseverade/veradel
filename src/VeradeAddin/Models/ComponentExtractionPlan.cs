@@ -19,5 +19,11 @@ namespace VeradeAddin.Models
         /// an instance would break the pattern, so extraction must be refused with a warning.
         /// </summary>
         public bool IsPatternInstance { get; set; }
+
+        /// <summary>
+        /// True when the component lives inside a subassembly (its parent component is not null).
+        /// Only top-level components can be extracted, so this case must be refused with a warning.
+        /// </summary>
+        public bool IsInsideSubassembly { get; set; }
     }
 }

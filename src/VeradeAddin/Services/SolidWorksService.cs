@@ -304,13 +304,19 @@ namespace VeradeAddin.Services
                 return null;
             }
 
+            // GetParent() is null only for top-level components; non-null => inside a subassembly.
+            var parent = comp.GetParent();
+            bool insideSub = parent != null;
+            ComRelease.Release(parent);
+
             var mates = comp.GetMates() as object[];
             return new ComponentExtractionPlan
             {
                 ComponentName = comp.Name2,
                 IsFixed = comp.IsFixed(),
                 MateCount = mates?.Length ?? 0,
-                IsPatternInstance = comp.IsPatternInstance() || comp.IsMirrored()
+                IsPatternInstance = comp.IsPatternInstance() || comp.IsMirrored(),
+                IsInsideSubassembly = insideSub
             };
         }
 
@@ -339,6 +345,16 @@ namespace VeradeAddin.Services
             if (comp.IsPatternInstance() || comp.IsMirrored())
             {
                 result.Error = "El componente es una instancia de matriz o simetría.";
+                return result;
+            }
+
+            // Safety net: only top-level components can be extracted (GetParent() == null).
+            var parent = comp.GetParent();
+            bool insideSub = parent != null;
+            ComRelease.Release(parent);
+            if (insideSub)
+            {
+                result.Error = "El componente está dentro de un subensamblaje; solo se pueden extraer componentes de primer nivel.";
                 return result;
             }
 

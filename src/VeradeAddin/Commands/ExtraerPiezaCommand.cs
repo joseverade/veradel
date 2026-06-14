@@ -52,6 +52,17 @@ namespace VeradeAddin.Commands
                 return;
             }
 
+            // Only top-level components can be extracted; a nested one must come out of its subassembly first.
+            if (plan.IsInsideSubassembly)
+            {
+                _log.Log(Name, docType, LogOutcome.Cancel,
+                    "Component is inside a subassembly: " + plan.ComponentName);
+                _dialog.ShowMessage(Name,
+                    "'" + plan.ComponentName + "' está dentro de un subensamblaje.\n\n" +
+                    "Solo se pueden extraer componentes de primer nivel, así que la operación se ha cancelado.");
+                return;
+            }
+
             // A pattern/mirror instance cannot be moved without breaking the pattern -> warn, abort.
             if (plan.IsPatternInstance)
             {

@@ -52,6 +52,12 @@
       <HintPath>..\..\..\..\..\..\Program Files\SOLIDWORKS Corp\SOLIDWORKS\SolidWorks.Interop.swpublished.dll</HintPath>
       <EmbedInteropTypes>True</EmbedInteropTypes>
     </Reference>
+    <Reference Include="Microsoft.Web.WebView2.Core">
+      <HintPath>..\..\lib\webview2\Microsoft.Web.WebView2.Core.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.Web.WebView2.WinForms">
+      <HintPath>..\..\lib\webview2\Microsoft.Web.WebView2.WinForms.dll</HintPath>
+    </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
     <Reference Include="System.Drawing" />
@@ -74,6 +80,7 @@
     <Compile Include="Commands\ColorearAristasCommand.cs" />
     <Compile Include="Commands\LimpiarColoresCommand.cs" />
     <Compile Include="Commands\DespieceCalderiaCommand.cs" />
+    <Compile Include="Commands\ConfigurarPiezaCommand.cs" />
     <Compile Include="Infrastructure\CompositionRoot.cs" />
     <Compile Include="Infrastructure\CommandRegistrar.cs" />
     <Compile Include="Infrastructure\ComRelease.cs" />
@@ -99,6 +106,9 @@
     <Compile Include="Models\EdgeColoringResult.cs" />
     <Compile Include="Models\BoilermakingPlan.cs" />
     <Compile Include="Models\BoilermakingResult.cs" />
+    <Compile Include="Models\BoltSpec.cs" />
+    <Compile Include="Models\BoltBuildResult.cs" />
+    <Compile Include="Models\PartConfiguratorSelection.cs" />
     <Compile Include="Models\DocumentKind.cs" />
     <Compile Include="Services\IDialogService.cs" />
     <Compile Include="Services\IFileSystemService.cs" />
@@ -108,6 +118,7 @@
     <Compile Include="Services\SolidWorksService.cs" />
     <Compile Include="Services\SolidWorksService.EdgeColoring.cs" />
     <Compile Include="Services\SolidWorksService.Boilermaking.cs" />
+    <Compile Include="Services\SolidWorksService.BoltBuilder.cs" />
     <Compile Include="Services\IScreenCaptureService.cs" />
     <Compile Include="Services\ScreenCaptureService.cs" />
     <Compile Include="UI\ComponentTreeDialog.cs">
@@ -128,10 +139,21 @@
     <Compile Include="UI\ListChoiceDialog.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="UI\PartConfiguratorDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\PartConfiguratorHtml.cs" />
     <Compile Include="UI\WinFormsDialogService.cs" />
     <Compile Include="UI\IconStripFactory.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="SwAddin.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Native WebView2 loader (x64); must sit next to the add-in DLL at runtime. -->
+    <Content Include="..\..\lib\webview2\WebView2Loader.dll">
+      <Link>WebView2Loader.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

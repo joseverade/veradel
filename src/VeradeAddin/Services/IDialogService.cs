@@ -55,5 +55,12 @@ namespace VeradeAddin.Services
         /// null if the user cancelled.
         /// </summary>
         string ChooseFromList(string title, string prompt, IReadOnlyList<string> options);
+
+        /// <summary>
+        /// "Configurar pieza": modern HTML/CSS catalog + configurator (WebView2 hosted in a WinForms
+        /// frame). The user picks a part from the catalog and fills its dimensions next to a live
+        /// dimensioned SVG. Returns the chosen part and its spec, or null if the user cancelled.
+        /// </summary>
+        PartConfiguratorSelection ShowPartConfigurator();
     }
 }

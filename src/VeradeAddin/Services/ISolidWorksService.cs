@@ -109,5 +109,20 @@ namespace VeradeAddin.Services
         /// and saves the part and drawing at the end. Returns a COM-free summary.
         /// </summary>
         BoilermakingResult GenerateBoilermakingBreakdown(string configName, bool allowWeldmentInsertion);
+
+        /// <summary>
+        /// True when the active document is a part whose feature tree is empty (only the default
+        /// planes/origin/folders, no bodies or user features). Gates the "Bulón personalizado"
+        /// command, which builds geometry from scratch and must not run on a part that already
+        /// contains modelling.
+        /// </summary>
+        bool IsActivePartEmpty();
+
+        /// <summary>
+        /// Builds the custom bolt in the active (empty) part: sketches the stepped half-section on
+        /// the front plane with a centreline axis and creates a 360° solid revolve. Returns a
+        /// COM-free summary. Assumes <see cref="IsActivePartEmpty"/> and <see cref="BoltSpec.IsValid"/>.
+        /// </summary>
+        BoltBuildResult CreateCustomBolt(BoltSpec spec);
     }
 }
