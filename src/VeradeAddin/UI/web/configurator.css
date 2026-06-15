@@ -1,0 +1,84 @@
+/* Configurador de pieza (Bulón) — tema claro, plano, profesional.
+   Se carga desde configurator.html. La vista previa de la izquierda es un SVG
+   técnico negro-sobre-blanco; la pieza del paso activo se resalta en rojo. */
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  font-family: 'Segoe UI', system-ui, sans-serif; font-size: 13px;
+  background: #EEF0F2; color: #1C1C1C; padding: 16px;
+  -webkit-user-select: none; user-select: none;
+}
+h1 { font-size: 16px; font-weight: 600; margin: 0 0 2px; }
+.sub { font-size: 12px; color: #5A6068; margin-bottom: 16px; }
+.hidden { display: none !important; }
+
+/* ---- catálogo ---- */
+.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.card {
+  background: #FFFFFF; border: 1px solid #C9CDD2; border-radius: 4px; padding: 16px 12px;
+  cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center;
+}
+.card:hover { border-color: #2F6FB3; }
+.card .ttl { font-size: 13px; font-weight: 600; }
+.card .desc { font-size: 11px; color: #5A6068; }
+.card.soon { cursor: default; color: #9AA0A6; }
+.card.soon:hover { border-color: #C9CDD2; }
+.badge { font-size: 10px; color: #5A6068; background: #EEF0F2; border: 1px solid #C9CDD2; border-radius: 3px; padding: 2px 8px; }
+
+/* ---- asistente ---- */
+.cfg { display: flex; gap: 16px; }
+.left {
+  flex: 1; background: #FFFFFF; border: 1px solid #C9CDD2; border-radius: 4px;
+  display: flex; align-items: center; justify-content: center; padding: 8px; min-height: 330px;
+}
+.left svg { width: 100%; height: 100%; display: block; }
+.right { width: 290px; display: flex; flex-direction: column; }
+
+.steps { display: flex; align-items: center; gap: 6px; margin-bottom: 16px; }
+.dot {
+  width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 600; background: #FFFFFF; color: #5A6068; border: 1px solid #C9CDD2; flex: 0 0 auto;
+}
+.dot.active { background: #2F6FB3; color: #FFFFFF; border-color: #2F6FB3; }
+.dot.done { background: #FFFFFF; color: #2F6FB3; border-color: #2F6FB3; }
+.bar { flex: 1; height: 1px; background: #C9CDD2; }
+
+.group { background: #FFFFFF; border: 1px solid #C9CDD2; border-radius: 4px; padding: 14px; margin-bottom: 12px; }
+.group h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: #5A6068; margin: 0 0 12px; font-weight: 600; }
+.field { margin-bottom: 12px; }
+.field:last-child { margin-bottom: 0; }
+label { display: block; font-size: 12px; color: #2A2E33; margin-bottom: 5px; }
+.inp { position: relative; }
+.inp input {
+  width: 100%; background: #FFFFFF; color: #1C1C1C; font-family: inherit; font-size: 14px;
+  padding: 8px 36px 8px 10px; border: 1px solid #C9CDD2; border-radius: 3px;
+}
+.inp input:focus { outline: none; border-color: #2F6FB3; }
+.inp input.bad { border-color: #C0392B; background: #FCEDEC; }
+.inp input:disabled { background: #F2F4F6; color: #6A7078; }
+.inp .u { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font-size: 12px; color: #8A9099; pointer-events: none; }
+.err { min-height: 16px; font-size: 12px; color: #C0392B; margin: 2px 2px 12px; }
+.err.ok { color: #2F6FB3; }
+
+/* fila de interruptor (lleva ranura / chaflán, usar DIN) */
+.toggle { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; cursor: pointer; }
+.toggle input { width: 16px; height: 16px; margin: 0; }
+.toggle span { font-size: 12px; color: #2A2E33; }
+.opt.off { opacity: .45; pointer-events: none; }
+.din { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.din .note { font-size: 11px; color: #5A6068; }
+.din .note.warn { color: #C0392B; }
+
+.actions { display: flex; gap: 8px; margin-top: auto; }
+button {
+  font-family: inherit; font-size: 13px; border-radius: 4px; padding: 9px 14px; cursor: pointer;
+  border: 1px solid #C9CDD2; background: #FFFFFF; color: #2A2E33;
+}
+button:hover { background: #F4F6F8; }
+button:disabled { color: #B0B5BB; cursor: default; background: #FFFFFF; }
+.ghost { flex: 0 0 auto; }
+.primary { flex: 1; background: #2F6FB3; border-color: #2F6FB3; color: #FFFFFF; font-weight: 600; }
+.primary:hover { background: #27598F; }
+.primary:disabled { background: #AFC4DE; border-color: #AFC4DE; color: #FFFFFF; }
+.dimtxt { font: 11px 'Segoe UI', sans-serif; }

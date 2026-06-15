@@ -1,0 +1,12 @@
+[TAGS]
+Configuacion comando crear pieza (BULON)
+
+Ok la otra vez estaba modificando el formulario de creacion del bulon (SolidWorksService.BoltBuilder.cs), me gustaria que fuera asi:
+0_Menu_image.png, la imagen del cuadro donde se muestran los bulones, esta bien no toques
+1_dialog que muestres el primer "escalon" que es D1 y L1, la imagen del SVG debe estar renderizada tal cual, con las lineas color rojas
+2_dialog ahora esta seria el cuerpo del bolt poner L2 D2 en el formulario
+3_dialog, preguntar si lleva ranura, si es asi, acotar su posicion con respecto a la cabeza, y su diamtro, por cierto, donde guardas los datos? porque me gustaria que en este apartado haya un boton que diga, usar DIN 471 (si/no) y que el D3 este en una tabla sqlite, si es si que el textbox se llene y si es no entonces que el textbox permita poner un valor personalizado
+--> logicamente debe cumplir con las restricciones, el valor debe ser mayor a 0 y lo puede salirse del cuerpo
+4_dialago, preguntar si lleva chaflan, el chaflan no puede "comer la ranura", poner angulo, por defecto es 45 y la medida, se puede modificar
+
+Ojo, todas las cotas deben reflejar la medida del usuario y debe actualizarse dinamicamente, hazme las preguntas necesarias.

@@ -80,13 +80,21 @@ namespace VeradeAddin.Commands
             var result = _sw.CreateCustomBolt(spec);
             if (result.Success)
             {
+                string groove = spec.HasGroove
+                    ? ", ranura D3=" + spec.GrooveDiameterMm + " E1=" + spec.GrooveWidthMm + " P1=" + spec.GroovePositionMm
+                    : "";
+                string chamfer = spec.HasChamfer
+                    ? ", chaflán " + spec.ChamferSizeMm + "×" + spec.ChamferAngleDeg + "°"
+                    : "";
                 _log.Log(Name, docType, LogOutcome.Success,
                     "Bolt created (Ø1=" + spec.HeadDiameterMm + ", L1=" + spec.HeadLengthMm +
-                    ", Ø2=" + spec.ShankDiameterMm + ", L2=" + spec.ShankLengthMm + ")");
+                    ", Ø2=" + spec.ShankDiameterMm + ", L2=" + spec.ShankLengthMm + groove + chamfer + ")");
                 _dialog.ShowMessage(Name,
                     "Bulón creado.\n" +
                     "Cabeza: Ø" + spec.HeadDiameterMm + " × " + spec.HeadLengthMm + " mm\n" +
                     "Vástago: Ø" + spec.ShankDiameterMm + " × " + spec.ShankLengthMm + " mm\n" +
+                    (spec.HasGroove ? "Ranura: D3 " + spec.GrooveDiameterMm + " · E1 " + spec.GrooveWidthMm + " · P1 " + spec.GroovePositionMm + " mm\n" : "") +
+                    (spec.HasChamfer ? "Chaflán: " + spec.ChamferSizeMm + " mm × " + spec.ChamferAngleDeg + "°\n" : "") +
                     "Longitud total: " + result.TotalLengthMm + " mm");
             }
             else

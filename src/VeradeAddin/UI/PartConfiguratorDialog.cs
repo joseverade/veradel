@@ -2,20 +2,25 @@ using System;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
+using System.Reflection;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using VeradeAddin.Models;
+using VeradeAddin.Services;
 
 namespace VeradeAddin.UI
 {
     /// <summary>
     /// "Configurar pieza" catalog + configurator. A plain WinForms <see cref="Form"/> is only the
     /// window frame; the whole UI is modern HTML/CSS/JS rendered by an embedded WebView2 (Evergreen
-    /// runtime). The page shows a catalog of generable parts; picking one opens its configurator
-    /// (a live dimensioned SVG on the left, manual dimension inputs on the right). On submit it posts
-    /// a pipe-delimited message back to the host, parsed into a <see cref="PartConfiguratorSelection"/>.
-    /// Bolt message: <c>create|bolt|d1|l1|d2|l2</c>. Cancel: <c>cancel</c>.
+    /// runtime). The page lives as real editable assets under <c>web\</c> next to the add-in DLL
+    /// (configurator.html/.css/.js, copied at build time); the dialog serves that folder through a
+    /// WebView2 virtual host (<c>https://veradeapp.local/</c>) so the HTML can reference its CSS/JS
+    /// normally. The DIN 471 table is injected as <c>window.DIN471</c> before the page scripts run.
+    /// On submit the page posts a pipe-delimited message parsed into a
+    /// <see cref="PartConfiguratorSelection"/>: <c>create|bolt|d1|l1|d2|l2|g|p1|e1|d3|c|cang|csize</c>
+    /// (g/c = groove/chamfer 1/0 flags). Cancel: <c>cancel</c>.
     /// </summary>
     internal sealed class PartConfiguratorDialog : Form
     {
@@ -61,7 +66,20 @@ namespace VeradeAddin.UI
                 settings.AreBrowserAcceleratorKeysEnabled = false;
 
                 _web.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
-                _web.CoreWebView2.NavigateToString(PartConfiguratorHtml.Page);
+
+                // Serve the editable web assets (web\ next to the DLL) through a virtual host so the
+                // page's relative <link>/<script> resolve, and inject the DIN 471 table before any
+                // page script runs.
+                string webDir = Path.Combine(
+                    Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? string.Empty, "web");
+                _web.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                    "veradeapp.local", webDir, CoreWebView2HostResourceAccessKind.Allow);
+
+                string dinJson = Din471Table.LoadRawJson();
+                await _web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(
+                    "window.DIN471 = " + dinJson + ";");
+
+                _web.CoreWebView2.Navigate("https://veradeapp.local/configurator.html");
             }
             catch (Exception ex)
             {
@@ -105,20 +123,30 @@ namespace VeradeAddin.UI
             }
         }
 
-        // create|bolt|d1|l1|d2|l2  (decimals use '.', produced by JS)
+        // create|bolt|d1|l1|d2|l2|g|p1|e1|d3|c|cang|csize  (decimals use '.', produced by JS)
         private void HandleBolt(string[] parts)
         {
-            if (parts.Length != 6) return;
+            if (parts.Length != 13) return;
 
             if (TryParse(parts[2], out double d1) && TryParse(parts[3], out double l1) &&
-                TryParse(parts[4], out double d2) && TryParse(parts[5], out double l2))
+                TryParse(parts[4], out double d2) && TryParse(parts[5], out double l2) &&
+                TryParse(parts[7], out double p1) && TryParse(parts[8], out double e1) &&
+                TryParse(parts[9], out double d3) && TryParse(parts[11], out double cang) &&
+                TryParse(parts[12], out double csize))
             {
                 var spec = new BoltSpec
                 {
                     HeadDiameterMm = d1,
                     HeadLengthMm = l1,
                     ShankDiameterMm = d2,
-                    ShankLengthMm = l2
+                    ShankLengthMm = l2,
+                    HasGroove = parts[6] == "1",
+                    GroovePositionMm = p1,
+                    GrooveWidthMm = e1,
+                    GrooveDiameterMm = d3,
+                    HasChamfer = parts[10] == "1",
+                    ChamferAngleDeg = cang,
+                    ChamferSizeMm = csize
                 };
 
                 if (!spec.IsValid)
