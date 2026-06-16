@@ -12,7 +12,7 @@ var DIN471 = window.DIN471 || { rows: [] };
 
 var catalog = document.getElementById('catalog');
 var bolt = document.getElementById('bolt');
-var canvas = document.getElementById('canvas');
+var s = document.getElementById('canvas');
 var step = 1;
 var STEPS = 4;
 
@@ -230,66 +230,91 @@ function vDim(y1, y2, x, text) {
 function draw() {
 
     // Se obtienen los valores
-    var d1 = val('d1'), l1 = val('l1'), d2 = val('d2'), l2 = val('l2');       
+    var d1 = val('d1'), lenght1 = val('l1'), d2 = val('d2'), length2 = val('l2');       
 
     // Valores por defecto si d1, l1, d2 y l2 < 0
-    if (!(d1 > 0)) d1 = 30; if (!(l1 > 0)) l1 = 5;
-    if (!(d2 > 0)) d2 = Math.min(20, d1 * 0.6); if (!(l2 > 0)) l2 = 25;
+    if (!(d1 > 0)) d1 = 30; if (!(lenght1 > 0)) lenght1 = 5;
+    if (!(d2 > 0)) d2 = Math.min(20, d1 * 0.6); if (!(length2 > 0)) length2 = 25;
 
     // grove: position 1, espesor 1, diameter
     var p1 = val('p1'), e1 = val('e1'), d3 = val('d3');
 
-    var hasGrove = grooveOn() && p1 > 0 && e1 > 0 && d3 > 0 && d3 < d2 && (p1 + e1) <= l2;
-    var ca = val('cang'), cs = val('csize');
-    var cdrop = (cs > 0 && ca > 0 && ca < 90) ? cs * Math.tan(ca * Math.PI / 180) : 0;
-    var hasC = chamferOn() && cs > 0 && ca > 0 && ca < 90 && cdrop < d2 / 2 && (l2 - cs) >= (hasGrove ? (p1 + e1) : 0);
+    var hasGrove = grooveOn() && p1 > 0 && e1 > 0 && d3 > 0 && d3 < d2 && (p1 + e1) <= length2;
+    var chanflerAngle = val('cang'), chanflerHorizontalLength = val('csize');
+    var cdrop = (chanflerHorizontalLength > 0 && chanflerAngle > 0 && chanflerAngle < 90) ? chanflerHorizontalLength * Math.tan(chanflerAngle * Math.PI / 180) : 0;
+    var hasChamfer = chamferOn() && chanflerHorizontalLength > 0 && chanflerAngle > 0 && chanflerAngle < 90 && cdrop < d2 / 2 && (length2 - chanflerHorizontalLength) >= (hasGrove ? (p1 + e1) : 0);
 
     // viewbox witdth and height
     var VBW = 460, VBH = 320, marginLeft = 86, marginRight = 86, marginTop = 84, marginBottom = 46;
-    var rw = VBW - marginLeft - marginRight, rh = VBH - marginTop - marginBottom;
+    var roomWidth = VBW - marginLeft - marginRight, roomHeight = VBH - marginTop - marginBottom;
 
-    // Total lenght of the image + total height (max diameter)
-    var totalLength = l1 + l2, maxDiameter = Math.max(d1, d2);
+    // Total lenght of the bolt and total height (max diameter)
+    var totalBoltLength = lenght1 + length2, maxBoltDiameter = Math.max(d1, d2);
 
-    // Scale
-    var s = Math.min(rw / totalLength, rh / maxDiameter);
+    // Scale min
+    var scale = Math.min(roomWidth / totalBoltLength, roomHeight / maxBoltDiameter);
 
+    // Midpoint of the top left line
+    var boltWidth = totalBoltLength * scale
+    var originX = marginLeft + (roomWidth - boltWidth) / 2
+    var centerY = marginTop + roomHeight / 2;
 
-    var bw = totalLength * s, ox = marginLeft + (rw - bw) / 2, cy = marginTop + rh / 2;
-    var w1 = l1 * s, w2 = l2 * s, h1 = d1 * s, h2 = d2 * s;
-    var headL = ox, headR = ox + w1, tip = ox + w1 + w2;
-    var headTop = cy - h1 / 2, headBot = cy + h1 / 2, shankTop = cy - h2 / 2, shankBot = cy + h2 / 2;
+    // Longitudes
+    var widthHead1 = lenght1 * scale
+    var widthBody2 = length2 * scale
+    var h1 = d1 * scale
+    var h2 = d2 * scale;
 
-    // geometría de la ranura (pantalla)
-    var xg1 = headR + p1 * s, xg2 = headR + (p1 + e1) * s, h3 = d3 * s, gTop = cy - h3 / 2, gBot = cy + h3 / 2;
+    // Points
+    var headL = originX
+    var headR = originX + widthHead1
+    var tip = originX + widthHead1 + widthBody2;
+
+    // 0,0 is the top left corner
+    var headTop = centerY - h1 / 2
+    var headBot = centerY + h1 / 2
+    var shankTop = centerY - h2 / 2
+    var shankBot = centerY + h2 / 2;
+
+    // geometría de la ranura (pantalla)  (0,0 is the top left corner)
+    var xgroove1 = headR + p1 * scale           // Posicion izquierda
+    var xgroove2 = headR + (p1 + e1) * scale
+    var h3 = d3 * scale
+    var grooveTop = centerY - h3 / 2
+    var grooveBot = centerY + h3 / 2;
+
     // geometría del chaflán (pantalla)
-    var aS = cs * s, bS = cdrop * s, xc = tip - aS, tipTop = shankTop + bS, tipBot = shankBot - bS;
+    var angleScaled = chanflerHorizontalLength * scale
+    var bS = cdrop * scale
+    var xc = tip - angleScaled
+    var tipTop = shankTop + bS
+    var tipBot = shankBot - bS;
 
     // contorno superior del vástago (izq -> der), luego se espeja para el inferior
     var topPts = [[headR, shankTop]];
-    if (hasGrove) { topPts.push([xg1, shankTop], [xg1, gTop], [xg2, gTop], [xg2, shankTop]); }
-    if (hasC) { topPts.push([xc, shankTop], [tip, tipTop]); }
+    if (hasGrove) { topPts.push([xgroove1, shankTop], [xgroove1, grooveTop], [xgroove2, grooveTop], [xgroove2, shankTop]); }
+    if (hasChamfer) { topPts.push([xc, shankTop], [tip, tipTop]); }
     else { topPts.push([tip, shankTop]); }
 
     var out = '';
-    out += LINE(headL - 30, cy, tip + 30, cy, INK, 0.8, '7,3,2,3');   // línea de eje
-    out += RECT(headL, headTop, w1, h1, INK, 1.5);               // cabeza
+    out += LINE(headL - 30, centerY, tip + 30, centerY, INK, 0.8, '7,3,2,3');   // línea de eje
+    out += RECT(headL, headTop, widthHead1, h1, INK, 1.5);               // cabeza
 
     // contorno del vástago: contorno superior, cara derecha, contorno inferior (espejo)
     var full = topPts.slice();
-    full.push([tip, hasC ? tipBot : shankBot]);
-    for (var i = topPts.length - 1; i >= 0; i--) { full.push([topPts[i][0], 2 * cy - topPts[i][1]]); }
+    full.push([tip, hasChamfer ? tipBot : shankBot]);
+    for (var i = topPts.length - 1; i >= 0; i--) { full.push([topPts[i][0], 2 * centerY - topPts[i][1]]); }
     out += PATH(full, INK, 1.5);
 
     // ----- pieza activa resaltada en ROJO -----
     if (step === 1) {
-        out += RECT(headL, headTop, w1, h1, RED, 1.8);
+        out += RECT(headL, headTop, widthHead1, h1, RED, 1.8);
     } else if (step === 2) {
-        out += RECT(headR, shankTop, w2, h2, RED, 1.8);
+        out += RECT(headR, shankTop, widthBody2, h2, RED, 1.8);
     } else if (step === 3 && hasGrove) {
-        out += PATH([[xg1, shankTop], [xg1, gTop], [xg2, gTop], [xg2, shankTop]], RED, 1.8);
-        out += PATH([[xg1, shankBot], [xg1, gBot], [xg2, gBot], [xg2, shankBot]], RED, 1.8);
-    } else if (step === 4 && hasC) {
+        out += PATH([[xgroove1, shankTop], [xgroove1, grooveTop], [xgroove2, grooveTop], [xgroove2, shankTop]], RED, 1.8);
+        out += PATH([[xgroove1, shankBot], [xgroove1, grooveBot], [xgroove2, grooveBot], [xgroove2, shankBot]], RED, 1.8);
+    } else if (step === 4 && hasChamfer) {
         out += LINE(xc, shankTop, tip, tipTop, RED, 1.8) + LINE(tip, tipTop, tip, tipBot, RED, 1.8) + LINE(xc, shankBot, tip, tipBot, RED, 1.8);
     }
 
@@ -298,27 +323,27 @@ function draw() {
         var yL = headTop - 34, xQ = headL - 40;
         out += LINE(headL, headTop, headL, yL, INK, 1) + LINE(headR, headTop, headR, yL, INK, 1);
         out += LINE(headL, headTop, xQ, headTop, INK, 1) + LINE(headL, headBot, xQ, headBot, INK, 1);
-        out += hDim(headL, headR, yL, 'L1 = ' + fmt(l1));
+        out += hDim(headL, headR, yL, 'L1 = ' + fmt(lenght1));
         out += vDim(headTop, headBot, xQ, 'Ø1 = ' + fmt(d1));
     } else if (step === 2) {
         var yL2 = shankTop - 34, xQ2 = tip + 40;
         out += LINE(headR, shankTop, headR, yL2, INK, 1) + LINE(tip, shankTop, tip, yL2, INK, 1);
         out += LINE(tip, shankTop, xQ2, shankTop, INK, 1) + LINE(tip, shankBot, xQ2, shankBot, INK, 1);
-        out += hDim(headR, tip, yL2, 'L2 = ' + fmt(l2));
+        out += hDim(headR, tip, yL2, 'L2 = ' + fmt(length2));
         out += vDim(shankTop, shankBot, xQ2, 'Ø2 = ' + fmt(d2));
     } else if (step === 3 && hasGrove) {
         var yL3 = shankTop - 34, xQ3 = tip + 40;
-        out += LINE(headR, shankTop, headR, yL3, INK, 1) + LINE(xg1, gTop, xg1, yL3, INK, 1) + LINE(xg2, gTop, xg2, yL3, INK, 1);
-        out += hDim(headR, xg1, yL3, 'P1 = ' + fmt(p1));
-        out += hDim(xg1, xg2, yL3 - 18, 'E1 = ' + fmt(e1));
-        out += LINE(xg2, gTop, xQ3, gTop, INK, 1) + LINE(xg2, gBot, xQ3, gBot, INK, 1);
-        out += vDim(gTop, gBot, xQ3, 'Ø3 = ' + fmt(d3));
-    } else if (step === 4 && hasC) {
+        out += LINE(headR, shankTop, headR, yL3, INK, 1) + LINE(xgroove1, grooveTop, xgroove1, yL3, INK, 1) + LINE(xgroove2, grooveTop, xgroove2, yL3, INK, 1);
+        out += hDim(headR, xgroove1, yL3, 'P1 = ' + fmt(p1));
+        out += hDim(xgroove1, xgroove2, yL3 - 18, 'E1 = ' + fmt(e1));
+        out += LINE(xgroove2, grooveTop, xQ3, grooveTop, INK, 1) + LINE(xgroove2, grooveBot, xQ3, grooveBot, INK, 1);
+        out += vDim(grooveTop, grooveBot, xQ3, 'Ø3 = ' + fmt(d3));
+    } else if (step === 4 && hasChamfer) {
         // directriz desde la cara del chaflán hasta una etiqueta 'C{medida} x {ang}°'
         var mx = (xc + tip) / 2, myF = (shankTop + tipTop) / 2, lx = tip + 44, ly = tipTop - 30;
         out += LINE(mx, myF, lx - 20, ly, INK, 1) + LINE(lx - 20, ly, lx, ly, INK, 1);
         out += POLY([[mx, myF], [mx + 7, myF - 2], [mx + 2, myF - 7]], INK);
-        out += TEXT(lx + 18, ly + 4, 'C' + fmt(cs) + ' × ' + fmt(ca) + '°', INK, false);
+        out += TEXT(lx + 18, ly + 4, 'C' + fmt(chanflerHorizontalLength) + ' × ' + fmt(chanflerAngle) + '°', INK, false);
     }
 
     out = mk('svg', { viewBox: '0 0 ' + VBW + ' ' + VBH, preserveAspectRatio: 'xMidYMid meet' }, out);
