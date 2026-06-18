@@ -10,12 +10,12 @@ using System.Threading.Tasks;
 
 namespace Veradel.SolidworksConsole.PartCreation
 {
-    public  class BoltCreation
+    public class BoltCreation
     {
         private SldWorks _swapp;
 
         // First feature body
-        private double _d1; 
+        private double _d1;
         private double _l1;
         private double _d2;
         private double _l2;
@@ -70,7 +70,7 @@ namespace Veradel.SolidworksConsole.PartCreation
             Revolution();
 
         }
-        
+
         private void Revolution()
         {
             // First we select the "alzado plane"
@@ -79,10 +79,38 @@ namespace Veradel.SolidworksConsole.PartCreation
             ModelDocExtension ext = model.Extension;
 
             bool status = ext.SelectByID2("Alzado", "PLANE", 0, 0, 0, false, 0, null, 0);
-            model.SketchManager.InsertSketch(true);
+
+            // sketchManager
+
+            SketchManager sManager = model.SketchManager;
+            sManager.InsertSketch(true);
 
             // center line
+            SketchSegment centerLine = sManager.CreateLine(0, 0, 0, -10 / 1000.0, 0, 0);
+            centerLine.ConstructionGeometry = true;
 
+
+            // headLeftLine
+            SketchSegment line1 = sManager.CreateLine(0, 0, 0, 0, _d1 / 2000.0, 0);
+            line1.Select4(false, null);
+            model.SketchAddConstraints("sgVERTICAL2D");
+
+
+            // Lines
+            SketchSegment line2 = sManager.CreateLine(0, _d1 / 2000.0, 0, _l1 / 1000, _d1 / 2000.0, 0);
+            SketchSegment line3 = sManager.CreateLine(_l1/1000.0, _d1 / 2000.0, 0, _l1/1000.0, _d2 /2000.0, 0);
+            SketchSegment line4 = sManager.CreateLine(_l1 / 1000.0, _d2 / 2000.0, 0, (_l1 + _l2) / 1000, _d2 / 2000.0, 0);
+            SketchSegment line5 = sManager.CreateLine((_l1 + _l2) / 1000.0, _d2 / 2000.0, 0, (_l1 + _l2) / 1000.0, 0, 0);
+            SketchSegment close = sManager.CreateLine((_l1 + _l2) / 1000.0, 0, 0, 0, 0, 0);
+
+            // Dimensions
+
+            model.ClearSelection2(true);
+
+            line2.Select4(true, null);
+            centerLine.Select4(true, null);
+
+            model.AddDiameterDimension2(0, 0, 0);
 
 
         }

@@ -11,7 +11,7 @@ namespace Veradel.SolidworksConsole
 
             SldWorks swApp = GetSolidWorksApplication();
 
-            BoltCreation create = new BoltCreation(swApp,1,1,1,1);
+            BoltCreation create = new BoltCreation(swApp,30,5,20,30);
 
             create.CreateBolt();
 
