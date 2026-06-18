@@ -37,7 +37,12 @@ document.getElementById('cardBolt').addEventListener('click', function () {
 });
 
 btnBack.addEventListener('click', function () {
-    if (step > 1) { step--; render(); }
+    if (step > 1) {
+        // retroceder desactiva la pieza opcional del paso que se abandona
+        if (step === 3 && gOn.checked) { gOn.checked = false; document.getElementById('gFields').classList.add('off'); }
+        if (step === 4 && cOn.checked) { cOn.checked = false; document.getElementById('cFields').classList.add('off'); }
+        step--; render();
+    }
     else { bolt.classList.add('hidden'); catalog.classList.remove('hidden'); }
 });
 
@@ -220,8 +225,22 @@ function arrow(x, y, dir) {
                 : [[x, y], [x - 3, y - 7], [x + 3, y - 7]];
     return POLY(a, INK);
 }
+// texto anclado a la izquierda (para la etiqueta desplazada con directriz)
+function TEXTL(x, y, t, col) {
+    return mk('text', {
+        x: n1(x), y: n1(y), fill: col, 'text-anchor': 'start',
+        'font-family': 'Segoe UI, sans-serif', 'font-size': '11'
+    }, t);
+}
+// cota horizontal: si el texto no cabe entre las flechas, se saca a la derecha
+// con una directriz (raya) y la propia raya hace de subrayado bajo el texto.
 function hDim(x1, x2, y, text) {
-    return LINE(x1, y, x2, y, INK, 1) + arrow(x1, y, 'l') + arrow(x2, y, 'r') + TEXT((x1 + x2) / 2, y - 5, text, INK, false);
+    var xl = Math.min(x1, x2), xr = Math.max(x1, x2);
+    var base = LINE(x1, y, x2, y, INK, 1) + arrow(x1, y, 'l') + arrow(x2, y, 'r');
+    var textW = text.length * 6;                 // ancho aprox. del texto (px)
+    if (xr - xl >= textW + 8) return base + TEXT((x1 + x2) / 2, y - 5, text, INK, false);
+    var lead = xr + 8;                            // arranque del texto desplazado
+    return base + LINE(xr, y, lead + textW, y, INK, 1) + TEXTL(lead, y - 4, text, INK);
 }
 function vDim(y1, y2, x, text) {
     return LINE(x, y1, x, y2, INK, 1) + arrow(x, y1, 'u') + arrow(x, y2, 'd') + TEXT(x - 7, (y1 + y2) / 2, text, INK, true);
@@ -284,9 +303,9 @@ function draw() {
     var grooveBot = centerY + h3 / 2;
 
     // geometría del chaflán (pantalla)
-    var angleScaled = chanflerHorizontalLength * scale
+    var aS = chanflerHorizontalLength * scale
     var bS = cdrop * scale
-    var xc = tip - angleScaled
+    var xc = tip - aS
     var tipTop = shankTop + bS
     var tipBot = shankBot - bS;
 

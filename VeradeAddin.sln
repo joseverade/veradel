@@ -7,6 +7,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{02EA681E-C7D
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VeradeAddin", "src\VeradeAddin\VeradeAddin.csproj", "{5F55F85F-8627-41D5-8B18-BD6C93741143}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Veradel.SolidworksConsole", "src\Veradel.SolidworksConsole\Veradel.SolidworksConsole.csproj", "{E6EB8D49-4545-4D88-AF97-7E89D5B8DB04}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -23,12 +25,21 @@ Global
 		{5F55F85F-8627-41D5-8B18-BD6C93741143}.Release|Any CPU.Build.0 = Release|Any CPU
 		{5F55F85F-8627-41D5-8B18-BD6C93741143}.Release|x64.ActiveCfg = Release|x64
 		{5F55F85F-8627-41D5-8B18-BD6C93741143}.Release|x64.Build.0 = Release|x64
+		{E6EB8D49-4545-4D88-AF97-7E89D5B8DB04}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E6EB8D49-4545-4D88-AF97-7E89D5B8DB04}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E6EB8D49-4545-4D88-AF97-7E89D5B8DB04}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{E6EB8D49-4545-4D88-AF97-7E89D5B8DB04}.Debug|x64.Build.0 = Debug|Any CPU
+		{E6EB8D49-4545-4D88-AF97-7E89D5B8DB04}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E6EB8D49-4545-4D88-AF97-7E89D5B8DB04}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E6EB8D49-4545-4D88-AF97-7E89D5B8DB04}.Release|x64.ActiveCfg = Release|Any CPU
+		{E6EB8D49-4545-4D88-AF97-7E89D5B8DB04}.Release|x64.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{5F55F85F-8627-41D5-8B18-BD6C93741143} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
+		{E6EB8D49-4545-4D88-AF97-7E89D5B8DB04} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {15967E47-799D-4904-AB44-F53A3D1772DF}
