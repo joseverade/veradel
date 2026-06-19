@@ -13,6 +13,7 @@ namespace Veradel.SolidworksConsole
 
             BoltCreation create = new BoltCreation(swApp,30,5,20,30);
 
+            create.SetGroove(22, 1, 18);
             create.CreateBolt();
 
 

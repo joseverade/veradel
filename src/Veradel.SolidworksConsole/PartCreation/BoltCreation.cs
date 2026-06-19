@@ -32,6 +32,10 @@ namespace Veradel.SolidworksConsole.PartCreation
         private double _l3;
 
 
+        // const
+        private const double angle_360 = Math.PI*2;
+
+
 
         public BoltCreation(SldWorks swapp, double d1, double l1, double d2, double l2)
         {
@@ -67,7 +71,16 @@ namespace Veradel.SolidworksConsole.PartCreation
             // cut revolution
             // chamfer
 
+            _swapp.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swInputDimValOnCreate, false);
+
             Revolution();
+
+            if (_hasGroove)
+                CutRevoluion();
+
+            if (_hasChamfer) { }
+
+            _swapp.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swInputDimValOnCreate, true);
 
         }
 
@@ -98,23 +111,134 @@ namespace Veradel.SolidworksConsole.PartCreation
 
             // Lines
             SketchSegment line2 = sManager.CreateLine(0, _d1 / 2000.0, 0, _l1 / 1000, _d1 / 2000.0, 0);
-            SketchSegment line3 = sManager.CreateLine(_l1/1000.0, _d1 / 2000.0, 0, _l1/1000.0, _d2 /2000.0, 0);
+            SketchSegment line3 = sManager.CreateLine(_l1 / 1000.0, _d1 / 2000.0, 0, _l1 / 1000.0, _d2 / 2000.0, 0);
             SketchSegment line4 = sManager.CreateLine(_l1 / 1000.0, _d2 / 2000.0, 0, (_l1 + _l2) / 1000, _d2 / 2000.0, 0);
             SketchSegment line5 = sManager.CreateLine((_l1 + _l2) / 1000.0, _d2 / 2000.0, 0, (_l1 + _l2) / 1000.0, 0, 0);
             SketchSegment close = sManager.CreateLine((_l1 + _l2) / 1000.0, 0, 0, 0, 0, 0);
 
             // Dimensions
 
-            model.ClearSelection2(true);
 
+            // d1
+            model.ClearSelection2(true);
             line2.Select4(true, null);
             centerLine.Select4(true, null);
+            model.AddDiameterDimension2(-10 / 1000.0, -10 / 1000.0, 0);
 
-            model.AddDiameterDimension2(0, 0, 0);
+            //l1
+            model.ClearSelection2(true);
+            line2.Select4(true, null);
+            model.AddHorizontalDimension2(0, 0, 0);
+
+            // l2
+            model.ClearSelection2(true);
+            line4.Select4(true, null);
+            model.AddHorizontalDimension2(0, 0, 0);
+
+            // d2
+            model.ClearSelection2(true);
+            line4.Select4(true, null);
+            centerLine.Select4(true, null);
+            model.AddDiameterDimension2(40 / 1000.0, -10 / 1000.0, 0);
+
+
+            model.ClearSelection2(true);
+
+            model.InsertSketch2(true);
+
+            FeatureManager featMan = model.FeatureManager;
+
+            featMan.FeatureRevolve2(
+                true, true, false, false, false, false,
+                (int)swEndConditions_e.swEndCondBlind, (int)swEndConditions_e.swEndCondBlind,
+                angle_360, 0, false, false, 0, 0, (int)swThinWallType_e.swThinWallOneDirection, 0.0, 0.0, true, false, false);
 
 
         }
 
+        private void CutRevoluion()
+        {
+            Point centerLine1 = new Point(0, 0);
+            Point centerLine2 = new Point(_l1 + _l2, 0);
 
+
+            Point point1 = new Point(_l1 + _p1, _d2 / 2);
+            Point point2 = new Point(_l1 + _p1, _d3 / 2);
+            Point point3 = new Point(_l1 + _p1 + _e1, _d3 / 2);
+            Point point4 = new Point(_l1 + _p1 + _e1, _d2 / 2);
+
+
+            Point closure = point1; 
+
+            Point[] points = { point1, point2, point3, point4, closure };
+
+
+            ModelDoc2 model = _swapp.ActiveDoc;
+            ModelDocExtension ext = model.Extension;
+
+            model.Extension.SelectByID2("Alzado", "PLANE", 0, 0, 0, false, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
+            model.InsertSketch2(true);
+
+            SketchManager sManager = model.SketchManager;
+
+            SketchSegment centerLine = sManager.CreateLine(centerLine1.X, centerLine1.Y, 0, centerLine2.X, centerLine2.Y, 0);
+            centerLine.ConstructionGeometry = true;
+
+            List<SketchSegment> segments = new List<SketchSegment>(points.Length);
+
+
+            for (int i = 1; i < points.Length; i++)
+            {
+                SketchSegment segment = sManager.CreateLine(points[i-1].X, points[i-1].Y, 0, points[i].X, points[i].Y, 0);
+                segments.Add(segment);
+            }
+
+            // Dimensions, fisrt we select the edge
+
+
+            // p1
+            model.ClearSelection2(true);
+            ext.SelectByID2("", "EDGE", _l1/1000.0, _d2/2000.0, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
+            segments[0].Select4(true, null);
+            model.AddHorizontalDimension2(0,0,0);
+
+            // e1
+            model.ClearSelection2(true);
+            segments[3].Select4(true, null);
+            model.AddHorizontalDimension2(0,0,0);
+
+            // d3
+            model.ClearSelection2(true);
+            centerLine.Select4(true, null);
+            segments[1].Select4(true, null);
+            model.AddDiameterDimension2(0,-10/1000.0,0);
+
+            model.InsertSketch();
+
+
+
+            // Feature
+            FeatureManager feat = model.FeatureManager;
+            feat.FeatureRevolve2(true,true, false, true, false, true,
+                (int)swEndConditions_e.swEndCondBlind, (int)swEndConditions_e.swEndCondBlind,
+                angle_360, 0, false, false, 0,0, (int)swThinWallType_e.swThinWallOneDirection, 0,0,true,false,true);
+
+
+
+        }
+
+    }
+
+
+    public class Point
+    {
+        public double X { get; private set; }
+        public double Y { get; private set; }
+
+        public Point(double x, double y)
+        {
+            X = x / 1000.0;
+            Y = y / 1000.0;
+        }
     }
 }
