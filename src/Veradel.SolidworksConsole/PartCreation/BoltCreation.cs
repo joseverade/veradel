@@ -33,7 +33,7 @@ namespace Veradel.SolidworksConsole.PartCreation
 
 
         // const
-        private const double angle_360 = Math.PI*2;
+        private const double angle_360 = Math.PI * 2;
 
 
 
@@ -78,9 +78,25 @@ namespace Veradel.SolidworksConsole.PartCreation
             if (_hasGroove)
                 CutRevoluion();
 
-            if (_hasChamfer) { }
+            if (_hasChamfer)
+                Chamfer();
 
             _swapp.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swInputDimValOnCreate, true);
+
+        }
+
+        private void Chamfer()
+        {
+            ModelDoc2 model = _swapp.ActiveDoc;
+            ModelDocExtension ext = model.Extension;
+
+                ext.SelectByID2("", "EDGE", (_l1 + _l2) / 1000.0, _d2 / 2000.0, 0, false, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
+
+            FeatureManager feat = model.FeatureManager;
+
+            feat.InsertFeatureChamfer(4, (int)swChamferType_e.swChamferAngleDistance, _l3 / 1000.0, (_angle * Math.PI) / 180, 0, 0, 0, 0);
+
+
 
         }
 
@@ -168,7 +184,7 @@ namespace Veradel.SolidworksConsole.PartCreation
             Point point4 = new Point(_l1 + _p1 + _e1, _d2 / 2);
 
 
-            Point closure = point1; 
+            Point closure = point1;
 
             Point[] points = { point1, point2, point3, point4, closure };
 
@@ -189,7 +205,7 @@ namespace Veradel.SolidworksConsole.PartCreation
 
             for (int i = 1; i < points.Length; i++)
             {
-                SketchSegment segment = sManager.CreateLine(points[i-1].X, points[i-1].Y, 0, points[i].X, points[i].Y, 0);
+                SketchSegment segment = sManager.CreateLine(points[i - 1].X, points[i - 1].Y, 0, points[i].X, points[i].Y, 0);
                 segments.Add(segment);
             }
 
@@ -198,20 +214,20 @@ namespace Veradel.SolidworksConsole.PartCreation
 
             // p1
             model.ClearSelection2(true);
-            ext.SelectByID2("", "EDGE", _l1/1000.0, _d2/2000.0, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
+            ext.SelectByID2("", "EDGE", _l1 / 1000.0, _d2 / 2000.0, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
             segments[0].Select4(true, null);
-            model.AddHorizontalDimension2(0,0,0);
+            model.AddHorizontalDimension2(0, 0, 0);
 
             // e1
             model.ClearSelection2(true);
             segments[3].Select4(true, null);
-            model.AddHorizontalDimension2(0,0,0);
+            model.AddHorizontalDimension2(0, 0, 0);
 
             // d3
             model.ClearSelection2(true);
             centerLine.Select4(true, null);
             segments[1].Select4(true, null);
-            model.AddDiameterDimension2(0,-10/1000.0,0);
+            model.AddDiameterDimension2(0, -10 / 1000.0, 0);
 
             model.InsertSketch();
 
@@ -219,9 +235,9 @@ namespace Veradel.SolidworksConsole.PartCreation
 
             // Feature
             FeatureManager feat = model.FeatureManager;
-            feat.FeatureRevolve2(true,true, false, true, false, true,
+            feat.FeatureRevolve2(true, true, false, true, false, true,
                 (int)swEndConditions_e.swEndCondBlind, (int)swEndConditions_e.swEndCondBlind,
-                angle_360, 0, false, false, 0,0, (int)swThinWallType_e.swThinWallOneDirection, 0,0,true,false,true);
+                angle_360, 0, false, false, 0, 0, (int)swThinWallType_e.swThinWallOneDirection, 0, 0, true, false, true);
 
 
 

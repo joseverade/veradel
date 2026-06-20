@@ -232,18 +232,33 @@ function TEXTL(x, y, t, col) {
         'font-family': 'Segoe UI, sans-serif', 'font-size': '11'
     }, t);
 }
-// cota horizontal: si el texto no cabe entre las flechas, se saca a la derecha
-// con una directriz (raya) y la propia raya hace de subrayado bajo el texto.
+var ARROW_FIT = 18, DIM_EXT = 12;   // luz mínima para flechas dentro / prolongación cuando van fuera
+// cota horizontal. Tres casos:
+//  - hueco amplio: flechas dentro, texto centrado.
+//  - hueco medio: flechas dentro, texto fuera a la derecha con directriz (raya = subrayado).
+//  - hueco mínimo: flechas FUERA apuntando hacia dentro y línea de cota prolongada a ambos lados.
 function hDim(x1, x2, y, text) {
     var xl = Math.min(x1, x2), xr = Math.max(x1, x2);
-    var base = LINE(x1, y, x2, y, INK, 1) + arrow(x1, y, 'l') + arrow(x2, y, 'r');
     var textW = text.length * 6;                 // ancho aprox. del texto (px)
-    if (xr - xl >= textW + 8) return base + TEXT((x1 + x2) / 2, y - 5, text, INK, false);
-    var lead = xr + 8;                            // arranque del texto desplazado
-    return base + LINE(xr, y, lead + textW, y, INK, 1) + TEXTL(lead, y - 4, text, INK);
+    var out, dimRight;
+    if (xr - xl >= ARROW_FIT) {
+        out = LINE(xl, y, xr, y, INK, 1) + arrow(xl, y, 'l') + arrow(xr, y, 'r');
+        if (xr - xl >= textW + 8) return out + TEXT((xl + xr) / 2, y - 5, text, INK, false);
+        dimRight = xr;
+    } else {
+        out = LINE(xl - DIM_EXT, y, xr + DIM_EXT, y, INK, 1) + arrow(xl, y, 'r') + arrow(xr, y, 'l');
+        dimRight = xr + DIM_EXT;
+    }
+    var lead = dimRight + 6;                      // arranque del texto desplazado
+    return out + LINE(dimRight, y, lead + textW, y, INK, 1) + TEXTL(lead, y - 4, text, INK);
 }
+// cota vertical (Ø). Misma convención de flechas-fuera cuando el hueco es mínimo.
 function vDim(y1, y2, x, text) {
-    return LINE(x, y1, x, y2, INK, 1) + arrow(x, y1, 'u') + arrow(x, y2, 'd') + TEXT(x - 7, (y1 + y2) / 2, text, INK, true);
+    var yt = Math.min(y1, y2), yb = Math.max(y1, y2);
+    var lbl = TEXT(x - 7, (yt + yb) / 2, text, INK, true);
+    if (yb - yt >= ARROW_FIT)
+        return LINE(x, yt, x, yb, INK, 1) + arrow(x, yt, 'u') + arrow(x, yb, 'd') + lbl;
+    return LINE(x, yt - DIM_EXT, x, yb + DIM_EXT, INK, 1) + arrow(x, yt, 'd') + arrow(x, yb, 'u') + lbl;
 }
 
 function draw() {
@@ -309,6 +324,14 @@ function draw() {
     var tipTop = shankTop + bS
     var tipBot = shankBot - bS;
 
+    // bounding box del bulón completo: referencia ÚNICA para acotar (no se dibuja).
+    // Así L1/L2/P1 comparten la misma Y de cota y no quedan a distinta altura.
+    var boxTop = centerY - maxBoltDiameter * scale / 2;
+    var boxBot = centerY + maxBoltDiameter * scale / 2;
+    var boxLeft = headL, boxRight = tip;
+    var dimY = boxTop - 34;          // línea de cota horizontal común
+    var dimY2 = dimY - 18;           // segunda fila (cotas apiladas, p.ej. E1)
+
     // contorno superior del vástago (izq -> der), luego se espeja para el inferior
     var topPts = [[headR, shankTop]];
     if (hasGrove) { topPts.push([xgroove1, shankTop], [xgroove1, grooveTop], [xgroove2, grooveTop], [xgroove2, shankTop]); }
@@ -325,6 +348,16 @@ function draw() {
     for (var i = topPts.length - 1; i >= 0; i--) { full.push([topPts[i][0], 2 * centerY - topPts[i][1]]); }
     out += PATH(full, INK, 1.5);
 
+    // aristas de revolución (caras vistas por el eje): SIEMPRE en negro para que la conexión
+    // arriba-abajo se mantenga en todos los pasos; el paso activo las repinta en rojo encima.
+    if (hasGrove) {
+        out += LINE(xgroove1, shankTop, xgroove1, shankBot, INK, 1.5);
+        out += LINE(xgroove2, shankTop, xgroove2, shankBot, INK, 1.5);
+    }
+    if (hasChamfer) {
+        out += LINE(xc, shankTop, xc, shankBot, INK, 1.5);
+    }
+
     // ----- pieza activa resaltada en ROJO -----
     if (step === 1) {
         out += RECT(headL, headTop, widthHead1, h1, RED, 1.8);
@@ -333,36 +366,47 @@ function draw() {
     } else if (step === 3 && hasGrove) {
         out += PATH([[xgroove1, shankTop], [xgroove1, grooveTop], [xgroove2, grooveTop], [xgroove2, shankTop]], RED, 1.8);
         out += PATH([[xgroove1, shankBot], [xgroove1, grooveBot], [xgroove2, grooveBot], [xgroove2, shankBot]], RED, 1.8);
+        // paredes de la ranura completas: cada punto superior se une con su simétrico inferior
+        // de un solo trazo (shankTop→shankBot), cruzando fondo y eje (revolución 360°).
+        out += LINE(xgroove1, shankTop, xgroove1, shankBot, RED, 1.8);
+        out += LINE(xgroove2, shankTop, xgroove2, shankBot, RED, 1.8);
     } else if (step === 4 && hasChamfer) {
         out += LINE(xc, shankTop, tip, tipTop, RED, 1.8) + LINE(tip, tipTop, tip, tipBot, RED, 1.8) + LINE(xc, shankBot, tip, tipBot, RED, 1.8);
+        // arista donde arranca el chaflán, completa por el eje (revolución 360°)
+        out += LINE(xc, shankTop, xc, shankBot, RED, 1.8);
     }
 
     // ----- cotas del paso activo -----
+    var xQL = boxLeft - 40, xQR = boxRight + 40;   // columnas de cotas Ø: izquierda / derecha
     if (step === 1) {
-        var yL = headTop - 34, xQ = headL - 40;
-        out += LINE(headL, headTop, headL, yL, INK, 1) + LINE(headR, headTop, headR, yL, INK, 1);
-        out += LINE(headL, headTop, xQ, headTop, INK, 1) + LINE(headL, headBot, xQ, headBot, INK, 1);
-        out += hDim(headL, headR, yL, 'L1 = ' + fmt(lenght1));
-        out += vDim(headTop, headBot, xQ, 'Ø1 = ' + fmt(d1));
+        // L1 sobre la línea de cota común; Ø1 a la izquierda del box
+        out += LINE(headL, headTop, headL, dimY, INK, 1) + LINE(headR, headTop, headR, dimY, INK, 1);
+        out += hDim(headL, headR, dimY, 'L1 = ' + fmt(lenght1));
+        out += LINE(headL, headTop, xQL, headTop, INK, 1) + LINE(headL, headBot, xQL, headBot, INK, 1);
+        out += vDim(headTop, headBot, xQL, 'Ø1 = ' + fmt(d1));
     } else if (step === 2) {
-        var yL2 = shankTop - 34, xQ2 = tip + 40;
-        out += LINE(headR, shankTop, headR, yL2, INK, 1) + LINE(tip, shankTop, tip, yL2, INK, 1);
-        out += LINE(tip, shankTop, xQ2, shankTop, INK, 1) + LINE(tip, shankBot, xQ2, shankBot, INK, 1);
-        out += hDim(headR, tip, yL2, 'L2 = ' + fmt(length2));
-        out += vDim(shankTop, shankBot, xQ2, 'Ø2 = ' + fmt(d2));
+        // L2 sobre la misma línea de cota que L1; Ø2 a la derecha del box
+        out += LINE(headR, shankTop, headR, dimY, INK, 1) + LINE(tip, shankTop, tip, dimY, INK, 1);
+        out += hDim(headR, tip, dimY, 'L2 = ' + fmt(length2));
+        out += LINE(tip, shankTop, xQR, shankTop, INK, 1) + LINE(tip, shankBot, xQR, shankBot, INK, 1);
+        out += vDim(shankTop, shankBot, xQR, 'Ø2 = ' + fmt(d2));
     } else if (step === 3 && hasGrove) {
-        var yL3 = shankTop - 34, xQ3 = tip + 40;
-        out += LINE(headR, shankTop, headR, yL3, INK, 1) + LINE(xgroove1, grooveTop, xgroove1, yL3, INK, 1) + LINE(xgroove2, grooveTop, xgroove2, yL3, INK, 1);
-        out += hDim(headR, xgroove1, yL3, 'P1 = ' + fmt(p1));
-        out += hDim(xgroove1, xgroove2, yL3 - 18, 'E1 = ' + fmt(e1));
-        out += LINE(xgroove2, grooveTop, xQ3, grooveTop, INK, 1) + LINE(xgroove2, grooveBot, xQ3, grooveBot, INK, 1);
-        out += vDim(grooveTop, grooveBot, xQ3, 'Ø3 = ' + fmt(d3));
+        // P1 en la línea común, E1 apilada encima; Ø3 a la derecha del box
+        // xgroove1 sube hasta dimY2 para servir de apoyo a P1 (dimY) y a E1 (dimY2)
+        out += LINE(headR, shankTop, headR, dimY, INK, 1) + LINE(xgroove1, shankTop, xgroove1, dimY2, INK, 1) + LINE(xgroove2, shankTop, xgroove2, dimY2, INK, 1);
+        out += hDim(headR, xgroove1, dimY, 'P1 = ' + fmt(p1));
+        out += hDim(xgroove1, xgroove2, dimY2, 'E1 = ' + fmt(e1));
+        out += LINE(xgroove2, grooveTop, xQR, grooveTop, INK, 1) + LINE(xgroove2, grooveBot, xQR, grooveBot, INK, 1);
+        out += vDim(grooveTop, grooveBot, xQR, 'Ø3 = ' + fmt(d3));
     } else if (step === 4 && hasChamfer) {
-        // directriz desde la cara del chaflán hasta una etiqueta 'C{medida} x {ang}°'
-        var mx = (xc + tip) / 2, myF = (shankTop + tipTop) / 2, lx = tip + 44, ly = tipTop - 30;
-        out += LINE(mx, myF, lx - 20, ly, INK, 1) + LINE(lx - 20, ly, lx, ly, INK, 1);
-        out += POLY([[mx, myF], [mx + 7, myF - 2], [mx + 2, myF - 7]], INK);
-        out += TEXT(lx + 18, ly + 4, 'C' + fmt(chanflerHorizontalLength) + ' × ' + fmt(chanflerAngle) + '°', INK, false);
+        // directriz DIAGONAL arriba-derecha desde la cara del chaflán; texto ENCIMA del tramo
+        var mx = (xc + tip) / 2, myF = (shankTop + tipTop) / 2;
+        var label = 'C' + fmt(chanflerHorizontalLength) + ' × ' + fmt(chanflerAngle) + '°';
+        var dgn = 24, ex = mx + dgn, ey = myF - dgn;        // diagonal a 45°
+        var tail = Math.max(40, label.length * 6);          // tramo horizontal bajo el texto
+        out += LINE(mx, myF, ex, ey, INK, 1) + LINE(ex, ey, ex + tail, ey, INK, 1);
+        out += POLY([[mx, myF], [mx + 7, myF - 3], [mx + 3, myF - 7]], INK);   // flecha tocando la cara
+        out += TEXT(ex + tail / 2, ey - 5, label, INK, false);                 // texto encima del tramo
     }
 
     out = mk('svg', { viewBox: '0 0 ' + VBW + ' ' + VBH, preserveAspectRatio: 'xMidYMid meet' }, out);

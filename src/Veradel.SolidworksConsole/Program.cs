@@ -1,4 +1,5 @@
 ﻿using SolidWorks.Interop.sldworks;
+using System.Dynamic;
 using System.Runtime.InteropServices;
 using Veradel.SolidworksConsole.PartCreation;
 
@@ -10,13 +11,19 @@ namespace Veradel.SolidworksConsole
         {
 
             SldWorks swApp = GetSolidWorksApplication();
+            #region BoltCreation
 
-            BoltCreation create = new BoltCreation(swApp,30,5,20,30);
+            //BoltCreation create = new BoltCreation(swApp,30,5,20,30);
+            //
+            //create.SetGroove(22, 1, 18);
+            //create.SetChamfer(20, 1);
+            //create.CreateBolt();
+            #endregion
 
-            create.SetGroove(22, 1, 18);
-            create.CreateBolt();
+            ChompCreator chomp = new ChompCreator(swApp);
+            chomp.SetBody(400, 70);
 
-
+            chomp.Create();
         }
 
 

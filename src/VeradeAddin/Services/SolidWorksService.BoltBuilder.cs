@@ -7,10 +7,17 @@ using VeradeAddin.Models;
 namespace VeradeAddin.Services
 {
     /// <summary>
-    /// "Bulón personalizado": builds a stepped bolt (head Ø1 × L1 + shank Ø2 × L2) from scratch in
-    /// an empty part using a single 360° revolve. All geometry is created programmatically; no base
-    /// part is inserted. Kept in its own partial so the configurator code is isolated from the rest
-    /// of the SolidWorks service.
+    /// "Bulón personalizado": builds a stepped bolt (head Ø1 × L1 + shank Ø2 × L2) from scratch in an
+    /// empty part. Modelled the same way an engineer would in the feature tree (and mirroring the
+    /// reference console <c>BoltCreation.cs</c>): THREE separate features instead of one fat profile —
+    /// <list type="number">
+    /// <item>a 360° solid <b>revolve</b> of the head+shank half-section,</item>
+    /// <item>an optional 360° <b>cut-revolve</b> for the retaining-ring groove,</item>
+    /// <item>an optional real <b>chamfer</b> feature on the free-end edge.</item>
+    /// </list>
+    /// Kept in its own partial so the configurator code is isolated from the rest of the service. The
+    /// front plane is found language-independently (first <c>RefPlane</c>), so it works whatever the
+    /// SolidWorks UI language is; the chamfer edge is picked by coordinate at the tip.
     /// </summary>
     public sealed partial class SolidWorksService
     {
@@ -69,123 +76,38 @@ namespace VeradeAddin.Services
             const double mmToM = 0.001;
             double r1 = spec.HeadDiameterMm * mmToM / 2.0;
             double r2 = spec.ShankDiameterMm * mmToM / 2.0;
+            double r3 = spec.GrooveDiameterMm * mmToM / 2.0;
             double l1 = spec.HeadLengthMm * mmToM;
             double total = (spec.HeadLengthMm + spec.ShankLengthMm) * mmToM;
+            double xg1 = l1 + spec.GroovePositionMm * mmToM;     // groove near (head-side) edge
+            double xg2 = xg1 + spec.GrooveWidthMm * mmToM;       // groove far edge
 
-            var sketchMgr = model.SketchManager;
-            bool addToDbWas = sketchMgr.AddToDB;
-            bool displayWas = sketchMgr.DisplayWhenAdded;
-
+            // The modal "input dimension value" box and the over-defining "make driven?" prompt are
+            // APPLICATION-level options (ISldWorks, not the doc): with them on, every AddDimension2 would
+            // pop a modal and freeze the macro. Turn them off for the whole build and ALWAYS restore them
+            // (matching SolidWorks' normal defaults) in the finally, whatever happens.
+            bool drivenWas = _sw.GetUserPreferenceToggle((int)swUserPreferenceToggle_e.swAddDrivenDimensions);
             try
             {
-                model.ClearSelection2(true);
+                _sw.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swInputDimValOnCreate, false);
+                _sw.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swAddDrivenDimensions, true);
 
-                // Sketch on the front plane (first RefPlane in the tree, language-independent).
-                var frontPlane = FirstRefPlane(model);
-                if (frontPlane == null)
-                {
-                    result.Error = "No se encontró el plano frontal de la pieza.";
-                    return result;
-                }
-                frontPlane.Select2(false, 0);
-                sketchMgr.InsertSketch(true);
+                // 1) Base body: head + shank, single 360° solid revolve.
+                string err = RevolveBody(model, r1, r2, l1, total);
+                if (err != null) { result.Error = err; return result; }
 
-                // Draw in NORMAL mode (AddToDB = false) so SolidWorks automatically adds the
-                // coincident + horizontal/vertical relations as the contour is drawn. This both
-                // closes the profile (a half-open contour would revolve into just a cylinder) and
-                // does most of the constraining for free; we only add the four dimensions afterwards.
-                // (AddToDB = true skips the solver, leaves the contour open and returns segment
-                // objects that crash AddRelation with an AccessViolation — avoided here.)
-                sketchMgr.AddToDB = false;
-
-                // Optional shank features (groove / chamfer), pre-computed in metres.
-                double r3 = spec.GrooveDiameterMm * mmToM / 2.0;
-                double xg1 = l1 + spec.GroovePositionMm * mmToM;            // groove near (head-side) edge
-                double xg2 = xg1 + spec.GrooveWidthMm * mmToM;              // groove far edge
-                double aChf = spec.ChamferSizeMm * mmToM;                   // axial cathetus
-                double bChf = aChf * Math.Tan(spec.ChamferAngleDeg * Math.PI / 180.0); // radial drop
-                double xc = total - aChf;                                   // chamfer start (top edge)
-                double rTip = r2 - bChf;                                    // end-face top radius after chamfer
-
-                // Centreline along the X axis = axis of revolution. Closed half-section above the axis:
-                // head (r1) stepping down to shank (r2), then the shank top edge runs to the free end
-                // inserting the groove notch (down to r3) and/or the end chamfer. Capture the segments
-                // we drive with dimensions.
-                var segCl = sketchMgr.CreateCenterLine(0, 0, 0, total, 0, 0);   // axis
-                sketchMgr.CreateLine(0, 0, 0, 0, r1, 0);                        // left face
-                var segHeadTop = sketchMgr.CreateLine(0, r1, 0, l1, r1, 0);     // head top (L1, Ø1)
-                sketchMgr.CreateLine(l1, r1, 0, l1, r2, 0);                     // step down to shank
-
-                SketchSegment segShankFirst = null; // first r2 run after the step (Ø2; L2 or P1)
-                SketchSegment segGrooveBottom = null;
-                double xCursor = l1;
-
+                // 2) Groove: separate 360° cut-revolve (rectangular notch down to r3).
                 if (spec.HasGroove)
                 {
-                    segShankFirst = sketchMgr.CreateLine(l1, r2, 0, xg1, r2, 0);        // P1 run
-                    sketchMgr.CreateLine(xg1, r2, 0, xg1, r3, 0);                       // into groove
-                    segGrooveBottom = sketchMgr.CreateLine(xg1, r3, 0, xg2, r3, 0);     // groove bottom (E1, D3)
-                    sketchMgr.CreateLine(xg2, r3, 0, xg2, r2, 0);                       // out of groove
-                    xCursor = xg2;
+                    err = CutGroove(model, r2, r3, l1, total, xg1, xg2);
+                    if (err != null) { result.Error = err; return result; }
                 }
 
+                // 3) Chamfer: real chamfer feature on the free-end edge.
                 if (spec.HasChamfer)
                 {
-                    var seg = sketchMgr.CreateLine(xCursor, r2, 0, xc, r2, 0);          // shank up to chamfer
-                    if (segShankFirst == null) segShankFirst = seg;
-                    sketchMgr.CreateLine(xc, r2, 0, total, rTip, 0);                    // chamfer face
-                    sketchMgr.CreateLine(total, rTip, 0, total, 0, 0);                  // (short) right face
-                }
-                else
-                {
-                    var seg = sketchMgr.CreateLine(xCursor, r2, 0, total, r2, 0);       // shank to tip
-                    if (segShankFirst == null) segShankFirst = seg;
-                    sketchMgr.CreateLine(total, r2, 0, total, 0, 0);                    // right face
-                }
-
-                sketchMgr.CreateLine(total, 0, 0, 0, 0, 0);                             // bottom, on axis
-
-                // Driving dimensions (best-effort; never aborts the revolve).
-                AddBoltDimensions(model, spec, segHeadTop, segShankFirst, segGrooveBottom, segCl,
-                    r1, r2, r3, l1, total, xg1, xg2);
-
-                // Close the sketch, then select it so the revolve consumes it.
-                model.ClearSelection2(true);
-                sketchMgr.InsertSketch(true);
-
-                var sketchFeature = LastProfileFeature(model);
-                if (sketchFeature == null)
-                {
-                    result.Error = "No se pudo crear el croquis del bulón.";
-                    return result;
-                }
-                model.ClearSelection2(true);
-                sketchFeature.Select2(false, 0);
-
-                // 360° solid revolve, merged, single direction.
-                var revolve = model.FeatureManager.FeatureRevolve2(
-                    true,   // SingleDir
-                    true,   // IsSolid
-                    false,  // IsThin
-                    false,  // IsCut
-                    false,  // ReverseDir
-                    false,  // BothDirectionUpToSameEntity
-                    (int)swEndConditions_e.swEndCondBlind, // Dir1Type
-                    (int)swEndConditions_e.swEndCondBlind, // Dir2Type
-                    2.0 * Math.PI, // Dir1Angle (full revolution)
-                    0.0,           // Dir2Angle
-                    false, false,  // OffsetReverse1/2
-                    0.0, 0.0,      // OffsetDistance1/2
-                    0,             // ThinType (unused, IsThin=false)
-                    0.0, 0.0,      // ThinThickness1/2
-                    true,   // Merge
-                    true,   // UseFeatScope
-                    true);  // UseAutoSelect
-
-                if (revolve == null)
-                {
-                    result.Error = "SolidWorks no pudo crear la revolución.";
-                    return result;
+                    err = ApplyChamfer(model, spec, r2, total);
+                    if (err != null) { result.Error = err; return result; }
                 }
 
                 model.ClearSelection2(true);
@@ -204,18 +126,168 @@ namespace VeradeAddin.Services
             }
             finally
             {
-                // Make sure the sketch is never left open and DB flags are restored.
-                try
-                {
-                    sketchMgr.AddToDB = addToDbWas;
-                    sketchMgr.DisplayWhenAdded = displayWas;
-                    if (sketchMgr.ActiveSketch != null)
-                    {
-                        sketchMgr.InsertSketch(true);
-                    }
-                }
-                catch { }
+                _sw.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swInputDimValOnCreate, true);
+                _sw.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swAddDrivenDimensions, drivenWas);
+                model.ClearSelection2(true);
             }
+        }
+
+        // ---- 1) base body --------------------------------------------------------------------------
+
+        /// <summary>
+        /// Sketches the closed head+shank half-section on the front plane and revolves it 360° into a
+        /// solid. Returns null on success or a Spanish error string. Drawn in NORMAL mode
+        /// (<c>AddToDB = false</c>) so SolidWorks auto-adds the coincident/horizontal/vertical relations
+        /// and closes the contour; we only add the four driving dimensions afterwards.
+        /// </summary>
+        private string RevolveBody(IModelDoc2 model, double r1, double r2, double l1, double total)
+        {
+            var sketchMgr = model.SketchManager;
+            bool addToDbWas = sketchMgr.AddToDB, displayWas = sketchMgr.DisplayWhenAdded;
+            try
+            {
+                model.ClearSelection2(true);
+                var frontPlane = FirstRefPlane(model);
+                if (frontPlane == null) return "No se encontró el plano frontal de la pieza.";
+                frontPlane.Select2(false, 0);
+                sketchMgr.InsertSketch(true);
+                sketchMgr.AddToDB = false;
+
+                // Centreline on the X axis = axis of revolution. Closed half-section above it:
+                // left face → head top (Ø1/L1) → step down → shank top (Ø2/L2) → right face → bottom.
+                var segCl = sketchMgr.CreateCenterLine(0, 0, 0, total, 0, 0);
+                sketchMgr.CreateLine(0, 0, 0, 0, r1, 0);                       // left face
+                var segHeadTop = sketchMgr.CreateLine(0, r1, 0, l1, r1, 0);   // head top (L1, Ø1)
+                sketchMgr.CreateLine(l1, r1, 0, l1, r2, 0);                   // step down to shank
+                var segShankTop = sketchMgr.CreateLine(l1, r2, 0, total, r2, 0); // shank top (L2, Ø2)
+                sketchMgr.CreateLine(total, r2, 0, total, 0, 0);             // right (free-end) face
+                sketchMgr.CreateLine(total, 0, 0, 0, 0, 0);                  // bottom, on the axis
+
+                const double off = 0.012;
+                LengthDim(model, segHeadTop, l1 / 2.0, r1 + off);                        // L1
+                DiameterDim(model, segHeadTop, segCl, l1 / 2.0, -(r1 + off));            // Ø1
+                LengthDim(model, segShankTop, (l1 + total) / 2.0, r1 + 2.0 * off);       // L2
+                DiameterDim(model, segShankTop, segCl, (l1 + total) / 2.0, -(r2 + off)); // Ø2
+
+                model.ClearSelection2(true);
+                sketchMgr.InsertSketch(true);
+
+                var sketchFeature = LastProfileFeature(model);
+                if (sketchFeature == null) return "No se pudo crear el croquis del bulón.";
+                model.ClearSelection2(true);
+                sketchFeature.Select2(false, 0);
+
+                // 360° solid revolve, merged, single direction.
+                var revolve = model.FeatureManager.FeatureRevolve2(
+                    true, true, false, false, false, false,
+                    (int)swEndConditions_e.swEndCondBlind, (int)swEndConditions_e.swEndCondBlind,
+                    2.0 * Math.PI, 0.0, false, false, 0.0, 0.0,
+                    (int)swThinWallType_e.swThinWallOneDirection, 0.0, 0.0,
+                    true, false, false);
+                if (revolve == null) return "SolidWorks no pudo crear la revolución.";
+                return null;
+            }
+            finally
+            {
+                RestoreSketch(sketchMgr, addToDbWas, displayWas);
+            }
+        }
+
+        // ---- 2) groove (cut-revolve) ---------------------------------------------------------------
+
+        /// <summary>
+        /// Sketches the rectangular groove notch (shank radius r2 down to bottom radius r3, from xg1 to
+        /// xg2) on the front plane and removes it with a 360° cut-revolve. Returns null on success.
+        /// </summary>
+        private string CutGroove(IModelDoc2 model, double r2, double r3, double l1, double total, double xg1, double xg2)
+        {
+            var sketchMgr = model.SketchManager;
+            bool addToDbWas = sketchMgr.AddToDB, displayWas = sketchMgr.DisplayWhenAdded;
+            try
+            {
+                model.ClearSelection2(true);
+                var frontPlane = FirstRefPlane(model);
+                if (frontPlane == null) return "No se encontró el plano frontal para la ranura.";
+                frontPlane.Select2(false, 0);
+                sketchMgr.InsertSketch(true);
+                sketchMgr.AddToDB = false;
+
+                // Construction axis (for the diameter dimension) + the closed rectangle of the notch.
+                var segCl = sketchMgr.CreateCenterLine(0, 0, 0, total, 0, 0);
+                var segNearWall = sketchMgr.CreateLine(xg1, r2, 0, xg1, r3, 0);  // into groove (near wall)
+                var segBottom = sketchMgr.CreateLine(xg1, r3, 0, xg2, r3, 0);    // groove bottom (E1, D3)
+                sketchMgr.CreateLine(xg2, r3, 0, xg2, r2, 0);                    // out of groove (far wall)
+                var segTop = sketchMgr.CreateLine(xg2, r2, 0, xg1, r2, 0);       // top, on the shank surface
+
+                const double off = 0.012;
+                // P1: from the head/shank step edge (selected on the body) to the groove's near wall.
+                EdgeToSegDim(model, l1, r2, segNearWall, (l1 + xg1) / 2.0, r2 + 2.0 * off); // P1 (position)
+                LengthDim(model, segTop, (xg1 + xg2) / 2.0, r2 + 3.0 * off);               // E1 (width)
+                DiameterDim(model, segBottom, segCl, (xg1 + xg2) / 2.0, -(r3 + off));   // D3 (bottom Ø)
+
+                model.ClearSelection2(true);
+                sketchMgr.InsertSketch(true);
+
+                var sketchFeature = LastProfileFeature(model);
+                if (sketchFeature == null) return "No se pudo crear el croquis de la ranura.";
+                model.ClearSelection2(true);
+                sketchFeature.Select2(false, 0);
+
+                // 360° cut-revolve (IsCut = true), merged.
+                var cut = model.FeatureManager.FeatureRevolve2(
+                    true, true, false, true, false, true,
+                    (int)swEndConditions_e.swEndCondBlind, (int)swEndConditions_e.swEndCondBlind,
+                    2.0 * Math.PI, 0.0, false, false, 0.0, 0.0,
+                    (int)swThinWallType_e.swThinWallOneDirection, 0.0, 0.0,
+                    true, false, true);
+                if (cut == null) return "SolidWorks no pudo crear el corte de la ranura.";
+                return null;
+            }
+            finally
+            {
+                RestoreSketch(sketchMgr, addToDbWas, displayWas);
+            }
+        }
+
+        // ---- 3) chamfer ----------------------------------------------------------------------------
+
+        /// <summary>
+        /// Adds a real angle-distance chamfer feature on the free-end circular edge (picked by
+        /// coordinate at the tip). The angle is passed straight through as entered, like the reference
+        /// console. Returns null on success.
+        /// </summary>
+        private string ApplyChamfer(IModelDoc2 model, BoltSpec spec, double r2, double total)
+        {
+            model.ClearSelection2(true);
+            // The tip edge is the circle at x = total; (total, r2, 0) is a point on it.
+            bool ok = model.Extension.SelectByID2(
+                "", "EDGE", total, r2, 0, false, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
+            if (!ok) return "No se pudo seleccionar la arista del extremo para el chaflán.";
+
+            var chamfer = model.FeatureManager.InsertFeatureChamfer(
+                4, (int)swChamferType_e.swChamferAngleDistance,
+                spec.ChamferSizeMm * 0.001, spec.ChamferAngleDeg * Math.PI / 180.0,
+                0, 0, 0, 0);
+            if (chamfer == null) return "SolidWorks no pudo crear el chaflán.";
+            model.ClearSelection2(true);
+            return null;
+        }
+
+        // ---- shared helpers ------------------------------------------------------------------------
+
+        private static void RestoreSketch(SketchManager sketchMgr, bool addToDbWas, bool displayWas)
+        {
+            // Never leave a sketch open and always restore the DB flags, even on error.
+            try
+            {
+                sketchMgr.AddToDB = addToDbWas;
+                sketchMgr.DisplayWhenAdded = displayWas;
+                if (sketchMgr.ActiveSketch != null)
+                {
+                    sketchMgr.InsertSketch(true);
+                }
+            }
+            catch { }
         }
 
         private static Feature FirstRefPlane(IModelDoc2 model)
@@ -247,59 +319,8 @@ namespace VeradeAddin.Services
             return found;
         }
 
-        /// <summary>
-        /// Adds the driving dimensions to the (already auto-related) bolt profile. Always: L1/Ø1 on the
-        /// head top edge and Ø2 on the first shank run. L2 is only driven when the shank is a single
-        /// run (no groove/chamfer split it). When a groove is present its P1 (position), E1 (width) and
-        /// D3 (bottom Ø) are added too. Each edge dimensioned across the axis becomes a diameter
-        /// dimension. No relations are added here (normal-mode drawing supplied coincident +
-        /// horizontal/vertical). The "enter value" popup and the over-defining "make driven?" prompt
-        /// are suppressed so AddDimension2 can never block the macro; every dimension is best-effort
-        /// and never aborts the revolve.
-        /// </summary>
-        private void AddBoltDimensions(
-            IModelDoc2 model, BoltSpec spec, SketchSegment segHeadTop, SketchSegment segShankFirst,
-            SketchSegment segGrooveBottom, SketchSegment axis,
-            double r1, double r2, double r3, double l1, double total, double xg1, double xg2)
-        {
-            // "Input dimension value" (the modal Modify box on dimension create) and the over-defining
-            // "make driven?" prompt are APPLICATION-level options, so they MUST be toggled on ISldWorks
-            // (_sw). Toggling them on IModelDoc2 silently does nothing — that is why the Modify box kept
-            // popping up and freezing the macro. Disable the value popup while we add the dimensions and
-            // ALWAYS re-enable it in the finally (even on error) so the user is never left with it stuck
-            // off: re-enabling matches SolidWorks' normal default.
-            bool drivenWas = _sw.GetUserPreferenceToggle((int)swUserPreferenceToggle_e.swAddDrivenDimensions);
-            try
-            {
-                _sw.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swInputDimValOnCreate, false);
-                _sw.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swAddDrivenDimensions, true);
-
-                const double off = 0.012;
-                LengthDim(model, segHeadTop, l1 / 2.0, r1 + off);                       // L1 (head length)
-                DiameterDim(model, segHeadTop, axis, l1 / 2.0, -(r1 + off));            // Ø1 (head)
-                DiameterDim(model, segShankFirst, axis, (l1 + total) / 2.0, -(r2 + off)); // Ø2 (shank)
-
-                if (!spec.HasGroove)
-                {
-                    // segShankFirst spans the whole shank only when no groove splits it.
-                    LengthDim(model, segShankFirst, (l1 + total) / 2.0, r1 + 2.0 * off); // L2 (shank length)
-                }
-                else
-                {
-                    LengthDim(model, segShankFirst, (l1 + xg1) / 2.0, r1 + 2.0 * off);   // P1 (head -> groove)
-                    LengthDim(model, segGrooveBottom, (xg1 + xg2) / 2.0, r1 + 3.0 * off); // E1 (groove width)
-                    DiameterDim(model, segGrooveBottom, axis, (xg1 + xg2) / 2.0, -(r3 + off)); // D3 (groove Ø)
-                }
-            }
-            finally
-            {
-                // ALWAYS re-enable the value popup (and restore the driven-dim toggle), pase lo que pase.
-                _sw.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swInputDimValOnCreate, true);
-                _sw.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swAddDrivenDimensions, drivenWas);
-                model.ClearSelection2(true);
-            }
-        }
-
+        // Each *Dim is best-effort: a failed dimension never aborts the feature. Selection is always
+        // cleared afterwards so the next dimension starts clean.
         private static void LengthDim(IModelDoc2 model, SketchSegment seg, double x, double y)
         {
             if (seg == null) return;
@@ -320,7 +341,24 @@ namespace VeradeAddin.Services
             {
                 model.ClearSelection2(true);
                 line.Select4(false, null);
-                axis.Select4(true, null);
+                axis.Select4(true, null);   // line + centreline ⇒ AddDimension2 makes it a diameter dim
+                model.AddDimension2(x, y, 0);
+            }
+            catch { }
+            finally { model.ClearSelection2(true); }
+        }
+
+        // Horizontal distance from a body edge (selected by coordinate) to a sketch segment — used for
+        // the groove position P1, measured from the head/shank step edge.
+        private void EdgeToSegDim(IModelDoc2 model, double edgeX, double edgeY, SketchSegment seg, double x, double y)
+        {
+            if (seg == null) return;
+            try
+            {
+                model.ClearSelection2(true);
+                model.Extension.SelectByID2(
+                    "", "EDGE", edgeX, edgeY, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
+                seg.Select4(true, null);
                 model.AddDimension2(x, y, 0);
             }
             catch { }

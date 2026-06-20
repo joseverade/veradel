@@ -38,7 +38,7 @@ namespace VeradeAddin.UI
             ShowIcon = false;
             ShowInTaskbar = false;
             TopMost = true;
-            ClientSize = new Size(780, 480);
+            ClientSize = new Size(1000, 620);
             BackColor = Color.FromArgb(0xDA, 0xDD, 0xD8);
 
             _web = new WebView2 { Dock = DockStyle.Fill };
