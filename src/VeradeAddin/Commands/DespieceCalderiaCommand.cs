@@ -32,6 +32,7 @@ namespace VeradeAddin.Commands
         public string Name { get { return "Despiece de calderería"; } }
         public string Tooltip { get { return "Genera el despiece de la pieza del dibujo en hojas nuevas (experimental, destructivo)"; } }
         public string Hint { get { return "Crea grupos de 3 vistas por elemento de la lista de corte, vista explosionada con globos y tabla, en hojas A0"; } }
+        public CommandIcon Icon { get { return CommandIcon.Breakdown; } }
 
         public IReadOnlyList<DocumentKind> DocumentTypes
         {

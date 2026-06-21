@@ -78,7 +78,12 @@ namespace VeradeAddin.Infrastructure
                 return;
             }
 
-            group.IconList = IconStripFactory.CreateCommandIconStrips("Veradel", _registry.Count);
+            var icons = new CommandIcon[_registry.Count];
+            for (int g = 0; g < _registry.Count; g++)
+            {
+                icons[g] = _registry[g].Icon;
+            }
+            group.IconList = IconStripFactory.CreateCommandIconStrips("Veradel", icons);
             group.MainIconList = IconStripFactory.CreateGroupIcons("Veradel");
 
             var itemIndices = new int[_registry.Count];

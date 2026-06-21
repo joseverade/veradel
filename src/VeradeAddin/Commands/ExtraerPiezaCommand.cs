@@ -29,6 +29,7 @@ namespace VeradeAddin.Commands
         public string Name { get { return "Extraer pieza"; } }
         public string Tooltip { get { return "Libera y mueve el componente seleccionado fuera del ensamblaje"; } }
         public string Hint { get { return "Quita el fijo y suprime las relaciones del componente seleccionado, lo traslada fuera del ensamblaje y ajusta el zoom"; } }
+        public CommandIcon Icon { get { return CommandIcon.Extract; } }
 
         public IReadOnlyList<DocumentKind> DocumentTypes
         {

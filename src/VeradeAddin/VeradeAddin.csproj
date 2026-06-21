@@ -107,6 +107,7 @@
     <Compile Include="Models\BoilermakingPlan.cs" />
     <Compile Include="Models\BoilermakingResult.cs" />
     <Compile Include="Models\BoltSpec.cs" />
+    <Compile Include="Models\CommandIcon.cs" />
     <Compile Include="Models\BoltBuildResult.cs" />
     <Compile Include="Models\PartConfiguratorSelection.cs" />
     <Compile Include="Models\DocumentKind.cs" />

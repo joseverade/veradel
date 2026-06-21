@@ -17,6 +17,7 @@ namespace VeradeAddin.Models
         Export,
         ColorEdges,
         ClearColors,
-        Breakdown
+        Breakdown,
+        Configure
     }
 }

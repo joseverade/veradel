@@ -256,5 +256,11 @@ namespace Veradel.SolidworksConsole.PartCreation
             X = x / 1000.0;
             Y = y / 1000.0;
         }
+
+        public override string ToString()
+        {
+            return $"({X.ToString()}, {Y.ToString()})";
+        }
+
     }
 }

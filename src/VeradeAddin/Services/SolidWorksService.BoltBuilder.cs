@@ -155,13 +155,14 @@ namespace VeradeAddin.Services
 
                 // Centreline on the X axis = axis of revolution. Closed half-section above it:
                 // left face → head top (Ø1/L1) → step down → shank top (Ø2/L2) → right face → bottom.
+                // Every line is given an explicit horizontal/vertical position relation (see AddLine).
                 var segCl = sketchMgr.CreateCenterLine(0, 0, 0, total, 0, 0);
-                sketchMgr.CreateLine(0, 0, 0, 0, r1, 0);                       // left face
-                var segHeadTop = sketchMgr.CreateLine(0, r1, 0, l1, r1, 0);   // head top (L1, Ø1)
-                sketchMgr.CreateLine(l1, r1, 0, l1, r2, 0);                   // step down to shank
-                var segShankTop = sketchMgr.CreateLine(l1, r2, 0, total, r2, 0); // shank top (L2, Ø2)
-                sketchMgr.CreateLine(total, r2, 0, total, 0, 0);             // right (free-end) face
-                sketchMgr.CreateLine(total, 0, 0, 0, 0, 0);                  // bottom, on the axis
+                AddLine(sketchMgr, model, 0, 0, 0, r1);                       // left face (vertical)
+                var segHeadTop = AddLine(sketchMgr, model, 0, r1, l1, r1);    // head top (L1, Ø1) (horizontal)
+                AddLine(sketchMgr, model, l1, r1, l1, r2);                    // step down to shank (vertical)
+                var segShankTop = AddLine(sketchMgr, model, l1, r2, total, r2); // shank top (L2, Ø2) (horizontal)
+                AddLine(sketchMgr, model, total, r2, total, 0);              // right (free-end) face (vertical)
+                AddLine(sketchMgr, model, total, 0, 0, 0);                   // bottom, on the axis (horizontal)
 
                 const double off = 0.012;
                 LengthDim(model, segHeadTop, l1 / 2.0, r1 + off);                        // L1
@@ -213,11 +214,12 @@ namespace VeradeAddin.Services
                 sketchMgr.AddToDB = false;
 
                 // Construction axis (for the diameter dimension) + the closed rectangle of the notch.
+                // Each wall/floor gets an explicit horizontal/vertical position relation (see AddLine).
                 var segCl = sketchMgr.CreateCenterLine(0, 0, 0, total, 0, 0);
-                var segNearWall = sketchMgr.CreateLine(xg1, r2, 0, xg1, r3, 0);  // into groove (near wall)
-                var segBottom = sketchMgr.CreateLine(xg1, r3, 0, xg2, r3, 0);    // groove bottom (E1, D3)
-                sketchMgr.CreateLine(xg2, r3, 0, xg2, r2, 0);                    // out of groove (far wall)
-                var segTop = sketchMgr.CreateLine(xg2, r2, 0, xg1, r2, 0);       // top, on the shank surface
+                var segNearWall = AddLine(sketchMgr, model, xg1, r2, xg1, r3);  // into groove (near wall, vertical)
+                var segBottom = AddLine(sketchMgr, model, xg1, r3, xg2, r3);    // groove bottom (E1, D3) (horizontal)
+                AddLine(sketchMgr, model, xg2, r3, xg2, r2);                    // out of groove (far wall, vertical)
+                var segTop = AddLine(sketchMgr, model, xg2, r2, xg1, r2);       // top, on the shank surface (horizontal)
 
                 const double off = 0.012;
                 // P1: from the head/shank step edge (selected on the body) to the groove's near wall.
@@ -274,6 +276,42 @@ namespace VeradeAddin.Services
         }
 
         // ---- shared helpers ------------------------------------------------------------------------
+
+        // Creates a sketch line AND tags it with an explicit horizontal/vertical position relation
+        // when it is axis-aligned. Returns the segment so callers can dimension it.
+        private static SketchSegment AddLine(SketchManager sketchMgr, IModelDoc2 model,
+            double x1, double y1, double x2, double y2)
+        {
+            var seg = sketchMgr.CreateLine(x1, y1, 0, x2, y2, 0);
+            AddHvRelation(model, seg, x1, y1, x2, y2);
+            return seg;
+        }
+
+        // Position relation by geometry: Δx≈0 ⇒ VERTICAL, Δy≈0 ⇒ HORIZONTAL, otherwise none (a real
+        // diagonal needs no H/V relation). Added with the SAME mechanism as the reference console:
+        // select the segment, then SketchAddConstraints with the sketch-relation id. (The array overload
+        // ISketchRelationManager.AddRelation throws an AccessViolation that .NET cannot catch.) Redundant
+        // with the normal-mode auto-inference, which is harmless — the console does the same on its first
+        // line. Best-effort: a failed relation never aborts the build.
+        private static void AddHvRelation(IModelDoc2 model, SketchSegment seg,
+            double x1, double y1, double x2, double y2)
+        {
+            if (model == null || seg == null) return;
+            const double tol = 1e-7; // metres; axis-aligned literals here are exact
+            double dx = Math.Abs(x2 - x1), dy = Math.Abs(y2 - y1);
+            string id;
+            if (dx <= tol && dy > tol) id = "sgVERTICAL2D";
+            else if (dy <= tol && dx > tol) id = "sgHORIZONTAL2D";
+            else return;
+            try
+            {
+                model.ClearSelection2(true);
+                seg.Select4(false, null);
+                model.SketchAddConstraints(id);
+            }
+            catch { }
+            finally { model.ClearSelection2(true); }
+        }
 
         private static void RestoreSketch(SketchManager sketchMgr, bool addToDbWas, bool displayWas)
         {

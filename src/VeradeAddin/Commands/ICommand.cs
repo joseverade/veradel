@@ -20,6 +20,9 @@ namespace VeradeAddin.Commands
         /// <summary>Status-bar hint text.</summary>
         string Hint { get; }
 
+        /// <summary>Which glyph the ribbon button draws (rendered at runtime by <c>IconStripFactory</c>).</summary>
+        CommandIcon Icon { get; }
+
         /// <summary>
         /// Document types the command appears in. The add-in shows one ribbon tab per document
         /// type ("Veradel Pieza/Assembly/Dibujo"); the command gets a button in each matching tab.

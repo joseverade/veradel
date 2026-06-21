@@ -13,7 +13,7 @@ namespace Veradel.SolidworksConsole
             SldWorks swApp = GetSolidWorksApplication();
             #region BoltCreation
 
-            //BoltCreation create = new BoltCreation(swApp,30,5,20,30);
+            // BoltCreation create = new BoltCreation(swApp,30,5,20,30);
             //
             //create.SetGroove(22, 1, 18);
             //create.SetChamfer(20, 1);
@@ -21,8 +21,12 @@ namespace Veradel.SolidworksConsole
             #endregion
 
             ChompCreator chomp = new ChompCreator(swApp);
-            chomp.SetBody(400, 70);
+            chomp.SetBody(440, 70);
 
+            Step[] steps = { new Step(34, 5.5), new Step(29, 8.5), new Step(32, 47.8), new Step(33, 1.7) };
+
+            chomp.SetRollerHousing(steps, 0, 8 ,40);
+            chomp.SetBodyCut(18.5, 88.5);
             chomp.Create();
         }
 
