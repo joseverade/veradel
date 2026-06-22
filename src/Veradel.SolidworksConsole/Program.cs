@@ -25,8 +25,10 @@ namespace Veradel.SolidworksConsole
 
             Step[] steps = { new Step(34, 5.5), new Step(29, 8.5), new Step(32, 47.8), new Step(33, 1.7) };
 
-            chomp.SetRollerHousing(steps, 0, 8 ,40);
+            chomp.SetRollerHousing(steps, 0, 8, 40);
             chomp.SetBodyCut(18.5, 88.5);
+            chomp.SetSecondBodyCut(5, 410);
+            chomp.SetChamferBodyCut(9.9, 10.13, 9.84, 5.85);
             chomp.Create();
         }
 
