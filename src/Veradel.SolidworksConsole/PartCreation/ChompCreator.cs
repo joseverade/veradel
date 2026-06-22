@@ -459,29 +459,43 @@ namespace Veradel.SolidworksConsole.PartCreation
 
 
             _model.InsertSketch2(true);
+
+
+
             SketchManager sMan = _model.SketchManager;
+            sMan.AddToDB = true;
+            sMan.DisplayWhenAdded = false;
             SketchSegment auxLine1 = sMan.CreateLine(auxStartPoint.X, auxStartPoint.Y, 0, auxEndPoint.X, auxEndPoint.Y, 0);
+            auxLine1.Select4(false, null);
             auxLine1.ConstructionGeometry = true;
+            _model.SketchAddConstraints("sgVERTICAL2D");
+
 
             // selection of the external edge of the housing
-
             _model.ClearSelection2(true);
-
             bool status2 = _ext.SelectByID2("", "EDGE", auxStartPoint.X + (_steps[0].Diameter) / 2000.0,
                 _positionY, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
-
             SketchPoint sketchStartPoint = ((SketchLine)auxLine1).GetStartPoint2();
             sketchStartPoint.Select4(true, null);
-
             _model.SketchAddConstraints("sgCONCENTRIC");
-
             _model.ClearSelection2(true);
+
 
             //2nd aux line
             Point auxStartPoint2 = new Point(-posx + _distanceBetweenRollers, _positionY);
-            Point auxEndPoint2 = new Point(-posx + _distanceBetweenRollers, -_dFromRevolveToBottom);   // Bottom
+            Point auxEndPoint2 = new Point(-posx + _distanceBetweenRollers, _positionY - _dFromRevolveToBottom);   // Bottom
 
-            SketchSegment auxLine2 = sMan.CreateLine(auxStartPoint2.X, auxEndPoint2.Y, 0, auxEndPoint2.X, auxEndPoint2.Y, 0);
+            SketchSegment auxLine2 = sMan.CreateLine(auxStartPoint2.X, auxStartPoint2.Y, 0, auxEndPoint2.X, auxEndPoint2.Y, 0);
+            auxLine2.ConstructionGeometry = true;
+            auxLine2.Select4(false, null);
+            _model.SketchAddConstraints("sgVERTICAL2D");
+            _model.ClearSelection2(true);
+
+            bool status3 = ((SketchPoint)((SketchLine)auxLine2).GetStartPoint2()).Select4(true, null);
+            _ext.SelectByID2("", "EDGE", (-posx + _distanceBetweenRollers + _steps[0].Diameter / 2) / 1000, -_positionY, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
+            _model.SketchAddConstraints("sgCONCENTRIC");
+
+
 
 
             // Were we verify if the sum for making the cut is equal to the sum is equal to 40
@@ -509,8 +523,35 @@ namespace Veradel.SolidworksConsole.PartCreation
                 sMan.CreateLine(points[i].X, points[i].Y, 0, points[i + 1].X, points[i + 1].Y, 0);
             }
 
+            // close the loop
+
+            sMan.CreateLine(firstPoint.X, firstPoint.Y, 0, fourthPoint.X, fourthPoint.Y, 0);
+
+
+            // we connect auxline1 with the firstline and the auxline2
+            SketchSegment aux3 = sMan.CreateLine(firstPoint.X, firstPoint.Y, 0, auxEndPoint.X, auxEndPoint.Y, 0);
+            aux3.ConstructionGeometry = true;
+            aux3.Select4(false, null);
+            ((SketchPoint)((SketchLine)aux3).GetStartPoint2()).Select4(true, null);
+            _ext.SelectByID2("","EDGE", 0, auxEndPoint2.Y, 0, true, 0, null, 0);    // 0 faster to werite
+            _model.SketchAddConstraints("sgCONCENTRIC");
+            _model.ClearSelection2(false);
+            aux3.Select4(false, null);
+            _model.SketchAddConstraints("sgHORIZONTAL2D");
+            
+
+            SketchSegment aux4 = sMan.CreateLine(fourthPoint.X, fourthPoint.Y, 0, auxEndPoint2.X, auxEndPoint2.Y, 0);
+            aux4.ConstructionGeometry = true;
+
+
+
+
+
+
             // UnionLine
 
+            sMan.AddToDB = true;
+            sMan.DisplayWhenAdded = true;
 
 
             _model.InsertSketch2(true);
