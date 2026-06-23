@@ -26,8 +26,8 @@ namespace VeradeAddin.Commands
             _log = log;
         }
 
-        public string Name { get { return "Colorear aristas"; } }
-        public string Tooltip { get { return "Lleva el color de las caras de la pieza a las aristas del dibujo (experimental, puede tardar)"; } }
+        public string Name { get { return "Colorear aristas (experimental)"; } }
+        public string Tooltip { get { return "Colorear aristas (experimental)"; } }
         public string Hint { get { return "Detecta las apariencias de color de la pieza y colorea las aristas correspondientes en las vistas del dibujo"; } }
         public CommandIcon Icon { get { return CommandIcon.ColorEdges; } }
 

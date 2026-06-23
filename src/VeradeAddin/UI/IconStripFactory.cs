@@ -13,19 +13,27 @@ namespace VeradeAddin.UI
     /// containing every command's icon side by side; the group flyout icon is a single image per size.
     ///
     /// Each <see cref="CommandIcon"/> draws its OWN professional vector glyph (folder, cosmetic-thread
-    /// roller tip, camera, gear, exploded view, ...) on a flat opaque brand background, fully redrawn
-    /// per size so it stays crisp from 20&#215;20 to 128&#215;128. Backgrounds are kept opaque (no alpha):
-    /// alpha + custom strips destabilise <c>ICommandGroup.Activate()</c> on SW 2026, so the glyph is
-    /// anti-aliased against the solid background instead of a transparent one.
+    /// roller tip, camera, gear, exploded view, ...), fully redrawn per size so it stays crisp from
+    /// 20&#215;20 to 128&#215;128.
+    ///
+    /// Command icons are drawn on a TRANSPARENT cell (32bpp PNG with alpha) so the glyph floats over
+    /// the ribbon and its hover/selection highlight instead of showing a solid box. The add-in brand
+    /// icon (group flyout) keeps an opaque GREEN background as the add-in identity mark.
+    ///
+    /// NOTE: a previous iteration avoided alpha because it was suspected of destabilising
+    /// <c>ICommandGroup.Activate()</c> on SW 2026. If the ribbon group fails to appear after this
+    /// change, that is the regression to look at first (revert command cells to an opaque fill).
     /// </summary>
     public static class IconStripFactory
     {
         private static readonly int[] Sizes = { 20, 32, 40, 64, 96, 128 };
 
-        // Brand palette (all opaque).
-        private static readonly Color Background = Color.FromArgb(0x2D, 0x6C, 0xDF); // brand blue
-        private static readonly Color Ink = Color.White;                            // primary glyph
-        private static readonly Color Steel = Color.FromArgb(0xBF, 0xD3, 0xFF);      // light accent
+        // Palette. Command cells are transparent; Background is reused only as a light "cut" detail
+        // colour drawn ON glyphs (e.g. document fold lines), so it stays white.
+        private static readonly Color Background = Color.White;                     // detail/cut colour on glyphs
+        private static readonly Color BrandBackground = Color.FromArgb(0x2E, 0xA0, 0x4E); // add-in brand icon (green)
+        private static readonly Color Ink = Color.Black;                            // primary glyph (on white)
+        private static readonly Color Steel = Color.FromArgb(0x66, 0x70, 0x80);      // slate accent (visible on white)
         private static readonly Color Amber = Color.FromArgb(0xFF, 0xCB, 0x5E);      // folder
         private static readonly Color AmberLite = Color.FromArgb(0xFF, 0xDD, 0x94);
         private static readonly Color AmberDark = Color.FromArgb(0xC8, 0x90, 0x2F);
@@ -58,10 +66,10 @@ namespace VeradeAddin.UI
             for (int s = 0; s < Sizes.Length; s++)
             {
                 int size = Sizes[s];
-                using (var bmp = new Bitmap(size * icons.Length, size, PixelFormat.Format24bppRgb))
+                using (var bmp = new Bitmap(size * icons.Length, size, PixelFormat.Format32bppArgb))
                 using (var g = Graphics.FromImage(bmp))
                 {
-                    g.Clear(Background);
+                    g.Clear(Color.Transparent);
                     for (int c = 0; c < icons.Length; c++)
                     {
                         DrawGlyph(g, new Rectangle(c * size, 0, size, size), icons[c]);
@@ -83,7 +91,7 @@ namespace VeradeAddin.UI
                 using (var bmp = new Bitmap(size, size, PixelFormat.Format24bppRgb))
                 using (var g = Graphics.FromImage(bmp))
                 {
-                    g.Clear(Background);
+                    g.Clear(BrandBackground);
                     DrawGlyph(g, new Rectangle(0, 0, size, size), CommandIcon.Default);
                     paths[s] = Save(bmp, "grp_" + safe + "_" + size);
                 }
@@ -98,9 +106,14 @@ namespace VeradeAddin.UI
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
 
-            using (var bg = new SolidBrush(Background))
+            // Only the brand mark (Default) gets a filled (green) background; command glyphs are left
+            // on the transparent cell so they blend into the ribbon.
+            if (icon == CommandIcon.Default)
             {
-                g.FillRectangle(bg, cell);
+                using (var bg = new SolidBrush(BrandBackground))
+                {
+                    g.FillRectangle(bg, cell);
+                }
             }
 
             // Inner drawing rectangle (square) with a margin so glyphs never touch the edge.

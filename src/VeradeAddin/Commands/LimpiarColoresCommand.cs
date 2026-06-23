@@ -24,8 +24,8 @@ namespace VeradeAddin.Commands
             _log = log;
         }
 
-        public string Name { get { return "Limpiar colores"; } }
-        public string Tooltip { get { return "Devuelve a negro el color de todas las aristas de las vistas"; } }
+        public string Name { get { return "Líneas a negro"; } }
+        public string Tooltip { get { return "Líneas a negro"; } }
         public string Hint { get { return "Restaura el color por defecto (negro) de las aristas de todas las vistas del dibujo activo"; } }
         public CommandIcon Icon { get { return CommandIcon.ClearColors; } }
 

@@ -27,8 +27,8 @@ namespace VeradeAddin.Commands
             _log = log;
         }
 
-        public string Name { get { return "Abrir carpeta"; } }
-        public string Tooltip { get { return "Abre la carpeta que contiene el documento activo"; } }
+        public string Name { get { return "Abrir explorador"; } }
+        public string Tooltip { get { return "Abrir explorador"; } }
         public string Hint { get { return "Abre la carpeta de la pieza, plano, ensamblaje o componente seleccionado"; } }
         public CommandIcon Icon { get { return CommandIcon.Folder; } }
 

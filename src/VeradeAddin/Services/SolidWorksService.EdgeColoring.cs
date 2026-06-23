@@ -27,6 +27,49 @@ namespace VeradeAddin.Services
         private const double PerpendicularTolerance = 0.002;
         private const double OnFaceTolerance = 1e-6;
 
+        // ---- coloured-edge tracking (in-memory flag, for a fast + EXACT reset) ----
+        // Every edge we colour is recorded straight from the selection list, keyed by the drawing it
+        // belongs to, so "Líneas a negro" resets EXACTLY those edges in THAT drawing — hidden/obscured
+        // ones included, blocks and untouched geometry never. Keyed by drawing so several open drawings
+        // don't cross-contaminate. Presence of an entry == "this drawing is currently coloured" (the flag).
+        // Held alive as COM objects for the session; released when the reset consumes them. NOT persisted:
+        // after the drawing is reopened the reset falls back to re-deriving the geometry instead.
+        private sealed class ColoredEdgeRecord
+        {
+            public string ViewName;   // drawing view to re-select in (null = silhouettes / no view context)
+            public object Edge;        // the coloured drawing entity (kept alive until the reset)
+        }
+
+        private readonly Dictionary<string, List<ColoredEdgeRecord>> _coloredByDrawing =
+            new Dictionary<string, List<ColoredEdgeRecord>>(StringComparer.OrdinalIgnoreCase);
+
+        // The drawing currently being coloured, so RecordColoredSelection appends to the right bucket.
+        private string _activeDrawingKey;
+
+        // Distinct views actually processed by a colouring run (the same view is revisited once per colour
+        // mapping; counting raw iterations is what inflated "Vistas procesadas" to e.g. 17 for 7 views).
+        private readonly HashSet<string> _processedViews = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Stable per-session key for a drawing: its path, or its title when unsaved.
+        private static string DrawingKey(IModelDoc2 model)
+        {
+            string p = model.GetPathName();
+            return string.IsNullOrEmpty(p) ? "(unsaved):" + model.GetTitle() : p;
+        }
+
+        private void RecordColoredSelection(ISelectionMgr selMgr, string viewName)
+        {
+            List<ColoredEdgeRecord> list;
+            if (_activeDrawingKey == null || !_coloredByDrawing.TryGetValue(_activeDrawingKey, out list)) return;
+
+            int n = selMgr.GetSelectedObjectCount2(-1);
+            for (int i = 1; i <= n; i++)
+            {
+                var ent = selMgr.GetSelectedObject6(i, -1);
+                if (ent != null) list.Add(new ColoredEdgeRecord { ViewName = viewName, Edge = ent });
+            }
+        }
+
         // ===================== public API =====================
 
         public EdgeColoringPlan InspectDrawingForEdgeColoring()
@@ -125,6 +168,16 @@ namespace VeradeAddin.Services
             }
 
             var selData = selMgr.CreateSelectData();
+            _processedViews.Clear();
+
+            // Track what we colour under this drawing's key. Don't clear an existing bucket: a second
+            // colouring (e.g. add another colour) should ACCUMULATE so the reset still blacks everything.
+            _activeDrawingKey = DrawingKey(model);
+            if (!_coloredByDrawing.ContainsKey(_activeDrawingKey))
+            {
+                _coloredByDrawing[_activeDrawingKey] = new List<ColoredEdgeRecord>();
+            }
+
             try
             {
                 foreach (var map in request.Mappings)
@@ -138,6 +191,7 @@ namespace VeradeAddin.Services
                         result.Errors.Add("Color (" + map.SourceR + "," + map.SourceG + "," + map.SourceB + "): " + ex.Message);
                     }
                 }
+                result.ViewsProcessed = _processedViews.Count;
                 result.Success = result.Errors.Count == 0;
             }
             finally
@@ -172,23 +226,53 @@ namespace VeradeAddin.Services
             int black = RgbToSwInt(0, 0, 0);
             bool oldApply = _sw.GetApplySelectionFilter();
             object oldFilters = _sw.GetSelectionFilters();
+            var selData = selMgr.CreateSelectData();
+
+            // The slow part is NOT the number of edges but the UI/refresh work around them: SelectAll
+            // highlights (renders) every selected edge, and SetLineColor then forces a full repaint
+            // and tree update. On big assembly drawings that froze for seconds. Going view by view does
+            // not help — the edge count is identical. Instead we keep the single bulk pass but disable
+            // every refresh mechanism, then do ONE redraw at the end (the standard SW perf recipe):
+            //   1) CommandInProgress = true       -> the single biggest lever (suppresses UI churn)
+            //   2) SuspendSelectionList()         -> skip the per-edge highlight rendering
+            //   3) ModelView.EnableGraphicsUpdate -> defer the repaint to one GraphicsRedraw2 at the end
+            //   4) FeatureManager.EnableFeatureTree-> skip design-tree updates
+            // All four are restored in finally (CommandInProgress MUST be reset or the UI stays frozen).
+            var view = model.ActiveView as ModelView;
+            bool hadGraphics = view != null && view.EnableGraphicsUpdate;
+            var featMgr = model.FeatureManager;
+            bool hadFeatureTree = featMgr != null && featMgr.EnableFeatureTree;
+            bool suspended = false;
+            bool commandInProgress = false;
 
             try
             {
-                ClearActiveSelectionFilters();
-                _sw.SetSelectionFilter((int)swSelectType_e.swSelEDGES, true);
-                _sw.SetSelectionFilter((int)swSelectType_e.swSelSILHOUETTES, true);
-                _sw.SetApplySelectionFilter(true);
+                _sw.CommandInProgress = true;
+                commandInProgress = true;
+                if (view != null) view.EnableGraphicsUpdate = false;
+                if (featMgr != null) featMgr.EnableFeatureTree = false;
+                selMgr.SuspendSelectionList();
+                suspended = true;
 
-                model.ClearSelection2(true);
-                model.Extension.SelectAll();
+                string key = DrawingKey(model);
+                List<ColoredEdgeRecord> tracked;
+                bool hasTracking = _coloredByDrawing.TryGetValue(key, out tracked) && tracked.Count > 0;
 
-                int count = selMgr.GetSelectedObjectCount2(-1);
-                if (count > 0)
+                if (hasTracking)
                 {
-                    drawing.SetLineColor(black);
-                    result.EdgesColored = count;
+                    // Fast + exact path (coloured this session): reset ONLY the edges we recorded for THIS
+                    // drawing. Includes hidden/obscured edges; never touches blocks or untouched geometry.
+                    result.EdgesColored = ResetTrackedEdges(drawing, model, selMgr, selData, black, tracked);
+                    _coloredByDrawing.Remove(key); // consumed -> flag back to "not coloured"
                 }
+                else
+                {
+                    // Fallback (no tracking — e.g. the drawing was reopened): re-derive the geometry and
+                    // blacken every model edge per part view. Slower, but reaches hidden/obscured edges
+                    // too (which SelectAll cannot). Accepted trade-off for the cross-session case.
+                    result.EdgesColored = ReanalyzeAndBlacken(drawing, model, selMgr, selData, black);
+                }
+
                 result.Success = true;
             }
             catch (Exception ex)
@@ -201,10 +285,160 @@ namespace VeradeAddin.Services
                 ClearActiveSelectionFilters();
                 if (oldFilters != null) _sw.SetSelectionFilters(oldFilters, true);
                 _sw.SetApplySelectionFilter(oldApply);
+                if (suspended) selMgr.ResumeSelectionList2(false);
+                if (featMgr != null)
+                {
+                    featMgr.EnableFeatureTree = hadFeatureTree;
+                    ComRelease.Release(featMgr);
+                }
+                if (view != null)
+                {
+                    view.EnableGraphicsUpdate = hadGraphics;
+                    ComRelease.Release(view);
+                }
+                // MUST run even on exception: leaving CommandInProgress = true freezes the UI until
+                // SOLIDWORKS is restarted.
+                if (commandInProgress) _sw.CommandInProgress = false;
+                model.GraphicsRedraw2();
+                ComRelease.Release(selData);
                 ComRelease.Release(selMgr);
             }
 
             return result;
+        }
+
+        // Reset exactly the edges recorded for this drawing's colouring. Each was captured straight from
+        // the selection list (so hidden/obscured edges are included), tagged with its view. We re-select
+        // them all — restoring each one's view context — and issue ONE SetLineColor(black). The records'
+        // COM objects are released here (the caller removes the bucket).
+        private int ResetTrackedEdges(IDrawingDoc drawing, IModelDoc2 drawingModel,
+            ISelectionMgr selMgr, SelectData selData, int black, List<ColoredEdgeRecord> tracked)
+        {
+            int reset = 0;
+
+            // Resolve the current views by name so a recorded edge can be re-selected in its view context
+            // (the View COM objects captured at colour time are long gone — names are stable).
+            var sheet = drawing.GetCurrentSheet() as ISheet;
+            var views = sheet != null ? sheet.GetViews() as object[] : null;
+            var viewByName = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            if (views != null)
+            {
+                foreach (var o in views)
+                {
+                    var v = o as IView;
+                    if (v == null) continue;
+                    string nm = v.GetName2();
+                    if (!string.IsNullOrEmpty(nm) && !viewByName.ContainsKey(nm)) viewByName[nm] = o;
+                }
+            }
+
+            try
+            {
+                drawingModel.ClearSelection2(true);
+                foreach (var rec in tracked)
+                {
+                    object viewObj = null;
+                    if (rec.ViewName != null) viewByName.TryGetValue(rec.ViewName, out viewObj);
+                    try { selData.View = viewObj as View; } catch { }
+                    try { selMgr.AddSelectionListObject(rec.Edge, selData); } catch { }
+                }
+
+                // AddSelectionListObject reports false for view-resolved edges even when added, so colour
+                // off the real selection count (same caveat as ColorMapping).
+                if (selMgr.GetSelectedObjectCount2(-1) > 0)
+                {
+                    drawing.SetLineColor(black);
+                    reset = selMgr.GetSelectedObjectCount2(-1);
+                }
+
+                drawingModel.ClearSelection2(true);
+                try { selData.View = null; } catch { }
+            }
+            finally
+            {
+                foreach (var rec in tracked) ComRelease.Release(rec.Edge);
+                tracked.Clear();
+                if (views != null) foreach (var o in views) ComRelease.Release(o);
+                ComRelease.Release(sheet);
+            }
+
+            return reset;
+        }
+
+        // Fallback reset for a reopened drawing (nothing tracked this session). Re-derives the geometry:
+        // for every view that references a PART, every model edge is mapped to its 2D view entity via
+        // IView.GetCorrespondingEntity (visibility-independent, so hidden/obscured edges are reached too)
+        // and blackened. Slower than the tracked path, but correct across sessions.
+        private int ReanalyzeAndBlacken(IDrawingDoc drawing, IModelDoc2 drawingModel,
+            ISelectionMgr selMgr, SelectData selData, int black)
+        {
+            int reset = 0;
+            var sheet = drawing.GetCurrentSheet() as ISheet;
+            var views = sheet != null ? sheet.GetViews() as object[] : null;
+            if (views == null) { ComRelease.Release(sheet); return 0; }
+
+            try
+            {
+                foreach (var o in views)
+                {
+                    var view = o as IView;
+                    if (view == null) continue;
+
+                    var refDoc = view.ReferencedDocument as IModelDoc2;
+                    if (refDoc == null) continue;
+                    try
+                    {
+                        if (refDoc.GetType() != (int)swDocumentTypes_e.swDocPART) continue;
+                        var partDoc = refDoc as IPartDoc;
+                        if (partDoc == null) continue;
+
+                        drawingModel.ClearSelection2(true);
+                        var viewT = o as View;
+                        if (viewT != null) { try { selData.View = viewT; } catch { } }
+
+                        var bodies = partDoc.GetBodies2((int)swBodyType_e.swAllBodies, true) as object[];
+                        if (bodies != null)
+                        {
+                            foreach (var ob in bodies)
+                            {
+                                var body = ob as Body2;
+                                var edges = body != null ? body.GetEdges() as object[] : null;
+                                if (edges != null)
+                                {
+                                    foreach (var oe in edges)
+                                    {
+                                        var edge2d = view.GetCorrespondingEntity(oe);
+                                        if (edge2d != null) selMgr.AddSelectionListObject(edge2d, selData);
+                                        ComRelease.Release(oe);
+                                    }
+                                }
+                                ComRelease.Release(ob);
+                            }
+                        }
+
+                        int c = selMgr.GetSelectedObjectCount2(-1);
+                        if (c > 0)
+                        {
+                            drawing.SetLineColor(black);
+                            reset += c;
+                        }
+                        drawingModel.ClearSelection2(true);
+                    }
+                    finally
+                    {
+                        ComRelease.Release(refDoc);
+                    }
+                }
+
+                try { selData.View = null; } catch { }
+            }
+            finally
+            {
+                foreach (var o in views) ComRelease.Release(o);
+                ComRelease.Release(sheet);
+            }
+
+            return reset;
         }
 
         // ===================== per-mapping core =====================
@@ -302,10 +536,12 @@ namespace VeradeAddin.Services
                     {
                         drawing.SetLineColor(targetSw);
                         result.EdgesColored += coloredInView;
+                        // Record EXACTLY what got coloured (incl. hidden edges) so the reset is fast + exact.
+                        RecordColoredSelection(selMgr, view.GetName2());
                     }
 
                     drawingModel.ClearSelection2(true);
-                    result.ViewsProcessed++;
+                    _processedViews.Add(view.GetName2());
                 }
 
                 // Silhouette edges (cylinder outlines) are not returned by the loops above.
@@ -366,7 +602,11 @@ namespace VeradeAddin.Services
                     if (selMgr.AddSelectionListObject(sil, selData)) colored++;
                 }
 
-                if (colored > 0) drawing.SetLineColor(targetSw);
+                if (colored > 0)
+                {
+                    drawing.SetLineColor(targetSw);
+                    RecordColoredSelection(selMgr, null);
+                }
                 drawingModel.ClearSelection2(true);
             }
             finally

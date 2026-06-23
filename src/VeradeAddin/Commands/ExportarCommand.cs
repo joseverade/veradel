@@ -29,8 +29,8 @@ namespace VeradeAddin.Commands
             _log = log;
         }
 
-        public string Name { get { return "Exportar"; } }
-        public string Tooltip { get { return "Exporta el dibujo a PDF/DWG y el modelo a STEP"; } }
+        public string Name { get { return "Exportar a formato"; } }
+        public string Tooltip { get { return "Exportar a formato"; } }
         public string Hint { get { return "Exporta el dibujo activo a PDF y/o DWG, y el modelo referenciado a STEP, con prefijo o sufijo opcional"; } }
         public CommandIcon Icon { get { return CommandIcon.Export; } }
 

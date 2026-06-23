@@ -26,8 +26,8 @@ namespace VeradeAddin.Commands
             _log = log;
         }
 
-        public string Name { get { return "Mostrar rosca"; } }
-        public string Tooltip { get { return "Importa las roscas cosméticas en las vistas de ensamblaje del dibujo"; } }
+        public string Name { get { return "Mostrar roscas cosméticas"; } }
+        public string Tooltip { get { return "Mostrar roscas cosméticas (Ensamblaje)"; } }
         public string Hint { get { return "Inserta anotaciones de rosca cosmética en todas las vistas de ensamblaje de la hoja activa"; } }
         public CommandIcon Icon { get { return CommandIcon.Thread; } }
 

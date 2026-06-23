@@ -28,8 +28,8 @@ namespace VeradeAddin.Commands
             _log = log;
         }
 
-        public string Name { get { return "Configurar pieza"; } }
-        public string Tooltip { get { return "Genera una pieza paramétrica desde cero (bulón, ...)"; } }
+        public string Name { get { return "Generar pieza"; } }
+        public string Tooltip { get { return "Generar pieza personalizada"; } }
         public string Hint { get { return "Abre el catálogo de piezas generables y crea la elegida en la pieza vacía actual"; } }
         public CommandIcon Icon { get { return CommandIcon.Configure; } }
 

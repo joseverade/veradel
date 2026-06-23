@@ -36,8 +36,8 @@ namespace VeradeAddin.Commands
             _log = log;
         }
 
-        public string Name { get { return "Captura de pantalla"; } }
-        public string Tooltip { get { return "Captura la vista actual del modelo y permite guardarla o copiarla"; } }
+        public string Name { get { return "Capturar vista"; } }
+        public string Tooltip { get { return "Capturar vista"; } }
         public string Hint { get { return "Toma una imagen de la vista actual de la pieza o ensamblaje y la muestra para guardar o copiar al portapapeles"; } }
         public CommandIcon Icon { get { return CommandIcon.Camera; } }
 
