@@ -520,35 +520,64 @@ namespace Veradel.SolidworksConsole.PartCreation
 
             for (int i = 0; i < points.Length - 1; i++)
             {
-                sMan.CreateLine(points[i].X, points[i].Y, 0, points[i + 1].X, points[i + 1].Y, 0);
+                SketchSegment newLine = sMan.CreateLine(points[i].X, points[i].Y, 0, points[i + 1].X, points[i + 1].Y, 0);
+
+                // Vertical line
+                _model.ClearSelection2(true);
+                if (points[i].X == points[i + 1].X)
+                {
+                    newLine.Select4(false, null);
+                    _model.SketchAddConstraints("sgVERTICAL2D");
+                }
+                else if (points[i].Y == points[i + 1].Y)
+                {
+                    newLine.Select4(false, null);
+                    _model.SketchAddConstraints("sgHORIZONTAL2D");
+
+                }
+
             }
 
             // close the loop
+            _model.ClearSelection2(true);
+            SketchSegment line4 = sMan.CreateLine(firstPoint.X, firstPoint.Y, 0, fourthPoint.X, fourthPoint.Y, 0);
+            line4.Select4(false, null);
+            _model.SketchAddConstraints("sgHORIZONTAL2D");
 
-            sMan.CreateLine(firstPoint.X, firstPoint.Y, 0, fourthPoint.X, fourthPoint.Y, 0);
+            // we connect auxline1 with the firstline
 
 
-            // we connect auxline1 with the firstline and the auxline2
+            _model.ClearSelection2(true);
             SketchSegment aux3 = sMan.CreateLine(firstPoint.X, firstPoint.Y, 0, auxEndPoint.X, auxEndPoint.Y, 0);
             aux3.ConstructionGeometry = true;
-            aux3.Select4(false, null);
-            ((SketchPoint)((SketchLine)aux3).GetStartPoint2()).Select4(true, null);
-            _ext.SelectByID2("","EDGE", 0, auxEndPoint2.Y, 0, true, 0, null, 0);    // 0 faster to werite
-            _model.SketchAddConstraints("sgCONCENTRIC");
-            _model.ClearSelection2(false);
+
+            // We make the endpoint coincident with the edge
+            _model.ClearSelection2(true);
+            ((SketchPoint)((SketchLine)auxLine1).GetEndPoint2()).Select4(true, null);
+            _ext.SelectByID2("", "EDGE", 0, auxEndPoint2.Y, 0, true, 0, null, 0);    // 0 faster to werite
+            _model.SketchAddConstraints("sgCOINCIDENT");
+            _model.ClearSelection2(true);
+
+            // We make the aux 3 horizontal
             aux3.Select4(false, null);
             _model.SketchAddConstraints("sgHORIZONTAL2D");
-            
 
+
+            _model.ClearSelection2(true);
             SketchSegment aux4 = sMan.CreateLine(fourthPoint.X, fourthPoint.Y, 0, auxEndPoint2.X, auxEndPoint2.Y, 0);
             aux4.ConstructionGeometry = true;
+            aux4.Select4(true, null);
+            _model.SketchAddConstraints("sgHORIZONTAL2D"); // Se genera la relacion horizontal
 
 
+            // Select the endpoint and the bottom line
+            _model.ClearSelection2(true);
+            ((SketchPoint)((SketchLine)aux4).GetEndPoint2()).Select4(true, null);
+            _ext.SelectByID2("", "EDGE", 0, auxEndPoint2.Y, 0, true, 0, null, 0);    // 0 faster to write (bottom line)
+            _model.SketchAddConstraints("sgCOINCIDENT");
+            _model.ClearSelection2(true);
 
-
-
-
-            // UnionLine
+            _model.ClearSelection2(true);
 
             sMan.AddToDB = true;
             sMan.DisplayWhenAdded = true;
