@@ -112,6 +112,7 @@
     <Compile Include="Models\PartConfiguratorSelection.cs" />
     <Compile Include="Models\DocumentKind.cs" />
     <Compile Include="Services\Din471Table.cs" />
+    <Compile Include="Services\EdgeColorStore.cs" />
     <Compile Include="Services\IDialogService.cs" />
     <Compile Include="Services\IFileSystemService.cs" />
     <Compile Include="Services\FileSystemService.cs" />
