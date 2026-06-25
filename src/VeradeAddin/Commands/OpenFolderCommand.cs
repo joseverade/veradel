@@ -41,7 +41,7 @@ namespace VeradeAddin.Commands
         {
             var doc = _sw.GetActiveDocument();
             return doc != null && doc.Kind != DocumentKind.None;
-        }
+        }   
 
         public void Execute()
         {
