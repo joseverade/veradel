@@ -39,6 +39,15 @@
     <PlatformTarget>x64</PlatformTarget>
     <OutputPath>bin\x64\Release\</OutputPath>
   </PropertyGroup>
+  <!-- SolidWorks interop folder differs per machine (e.g. "SOLIDWORKS Corp 2021" vs "SOLIDWORKS Corp").
+       Auto-detect whichever exists so the project builds on every PC without editing (and stops the
+       per-machine HintPath merge conflicts). Override by setting SwDir from the command line if needed. -->
+  <PropertyGroup>
+    <SwBase>..\..\..\..\..\..\Program Files</SwBase>
+    <SwDir Condition="'$(SwDir)' == '' And Exists('$(SwBase)\SOLIDWORKS Corp 2021\SOLIDWORKS\SolidWorks.Interop.sldworks.dll')">$(SwBase)\SOLIDWORKS Corp 2021\SOLIDWORKS</SwDir>
+    <SwDir Condition="'$(SwDir)' == '' And Exists('$(SwBase)\SOLIDWORKS Corp\SOLIDWORKS\SolidWorks.Interop.sldworks.dll')">$(SwBase)\SOLIDWORKS Corp\SOLIDWORKS</SwDir>
+    <SwDir Condition="'$(SwDir)' == ''">$(SwBase)\SOLIDWORKS Corp\SOLIDWORKS</SwDir>
+  </PropertyGroup>
   <ItemGroup>
     <Reference Include="Microsoft.Web.WebView2.Core">
       <HintPath>..\..\lib\webview2\Microsoft.Web.WebView2.Core.dll</HintPath>
@@ -47,15 +56,15 @@
       <HintPath>..\..\lib\webview2\Microsoft.Web.WebView2.WinForms.dll</HintPath>
     </Reference>
     <Reference Include="SolidWorks.Interop.sldworks">
-      <HintPath>..\..\..\..\..\..\Program Files\SOLIDWORKS Corp\SOLIDWORKS\SolidWorks.Interop.sldworks.dll</HintPath>
+      <HintPath>$(SwDir)\SolidWorks.Interop.sldworks.dll</HintPath>
       <EmbedInteropTypes>True</EmbedInteropTypes>
     </Reference>
     <Reference Include="SolidWorks.Interop.swconst">
-      <HintPath>..\..\..\..\..\..\Program Files\SOLIDWORKS Corp\SOLIDWORKS\SolidWorks.Interop.swconst.dll</HintPath>
+      <HintPath>$(SwDir)\SolidWorks.Interop.swconst.dll</HintPath>
       <EmbedInteropTypes>True</EmbedInteropTypes>
     </Reference>
     <Reference Include="SolidWorks.Interop.swpublished">
-      <HintPath>..\..\..\..\..\..\Program Files\SOLIDWORKS Corp\SOLIDWORKS\SolidWorks.Interop.swpublished.dll</HintPath>
+      <HintPath>$(SwDir)\SolidWorks.Interop.swpublished.dll</HintPath>
       <EmbedInteropTypes>True</EmbedInteropTypes>
     </Reference>
     <Reference Include="System" />
