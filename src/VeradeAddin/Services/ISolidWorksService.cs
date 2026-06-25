@@ -78,19 +78,24 @@ namespace VeradeAddin.Services
         ExportResult ExportActiveDrawing(ExportRequest request);
 
         /// <summary>
-        /// Inspects the active drawing for "Colorear aristas": the referenced part(s) and the
-        /// appearance colours found on each. <see cref="EdgeColoringPlan.IsDrawing"/> is false when
-        /// the active doc is not a drawing.
+        /// Inspects the SINGLE part view the user has selected for "Colorear aristas": its part and the
+        /// appearance colours found on it (<see cref="EdgeColoringPlan.ViewName"/> identifies the view).
+        /// <see cref="EdgeColoringPlan.IsDrawing"/> is false when the active doc is not a drawing;
+        /// <see cref="EdgeColoringPlan.Message"/> explains when there is not exactly one part view selected.
         /// </summary>
         EdgeColoringPlan InspectDrawingForEdgeColoring();
 
         /// <summary>
-        /// Carries the chosen face colours onto the corresponding drawing edges. Best-effort
-        /// (the 3D→2D mapping is inherently partial). Returns a COM-free per-run summary.
+        /// Carries the chosen face colours onto the corresponding edges of the selected view only
+        /// (<see cref="EdgeColorRequest.ViewName"/>). Best-effort (the 3D→2D mapping is inherently
+        /// partial). Returns a COM-free per-run summary.
         /// </summary>
         EdgeColoringResult ApplyEdgeColoring(EdgeColorRequest request);
 
-        /// <summary>Resets the colour of all view edges in the active drawing to black (default).</summary>
+        /// <summary>
+        /// Puts EVERY edge of the selected part view (visible, hidden and silhouettes) back to black.
+        /// Stateless undo for "Colorear aristas"; acts only on the single selected view.
+        /// </summary>
         EdgeColoringResult ClearEdgeColors();
 
         /// <summary>

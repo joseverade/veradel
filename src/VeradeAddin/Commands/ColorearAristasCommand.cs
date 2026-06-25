@@ -28,7 +28,7 @@ namespace VeradeAddin.Commands
 
         public string Name { get { return "Colorear aristas (experimental)"; } }
         public string Tooltip { get { return "Colorear aristas (experimental)"; } }
-        public string Hint { get { return "Detecta las apariencias de color de la pieza y colorea las aristas correspondientes en las vistas del dibujo"; } }
+        public string Hint { get { return "Colorea las aristas de la VISTA de pieza seleccionada según las apariencias de color de su pieza"; } }
         public CommandIcon Icon { get { return CommandIcon.ColorEdges; } }
 
         public IReadOnlyList<DocumentKind> DocumentTypes
@@ -60,15 +60,12 @@ namespace VeradeAddin.Commands
                 return;
             }
 
-            string faces = plan.Parts.Count == 1
-                ? ("La pieza tiene " + plan.TotalFaceCount + " caras.")
-                : ("Las piezas referenciadas suman " + plan.TotalFaceCount + " caras.");
-
             bool proceed = _dialog.Confirm(Name,
                 "⚠ Comando EXPERIMENTAL.\n\n" +
-                "Analiza la geometría del dibujo y PUEDE TARDAR: el tiempo crece con la cantidad de caras " +
-                "a procesar (no es lo mismo 30 que 400). " + faces + "\n\n" +
-                "Guarda tus cambios ANTES de continuar.\n\n¿Continuar?");
+                "Colorea las aristas de la VISTA seleccionada según las apariencias de su pieza. " +
+                "Puede TARDAR: el tiempo crece con la cantidad de caras a procesar (no es lo mismo 30 que 400). " +
+                "La pieza tiene " + plan.TotalFaceCount + " caras.\n\n" +
+                "Para deshacer, usa «Líneas a negro» sobre la misma vista.\n\n¿Continuar?");
             if (!proceed)
             {
                 _log.Log(Name, docType, LogOutcome.Cancel, "User declined experimental warning");
@@ -81,8 +78,13 @@ namespace VeradeAddin.Commands
                 _log.Log(Name, docType, LogOutcome.Cancel, "Cancelled at color dialog");
                 return;
             }
+            request.ViewName = plan.ViewName;
 
-            var result = _sw.ApplyEdgeColoring(request);
+            EdgeColoringResult result;
+            using (_dialog.ShowWait(Name, "Coloreando las aristas de la vista…"))
+            {
+                result = _sw.ApplyEdgeColoring(request);
+            }
 
             if (!string.IsNullOrEmpty(result.Error))
             {
@@ -92,8 +94,7 @@ namespace VeradeAddin.Commands
             }
 
             var msg = new StringBuilder();
-            msg.AppendLine("Aristas coloreadas: " + result.EdgesColored);
-            msg.AppendLine("Vistas procesadas: " + result.ViewsProcessed);
+            msg.AppendLine("Aristas coloreadas en la vista: " + result.EdgesColored);
             if (result.Errors.Count > 0)
             {
                 msg.AppendLine();

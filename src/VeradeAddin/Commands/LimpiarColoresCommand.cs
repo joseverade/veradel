@@ -26,7 +26,7 @@ namespace VeradeAddin.Commands
 
         public string Name { get { return "Líneas a negro"; } }
         public string Tooltip { get { return "Líneas a negro"; } }
-        public string Hint { get { return "Restaura el color por defecto (negro) de las aristas de todas las vistas del dibujo activo"; } }
+        public string Hint { get { return "Pone en negro TODAS las aristas (incluidas las ocultas) de la VISTA de pieza seleccionada"; } }
         public CommandIcon Icon { get { return CommandIcon.ClearColors; } }
 
         public IReadOnlyList<DocumentKind> DocumentTypes
@@ -45,13 +45,18 @@ namespace VeradeAddin.Commands
             const string docType = "Drawing";
 
             if (!_dialog.Confirm(Name,
-                "Esto pondrá en NEGRO el color de todas las aristas de las vistas del dibujo.\n\n¿Continuar?"))
+                "Esto pondrá en NEGRO todas las aristas (incluidas las ocultas) de la VISTA de pieza seleccionada.\n\n" +
+                "Selecciona una vista de pieza antes de continuar.\n\n¿Continuar?"))
             {
                 _log.Log(Name, docType, LogOutcome.Cancel, "User declined");
                 return;
             }
 
-            var result = _sw.ClearEdgeColors();
+            EdgeColoringResult result;
+            using (_dialog.ShowWait(Name, "Poniendo las aristas en negro…"))
+            {
+                result = _sw.ClearEdgeColors();
+            }
 
             if (!string.IsNullOrEmpty(result.Error))
             {

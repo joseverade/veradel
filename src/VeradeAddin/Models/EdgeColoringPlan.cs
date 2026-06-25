@@ -15,6 +15,9 @@ namespace VeradeAddin.Models
 
         public bool IsDrawing { get; set; }
 
+        /// <summary>Name of the single part view the user selected; the whole command is scoped to it.</summary>
+        public string ViewName { get; set; }
+
         public List<EdgeColorPartInfo> Parts { get; private set; }
 
         /// <summary>Explanation when there is nothing to color (no part / no colors).</summary>

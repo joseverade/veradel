@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using VeradeAddin.Models;
 
@@ -16,6 +17,12 @@ namespace VeradeAddin.Services
         ComponentNode ShowComponentTree(ComponentNode root, string title);
 
         void ShowMessage(string title, string message);
+
+        /// <summary>
+        /// Shows a lightweight "please wait" overlay while a long SolidWorks operation runs synchronously
+        /// on the calling thread. Dispose the returned handle (a <c>using</c> block) to close it.
+        /// </summary>
+        IDisposable ShowWait(string title, string message);
 
         /// <summary>Yes/No confirmation. Returns true only when the user confirms.</summary>
         bool Confirm(string title, string message);

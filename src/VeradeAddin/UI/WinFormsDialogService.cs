@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Windows.Forms;
 using VeradeAddin.Models;
@@ -25,6 +26,11 @@ namespace VeradeAddin.UI
         {
             return MessageBox.Show(message, title, MessageBoxButtons.YesNo, MessageBoxIcon.Warning)
                    == DialogResult.Yes;
+        }
+
+        public IDisposable ShowWait(string title, string message)
+        {
+            return new WaitForm(title, message);
         }
 
         public ScreenshotAction ShowScreenshot(string title, string imagePath, out string savedPath)

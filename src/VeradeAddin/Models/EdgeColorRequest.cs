@@ -13,6 +13,9 @@ namespace VeradeAddin.Models
             Mappings = new List<EdgeColorMapping>();
         }
 
+        /// <summary>The drawing view (by name) the colouring is applied to. Set by the command from the plan.</summary>
+        public string ViewName { get; set; }
+
         public List<EdgeColorMapping> Mappings { get; private set; }
     }
 
