@@ -162,8 +162,10 @@ namespace VeradeAddin.Services
 
                 // Centreline on the X axis = axis of revolution. Closed half-section above it:
                 // left face → head top (Ø1/L1) → step down → shank top (Ø2/L2) → right face → bottom.
-                var segCl = sketchMgr.CreateCenterLine(0, 0, 0, -total, 0, 0);
+                var segCl = sketchMgr.CreateCenterLine(0, 0, 0, -total, 0, 0);      // Jose: here i set the center line negative X coordinate negative so the center line is outside 
                 var segLeft = Line(sketchMgr, 0, 0, 0, r1);         // left face (starts at origin)
+
+               
                 var segHeadTop = Line(sketchMgr, 0, r1, l1, r1);    // head top (L1, Ø1)
                 Line(sketchMgr, l1, r1, l1, r2);                    // step down to shank
                 var segShankTop = Line(sketchMgr, l1, r2, total, r2); // shank top (L2, Ø2)
@@ -174,7 +176,11 @@ namespace VeradeAddin.Services
                 // (ConstrainAll never relates to entities OUTSIDE the sketch, so the profile would
                 // otherwise float free of the origin).
                 ConstrainAll(sketchMgr);
-                CoincidentToOrigin(model, StartPt(segLeft));       // (0,0) ≡ part origin
+
+                // Jose: Here we make the line  with the origin
+                ((SketchPoint)((SketchLine)segLeft).GetStartPoint2()).Select4(true, null);
+                model.Extension.SelectByID2("", "EXTSKETCHPOINT", 0, 0, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
+                model.SketchAddConstraints("sgCOINCIDENT");
 
                 // Diameter text goes at the MIRRORED point (−r, opposite side of the axis) so SolidWorks
                 // reads it as a Ø and not a radius; length text stays above the axis.
