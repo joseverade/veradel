@@ -136,9 +136,9 @@ namespace VeradeAddin.Services
 
         /// <summary>
         /// Sketches the closed head+shank half-section on the front plane and revolves it 360° into a
-        /// solid. Returns null on success or a Spanish error string. Drawn in NORMAL mode
-        /// (<c>AddToDB = false</c>) so SolidWorks auto-adds the coincident/horizontal/vertical relations
-        /// and closes the contour; we only add the four driving dimensions afterwards.
+        /// solid. Returns null on success or a Spanish error string. Drawn with <c>AddToDB = true</c>
+        /// (exact coordinates, no grid/entity snapping), then <c>ISketch.ConstrainAll</c> infers all
+        /// coincident/horizontal/vertical relations; the four driving dimensions are added afterwards.
         /// </summary>
         private string RevolveBody(IModelDoc2 model, double r1, double r2, double l1, double total)
         {
@@ -151,24 +151,38 @@ namespace VeradeAddin.Services
                 if (frontPlane == null) return "No se encontró el plano frontal de la pieza.";
                 frontPlane.Select2(false, 0);
                 sketchMgr.InsertSketch(true);
-                sketchMgr.AddToDB = false;
+
+                // AddToDB=true: add the geometry straight to the database with EXACT coordinates, so
+                // endpoints never snap to the grid or to nearby entities (that snapping is screen/grid
+                // dependent and would shift the contour). DisplayWhenAdded=false for speed. After the
+                // geometry is in, ISketch.ConstrainAll infers every relation (horizontal/vertical/
+                // coincident) at once — cleaner and more reliable than adding them line by line.
+                sketchMgr.AddToDB = true;
+                sketchMgr.DisplayWhenAdded = false;
 
                 // Centreline on the X axis = axis of revolution. Closed half-section above it:
                 // left face → head top (Ø1/L1) → step down → shank top (Ø2/L2) → right face → bottom.
-                // Every line is given an explicit horizontal/vertical position relation (see AddLine).
-                var segCl = sketchMgr.CreateCenterLine(0, 0, 0, total, 0, 0);
-                AddLine(sketchMgr, model, 0, 0, 0, r1);                       // left face (vertical)
-                var segHeadTop = AddLine(sketchMgr, model, 0, r1, l1, r1);    // head top (L1, Ø1) (horizontal)
-                AddLine(sketchMgr, model, l1, r1, l1, r2);                    // step down to shank (vertical)
-                var segShankTop = AddLine(sketchMgr, model, l1, r2, total, r2); // shank top (L2, Ø2) (horizontal)
-                AddLine(sketchMgr, model, total, r2, total, 0);              // right (free-end) face (vertical)
-                AddLine(sketchMgr, model, total, 0, 0, 0);                   // bottom, on the axis (horizontal)
+                var segCl = sketchMgr.CreateCenterLine(0, 0, 0, -total, 0, 0);
+                var segLeft = Line(sketchMgr, 0, 0, 0, r1);         // left face (starts at origin)
+                var segHeadTop = Line(sketchMgr, 0, r1, l1, r1);    // head top (L1, Ø1)
+                Line(sketchMgr, l1, r1, l1, r2);                    // step down to shank
+                var segShankTop = Line(sketchMgr, l1, r2, total, r2); // shank top (L2, Ø2)
+                Line(sketchMgr, total, r2, total, 0);              // right (free-end) face
+                Line(sketchMgr, total, 0, 0, 0);                   // bottom, on the axis
 
+                // Auto-add the in-sketch relations, then anchor the contour to the part origin
+                // (ConstrainAll never relates to entities OUTSIDE the sketch, so the profile would
+                // otherwise float free of the origin).
+                ConstrainAll(sketchMgr);
+                CoincidentToOrigin(model, StartPt(segLeft));       // (0,0) ≡ part origin
+
+                // Diameter text goes at the MIRRORED point (−r, opposite side of the axis) so SolidWorks
+                // reads it as a Ø and not a radius; length text stays above the axis.
                 const double off = 0.012;
-                LengthDim(model, segHeadTop, l1 / 2.0, r1 + off);                        // L1
-                DiameterDim(model, segHeadTop, segCl, l1 / 2.0, -(r1 + off));            // Ø1
-                LengthDim(model, segShankTop, (l1 + total) / 2.0, r1 + 2.0 * off);       // L2
-                DiameterDim(model, segShankTop, segCl, (l1 + total) / 2.0, -(r2 + off)); // Ø2
+                LengthDim(model, segHeadTop, l1 / 2.0, r1 + off);                  // L1
+                DiameterDim(model, segHeadTop, segCl, l1 / 2.0, -r1);              // Ø1
+                LengthDim(model, segShankTop, (l1 + total) / 2.0, r1 + 2.0 * off); // L2
+                DiameterDim(model, segShankTop, segCl, (l1 + total) / 2.0, -r2);   // Ø2
 
                 model.ClearSelection2(true);
                 sketchMgr.InsertSketch(true);
@@ -211,21 +225,33 @@ namespace VeradeAddin.Services
                 if (frontPlane == null) return "No se encontró el plano frontal para la ranura.";
                 frontPlane.Select2(false, 0);
                 sketchMgr.InsertSketch(true);
-                sketchMgr.AddToDB = false;
+
+                // Same approach as the body: exact geometry (no snapping), then ConstrainAll. See RevolveBody.
+                sketchMgr.AddToDB = true;
+                sketchMgr.DisplayWhenAdded = false;
 
                 // Construction axis (for the diameter dimension) + the closed rectangle of the notch.
-                // Each wall/floor gets an explicit horizontal/vertical position relation (see AddLine).
                 var segCl = sketchMgr.CreateCenterLine(0, 0, 0, total, 0, 0);
-                var segNearWall = AddLine(sketchMgr, model, xg1, r2, xg1, r3);  // into groove (near wall, vertical)
-                var segBottom = AddLine(sketchMgr, model, xg1, r3, xg2, r3);    // groove bottom (E1, D3) (horizontal)
-                AddLine(sketchMgr, model, xg2, r3, xg2, r2);                    // out of groove (far wall, vertical)
-                var segTop = AddLine(sketchMgr, model, xg2, r2, xg1, r2);       // top, on the shank surface (horizontal)
+                var segNearWall = Line(sketchMgr, xg1, r2, xg1, r3);  // into groove (near wall)
+                var segBottom = Line(sketchMgr, xg1, r3, xg2, r3);    // groove bottom (E1, D3)
+                Line(sketchMgr, xg2, r3, xg2, r2);                    // out of groove (far wall)
+                var segTop = Line(sketchMgr, xg2, r2, xg1, r2);       // top, on the shank surface
+
+                // In-sketch relations first, then anchor the sketch to the EXISTING body (the revolve
+                // is already built, so its faces are selectable). Without these the construction axis
+                // and the notch top float free of the model.
+                ConstrainAll(sketchMgr);
+                CoincidentToOrigin(model, StartPt(segCl));                    // axis start ≡ part origin
+                CoincidentPointToFace(model, EndPt(segCl), total, 0, 0);      // axis end on the free-end face
+                double xShank = (l1 + xg1) / 2.0;                             // a point on the shank, before the groove
+                CoincidentPointToFace(model, StartPt(segTop), xShank, r2, 0); // notch top ≡ shank cylindrical face
+                CoincidentPointToFace(model, EndPt(segTop), xShank, r2, 0);
 
                 const double off = 0.012;
                 // P1: from the head/shank step edge (selected on the body) to the groove's near wall.
                 EdgeToSegDim(model, l1, r2, segNearWall, (l1 + xg1) / 2.0, r2 + 2.0 * off); // P1 (position)
                 LengthDim(model, segTop, (xg1 + xg2) / 2.0, r2 + 3.0 * off);               // E1 (width)
-                DiameterDim(model, segBottom, segCl, (xg1 + xg2) / 2.0, -(r3 + off));   // D3 (bottom Ø)
+                DiameterDim(model, segBottom, segCl, (xg1 + xg2) / 2.0, -r3);              // D3 (bottom Ø)
 
                 model.ClearSelection2(true);
                 sketchMgr.InsertSketch(true);
@@ -266,8 +292,14 @@ namespace VeradeAddin.Services
                 "", "EDGE", total, r2, 0, false, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
             if (!ok) return "No se pudo seleccionar la arista del extremo para el chaflán.";
 
+            // Angle-Distance chamfer: Width is the set-back measured ALONG the shank (axial) and the
+            // Angle is taken from that face. The flip flag makes SolidWorks measure the distance along
+            // the cylindrical face instead of the flat end face — without it the chamfer comes out
+            // mirrored ("al revés"). TangentPropagation keeps it wrapping the full circular edge.
+            int options = (int)swFeatureChamferOption_e.swFeatureChamferTangentPropagation
+                        | (int)swFeatureChamferOption_e.swFeatureChamferFlipDirection;
             var chamfer = model.FeatureManager.InsertFeatureChamfer(
-                4, (int)swChamferType_e.swChamferAngleDistance,
+                options, (int)swChamferType_e.swChamferAngleDistance,
                 spec.ChamferSizeMm * 0.001, spec.ChamferAngleDeg * Math.PI / 180.0,
                 0, 0, 0, 0);
             if (chamfer == null) return "SolidWorks no pudo crear el chaflán.";
@@ -277,40 +309,86 @@ namespace VeradeAddin.Services
 
         // ---- shared helpers ------------------------------------------------------------------------
 
-        // Creates a sketch line AND tags it with an explicit horizontal/vertical position relation
-        // when it is axis-aligned. Returns the segment so callers can dimension it.
-        private static SketchSegment AddLine(SketchManager sketchMgr, IModelDoc2 model,
-            double x1, double y1, double x2, double y2)
+        // Creates a sketch line on the front plane (z=0) with exact coordinates. No relation work here:
+        // with AddToDB=true the point goes straight to the database (no snapping) and ConstrainAll adds
+        // every relation afterwards. Returns the segment so callers can dimension it.
+        private static SketchSegment Line(SketchManager sketchMgr, double x1, double y1, double x2, double y2)
         {
-            var seg = sketchMgr.CreateLine(x1, y1, 0, x2, y2, 0);
-            AddHvRelation(model, seg, x1, y1, x2, y2);
-            return seg;
+            return sketchMgr.CreateLine(x1, y1, 0, x2, y2, 0);
         }
 
-        // Position relation by geometry: Δx≈0 ⇒ VERTICAL, Δy≈0 ⇒ HORIZONTAL, otherwise none (a real
-        // diagonal needs no H/V relation). Added with the SAME mechanism as the reference console:
-        // select the segment, then SketchAddConstraints with the sketch-relation id. (The array overload
-        // ISketchRelationManager.AddRelation throws an AccessViolation that .NET cannot catch.) Redundant
-        // with the normal-mode auto-inference, which is harmless — the console does the same on its first
-        // line. Best-effort: a failed relation never aborts the build.
-        private static void AddHvRelation(IModelDoc2 model, SketchSegment seg,
-            double x1, double y1, double x2, double y2)
+        // Infers every geometric relation (horizontal/vertical/coincident/...) on the active sketch in
+        // one shot — the documented partner of AddToDB=true. Best-effort: never aborts the build.
+        private static void ConstrainAll(SketchManager sketchMgr)
         {
-            if (model == null || seg == null) return;
-            const double tol = 1e-7; // metres; axis-aligned literals here are exact
-            double dx = Math.Abs(x2 - x1), dy = Math.Abs(y2 - y1);
-            string id;
-            if (dx <= tol && dy > tol) id = "sgVERTICAL2D";
-            else if (dy <= tol && dx > tol) id = "sgHORIZONTAL2D";
-            else return;
+            try
+            {
+                var sketch = sketchMgr.ActiveSketch;
+                if (sketch != null) sketch.ConstrainAll();
+            }
+            catch { }
+        }
+
+        private static SketchPoint StartPt(SketchSegment seg)
+        {
+            var line = seg as SketchLine;
+            return line == null ? null : line.GetStartPoint2() as SketchPoint;
+        }
+
+        private static SketchPoint EndPt(SketchSegment seg)
+        {
+            var line = seg as SketchLine;
+            return line == null ? null : line.GetEndPoint2() as SketchPoint;
+        }
+
+        // Coincident between a sketch point and the part origin. The origin is found language-
+        // INDEPENDENTLY by its feature type ("OriginProfileFeature"), never by its localized name.
+        private static void CoincidentToOrigin(IModelDoc2 model, SketchPoint pt)
+        {
+            if (pt == null) return;
             try
             {
                 model.ClearSelection2(true);
-                seg.Select4(false, null);
-                model.SketchAddConstraints(id);
+                pt.Select4(false, null);
+                var origin = FeatureByTypeName(model, "OriginProfileFeature");
+                if (origin != null && origin.Select2(true, 0))
+                {
+                    model.SketchAddConstraints("sgCOINCIDENT2D");
+                }
             }
             catch { }
             finally { model.ClearSelection2(true); }
+        }
+
+        // Coincident (point-on-face) between a sketch point and a model face picked by coordinate.
+        // Anchors the groove sketch to the already-built body (free-end face, shank cylindrical face).
+        private static void CoincidentPointToFace(IModelDoc2 model, SketchPoint pt, double fx, double fy, double fz)
+        {
+            if (pt == null) return;
+            try
+            {
+                model.ClearSelection2(true);
+                pt.Select4(false, null);
+                bool gotFace = model.Extension.SelectByID2(
+                    "", "FACE", fx, fy, fz, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
+                if (gotFace)
+                {
+                    model.SketchAddConstraints("sgCOINCIDENT2D");
+                }
+            }
+            catch { }
+            finally { model.ClearSelection2(true); }
+        }
+
+        private static Feature FeatureByTypeName(IModelDoc2 model, string typeName)
+        {
+            var f = model.FirstFeature() as Feature;
+            while (f != null)
+            {
+                if (f.GetTypeName2() == typeName) return f;
+                f = f.GetNextFeature() as Feature;
+            }
+            return null;
         }
 
         private static void RestoreSketch(SketchManager sketchMgr, bool addToDbWas, bool displayWas)
@@ -366,7 +444,7 @@ namespace VeradeAddin.Services
             {
                 model.ClearSelection2(true);
                 seg.Select4(false, null);
-                model.AddDimension2(x, y, 0);
+                model.AddHorizontalDimension2(x, y, 0); // horizontal length, like the reference console
             }
             catch { }
             finally { model.ClearSelection2(true); }
@@ -379,8 +457,8 @@ namespace VeradeAddin.Services
             {
                 model.ClearSelection2(true);
                 line.Select4(false, null);
-                axis.Select4(true, null);   // line + centreline ⇒ AddDimension2 makes it a diameter dim
-                model.AddDimension2(x, y, 0);
+                axis.Select4(true, null);   // line + centreline ⇒ AddDiameterDimension2 makes it a Ø dim
+                model.AddDiameterDimension2(x, y, 0); // was AddDimension2, which produced a radius
             }
             catch { }
             finally { model.ClearSelection2(true); }
@@ -397,7 +475,7 @@ namespace VeradeAddin.Services
                 model.Extension.SelectByID2(
                     "", "EDGE", edgeX, edgeY, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
                 seg.Select4(true, null);
-                model.AddDimension2(x, y, 0);
+                model.AddHorizontalDimension2(x, y, 0); // horizontal position from the step edge
             }
             catch { }
             finally { model.ClearSelection2(true); }
