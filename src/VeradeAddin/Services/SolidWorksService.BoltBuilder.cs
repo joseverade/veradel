@@ -162,7 +162,8 @@ namespace VeradeAddin.Services
 
                 // Centreline on the X axis = axis of revolution. Closed half-section above it:
                 // left face → head top (Ø1/L1) → step down → shank top (Ø2/L2) → right face → bottom.
-                var segCl = sketchMgr.CreateCenterLine(0, 0, 0, -total, 0, 0);      // Jose: here i set the center line negative X coordinate negative so the center line is outside 
+                var segCl = sketchMgr.CreateLine(0, 0, 0, -total, 0, 0);      // Jose: here i set the center line negative X coordinate negative so the center line is outside 
+                segCl.ConstructionGeometry = true;                            
                 var segLeft = Line(sketchMgr, 0, 0, 0, r1);         // left face (starts at origin)
 
                
@@ -182,13 +183,14 @@ namespace VeradeAddin.Services
                 model.Extension.SelectByID2("", "EXTSKETCHPOINT", 0, 0, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
                 model.SketchAddConstraints("sgCOINCIDENT");
 
-                // Diameter text goes at the MIRRORED point (−r, opposite side of the axis) so SolidWorks
-                // reads it as a Ø and not a radius; length text stays above the axis.
+                // Diameter text must be placed CLEARLY past the mirrored generatrix (more negative than
+                // −r), so SolidWorks sees it cross the centreline and reads it as a Ø, not a radius.
+                // Sitting exactly on −r is ambiguous and falls back to a radius.
                 const double off = 0.012;
                 LengthDim(model, segHeadTop, l1 / 2.0, r1 + off);                  // L1
-                DiameterDim(model, segHeadTop, segCl, l1 / 2.0, -r1);              // Ø1
+                DiameterDim(model, segHeadTop, segCl, l1 / 2.0, -(r1 + off));      // Ø1
                 LengthDim(model, segShankTop, (l1 + total) / 2.0, r1 + 2.0 * off); // L2
-                DiameterDim(model, segShankTop, segCl, (l1 + total) / 2.0, -r2);   // Ø2
+                DiameterDim(model, segShankTop, segCl, (l1 + total) / 2.0, -(r2 + off)); // Ø2
 
                 model.ClearSelection2(true);
                 sketchMgr.InsertSketch(true);
@@ -462,8 +464,10 @@ namespace VeradeAddin.Services
             try
             {
                 model.ClearSelection2(true);
-                line.Select4(false, null);
-                axis.Select4(true, null);   // line + centreline ⇒ AddDiameterDimension2 makes it a Ø dim
+                // Order matters: select the LINE first, then the centreline (matches the working
+                // reference console). Reversed, AddDiameterDimension2 falls back to a radius.
+                line.Select4(true, null);
+                axis.Select4(true, null);    // line + centreline ⇒ AddDiameterDimension2 makes it a Ø dim
                 model.AddDiameterDimension2(x, y, 0); // was AddDimension2, which produced a radius
             }
             catch { }
