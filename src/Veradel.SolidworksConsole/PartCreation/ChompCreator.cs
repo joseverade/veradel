@@ -297,7 +297,7 @@ namespace Veradel.SolidworksConsole.PartCreation
             swLinearPatternFeatureData.D1EndCondition = 0;
             swLinearPatternFeatureData.D1ReverseDirection = false;
             swLinearPatternFeatureData.D1Spacing = _distanceBetweenRollers / 1000;
-            swLinearPatternFeatureData.D1TotalInstances = 8;
+            swLinearPatternFeatureData.D1TotalInstances = _nRollers;
             swLinearPatternFeatureData.D2EndCondition = 0;
             swLinearPatternFeatureData.D2PatternSeedOnly = false;
             swLinearPatternFeatureData.D2ReverseDirection = false;
@@ -305,7 +305,6 @@ namespace Veradel.SolidworksConsole.PartCreation
             swLinearPatternFeatureData.D2TotalInstances = 1;
             swLinearPatternFeatureData.GeometryPattern = false;
             swLinearPatternFeatureData.VarySketch = false;
-            ;
             feat.CreateFeature(swLinearPatternFeatureData);
 
         }
@@ -589,8 +588,6 @@ namespace Veradel.SolidworksConsole.PartCreation
             _model.ClearSelection2(true);
 
 
-
-
             // exit
             sMan.AddToDB = false;
             sMan.DisplayWhenAdded = true;
@@ -607,6 +604,28 @@ namespace Veradel.SolidworksConsole.PartCreation
                 false, false, false, false, false, false, true,
                 false, false, false, (int)swStartConditions_e.swStartSketchPlane, 0, false, false);
 
+            _model.ClearSelection2(true);
+
+
+            // linear
+            _ext.GetLastFeatureAdded().Select2(false, 4);
+            _ext.SelectByID2("Vista lateral", "PLANE", 0, 0, 0, true, 1, null, (int)swSelectOption_e.swSelectOptionDefault);
+            _ext.SelectByID2("Planta", "PLANE", 0, 0, 0, true, 2, null, (int)swSelectOption_e.swSelectOptionDefault);
+
+            LinearPatternFeatureData swLinearPatternFeatureData = feat.CreateDefinition((int)swFeatureNameID_e.swFmLPattern);
+
+            swLinearPatternFeatureData.D1EndCondition = 0;
+            swLinearPatternFeatureData.D1ReverseDirection = false;
+            swLinearPatternFeatureData.D1Spacing = _distanceBetweenRollers / 1000;
+            swLinearPatternFeatureData.D1TotalInstances = _nRollers;
+            swLinearPatternFeatureData.D2EndCondition = 0;
+            swLinearPatternFeatureData.D2PatternSeedOnly = false;
+            swLinearPatternFeatureData.D2ReverseDirection = false;
+            swLinearPatternFeatureData.D2Spacing = 0.01;
+            swLinearPatternFeatureData.D2TotalInstances = 1;
+            swLinearPatternFeatureData.GeometryPattern = false;
+            swLinearPatternFeatureData.VarySketch = false;
+            feat.CreateFeature(swLinearPatternFeatureData);
             #region Obsolete
             /* Obsolete, why? beacuse the paralelepipid starts in the middle of the 1 and 2 housing, the new method starts in the left side
             _model.InsertSketch2(true);
