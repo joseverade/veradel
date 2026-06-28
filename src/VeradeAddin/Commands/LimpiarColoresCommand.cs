@@ -26,7 +26,7 @@ namespace VeradeAddin.Commands
 
         public string Name { get { return "Líneas a negro"; } }
         public string Tooltip { get { return "Líneas a negro"; } }
-        public string Hint { get { return "Pone en negro TODAS las aristas (incluidas las ocultas) de la VISTA de pieza seleccionada"; } }
+        public string Hint { get { return "Devuelve a negro las aristas coloreadas de la VISTA seleccionada (o TODAS si no hay registro en memoria)"; } }
         public CommandIcon Icon { get { return CommandIcon.ClearColors; } }
 
         public IReadOnlyList<DocumentKind> DocumentTypes
@@ -45,7 +45,9 @@ namespace VeradeAddin.Commands
             const string docType = "Drawing";
 
             if (!_dialog.Confirm(Name,
-                "Esto pondrá en NEGRO todas las aristas (incluidas las ocultas) de la VISTA de pieza seleccionada.\n\n" +
+                "Devuelve a NEGRO las aristas que coloreaste en la VISTA de pieza seleccionada.\n\n" +
+                "Si no hay registro en memoria de esta sesión (p.ej. tras reiniciar), pondrá en negro TODAS " +
+                "las aristas de la vista (incluidas las ocultas).\n\n" +
                 "Selecciona una vista de pieza antes de continuar.\n\n¿Continuar?"))
             {
                 _log.Log(Name, docType, LogOutcome.Cancel, "User declined");
@@ -65,8 +67,9 @@ namespace VeradeAddin.Commands
                 return;
             }
 
-            _log.Log(Name, docType, LogOutcome.Success, "Reset " + result.EdgesColored + " edge(s)");
-            _dialog.ShowMessage(Name, "Aristas restauradas a negro: " + result.EdgesColored);
+            string scope = result.RestrictedToColored ? " (solo las coloreadas)" : " (toda la vista)";
+            _log.Log(Name, docType, LogOutcome.Success, "Reset " + result.EdgesColored + " edge(s)" + scope);
+            _dialog.ShowMessage(Name, "Aristas restauradas a negro: " + result.EdgesColored + scope);
         }
     }
 }

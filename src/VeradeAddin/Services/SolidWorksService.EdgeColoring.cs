@@ -18,14 +18,31 @@ namespace VeradeAddin.Services
     /// matched by edge midpoint against a spatial hash of the coloured faces.
     ///
     /// Scope is ONE view: the command acts only on the single part view the user has selected, so it is
-    /// fast (no traversal of every view) and stateless — there is no tracking and no persistence. To undo,
-    /// the user runs "Líneas a negro" on the view, which blackens ALL of that view's edges.
+    /// fast (no traversal of every view). It keeps a session-scoped memory (<see cref="_coloredEdges"/>)
+    /// of which edges it coloured per view, keyed by model-space midpoint. To undo, the user runs
+    /// "Líneas a negro": if a memory exists for the view it restores ONLY those edges, otherwise it
+    /// blackens ALL of that view's edges. Memory is lost on add-in reload / SW restart (then: blacken all).
     /// </summary>
     public sealed partial class SolidWorksService
     {
         private const double EdgeGridCellSize = 0.01;        // metres
         private const double PerpendicularTolerance = 0.002;
         private const double OnFaceTolerance = 1e-6;
+
+        // Session-scoped memory of which edges this command coloured, per drawing view (by name). Each
+        // edge is keyed by its model-space midpoint so "Líneas a negro" can restore ONLY those edges.
+        // Lost on add-in reload / SW restart — by design: no memory for a view => blacken the WHOLE view.
+        private readonly Dictionary<string, HashSet<(long, long, long)>> _coloredEdges =
+            new Dictionary<string, HashSet<(long, long, long)>>(StringComparer.OrdinalIgnoreCase);
+
+        private const double MidpointKeyScale = 1e6;
+
+        private static (long, long, long) MidpointKey(double x, double y, double z)
+        {
+            return ((long)Math.Round(x * MidpointKeyScale),
+                    (long)Math.Round(y * MidpointKeyScale),
+                    (long)Math.Round(z * MidpointKeyScale));
+        }
 
         // ===================== public API =====================
 
@@ -124,26 +141,102 @@ namespace VeradeAddin.Services
                 return result;
             }
 
+            var painted = new HashSet<(long, long, long)>();
             var selData = selMgr.CreateSelectData();
+
+            // Same perf recipe as "Líneas a negro": a part with many faces would otherwise repaint per
+            // edge. Disable every refresh mechanism and do ONE redraw at the end. All restored in finally
+            // (CommandInProgress MUST be reset or the UI stays frozen).
+            var mview = model.ActiveView as ModelView;
+            bool hadGraphics = mview != null && mview.EnableGraphicsUpdate;
+            var featMgr = model.FeatureManager;
+            bool hadFeatureTree = featMgr != null && featMgr.EnableFeatureTree;
+            bool oldApply = _sw.GetApplySelectionFilter();
+            object oldFilters = _sw.GetSelectionFilters();
+            bool commandInProgress = false;
+            bool suspended = false;
+
+            // View/part invariants are constant across mappings (single view, single part): compute ONCE
+            // instead of per colour. Likewise fetch the render materials and collect the view silhouettes
+            // once (the latter is a full-document SelectAll — doing it per colour was the main cost).
+            var partModel = view.ReferencedDocument as IModelDoc2;
+            object[] rms = null;
+            List<object> silhouettes = null;
+
             try
             {
-                foreach (var map in request.Mappings)
+                _sw.CommandInProgress = true;
+                commandInProgress = true;
+                if (mview != null) mview.EnableGraphicsUpdate = false;
+                if (featMgr != null) featMgr.EnableFeatureTree = false;
+                selMgr.SuspendSelectionList();
+                suspended = true;
+
+                if (partModel == null)
                 {
-                    try
+                    result.Error = "No se pudo acceder a la pieza de la vista.";
+                }
+                else
+                {
+                    string partPath = partModel.GetPathName();
+                    Vec3 viewNormal = ViewNormal(view);
+                    bool realView = IsRealView(view, partModel);
+                    bool isoView = realView && IsIsometricView(view);
+
+                    rms = GetRenderMaterialsArray(partModel);
+                    silhouettes = CollectViewSilhouettes(model, selMgr, view.GetName2());
+
+                    // CollectViewSilhouettes leaves the SILHOUETTES selection filter active — reset to
+                    // normal selection so the per-mapping model-edge selection isn't filtered out.
+                    ClearActiveSelectionFilters();
+                    _sw.SetApplySelectionFilter(false);
+
+                    foreach (var map in request.Mappings)
                     {
-                        ColorMappingInView(drawing, model, selMgr, selData, view, map, result);
+                        try
+                        {
+                            ColorMappingInView(drawing, model, selMgr, selData, view, partModel, partPath,
+                                map, result, painted, viewNormal, realView, isoView, rms, silhouettes);
+                        }
+                        catch (Exception ex)
+                        {
+                            result.Errors.Add("Color (" + map.SourceR + "," + map.SourceG + "," + map.SourceB + "): " + ex.Message);
+                        }
                     }
-                    catch (Exception ex)
+                    result.ViewsProcessed = 1;
+                    result.Success = result.Errors.Count == 0;
+
+                    // Remember what we painted so "Líneas a negro" restores only these edges (union across runs).
+                    if (painted.Count > 0)
                     {
-                        result.Errors.Add("Color (" + map.SourceR + "," + map.SourceG + "," + map.SourceB + "): " + ex.Message);
+                        HashSet<(long, long, long)> existing;
+                        if (_coloredEdges.TryGetValue(request.ViewName, out existing)) existing.UnionWith(painted);
+                        else _coloredEdges[request.ViewName] = painted;
                     }
                 }
-                result.ViewsProcessed = 1;
-                result.Success = result.Errors.Count == 0;
             }
             finally
             {
                 model.ClearSelection2(true);
+                ClearActiveSelectionFilters();
+                if (oldFilters != null) _sw.SetSelectionFilters(oldFilters, true);
+                _sw.SetApplySelectionFilter(oldApply);
+                if (suspended) selMgr.ResumeSelectionList2(false);
+                if (silhouettes != null) foreach (var os in silhouettes) ComRelease.Release(os);
+                if (rms != null) foreach (var o in rms) ComRelease.Release(o);
+                ComRelease.Release(partModel);
+                if (featMgr != null)
+                {
+                    featMgr.EnableFeatureTree = hadFeatureTree;
+                    ComRelease.Release(featMgr);
+                }
+                if (mview != null)
+                {
+                    mview.EnableGraphicsUpdate = hadGraphics;
+                    ComRelease.Release(mview);
+                }
+                if (commandInProgress) _sw.CommandInProgress = false;
+                model.GraphicsRedraw2();
                 ComRelease.Release(selData);
                 ComRelease.Release(view);
                 ComRelease.Release(selMgr);
@@ -180,6 +273,11 @@ namespace VeradeAddin.Services
                 return result;
             }
 
+            // If we have a memory of edges coloured in THIS view, restore only those; otherwise blacken all.
+            string viewName = view.GetName2();
+            HashSet<(long, long, long)> restrict;
+            _coloredEdges.TryGetValue(viewName, out restrict);
+
             int black = RgbToSwInt(0, 0, 0);
             bool oldApply = _sw.GetApplySelectionFilter();
             object oldFilters = _sw.GetSelectionFilters();
@@ -205,9 +303,11 @@ namespace VeradeAddin.Services
                 selMgr.SuspendSelectionList();
                 suspended = true;
 
-                result.EdgesColored = BlackenAllEdgesInView(drawing, model, selMgr, selData, view, black);
+                result.EdgesColored = BlackenAllEdgesInView(drawing, model, selMgr, selData, view, black, restrict);
                 result.ViewsProcessed = 1;
                 result.Success = true;
+                _coloredEdges.Remove(viewName); // memory consumed
+                result.RestrictedToColored = restrict != null;
             }
             catch (Exception ex)
             {
@@ -323,20 +423,15 @@ namespace VeradeAddin.Services
         // ===================== colour one view =====================
 
         private void ColorMappingInView(IDrawingDoc drawing, IModelDoc2 drawingModel, ISelectionMgr selMgr,
-            SelectData selData, IView view, EdgeColorMapping map, EdgeColoringResult result)
+            SelectData selData, IView view, IModelDoc2 partModel, string partPath, EdgeColorMapping map,
+            EdgeColoringResult result, HashSet<(long, long, long)> painted,
+            Vec3 viewNormal, bool realView, bool isoView, object[] rms, List<object> silhouettes)
         {
             int targetSw = RgbToSwInt(map.TargetR, map.TargetG, map.TargetB);
 
-            if (!SameModel(view, map.PartPath))
+            if (!string.Equals(partPath, map.PartPath, StringComparison.OrdinalIgnoreCase))
             {
                 result.Errors.Add("La vista no corresponde a la pieza " + Path.GetFileName(map.PartPath ?? ""));
-                return;
-            }
-
-            var partModel = view.ReferencedDocument as IModelDoc2;
-            if (partModel == null)
-            {
-                result.Errors.Add("No se pudo acceder a la pieza de la vista.");
                 return;
             }
 
@@ -345,44 +440,41 @@ namespace VeradeAddin.Services
             var cone = new List<FaceData>();
             try
             {
-                GatherColoredFaces(partModel, map, planar, cylinder, cone);
+                GatherColoredFaces(partModel, rms, map, planar, cylinder, cone);
 
-                var planarGrid = BuildGrid(planar);
+                // planarGrid is only consulted by the synthetic-view path; real views never use it.
                 var cylinderGrid = BuildGrid(cylinder);
                 var coneGrid = BuildGrid(cone);
+                var planarGrid = realView ? null : BuildGrid(planar);
 
-                ColorOneView(drawing, drawingModel, selMgr, selData, view, partModel,
-                    planar, cylinder, cone, planarGrid, cylinderGrid, coneGrid, targetSw, result);
+                ColorOneView(drawing, drawingModel, selMgr, selData, view,
+                    planar, cylinder, cone, planarGrid, cylinderGrid, coneGrid, targetSw, result, painted,
+                    viewNormal, realView, isoView);
 
-                // Silhouette edges (cylinder/cone outlines) have no model edge — match them by midpoint,
-                // scoped to THIS view so other views are untouched.
+                // Silhouette edges (cylinder/cone outlines) have no model edge — match them by midpoint
+                // against the once-collected silhouette list, scoped to THIS view.
                 try { selData.View = null; } catch { }
-                result.EdgesColored += ColorSilhouettes(drawing, drawingModel, selMgr, selData,
-                    cylinderGrid, coneGrid, targetSw, view.GetName2());
+                result.EdgesColored += ColorSilhouettesFromList(drawing, drawingModel, selMgr, selData,
+                    silhouettes, cylinderGrid, coneGrid, targetSw, painted);
             }
             finally
             {
                 ReleaseFaces(planar);
                 ReleaseFaces(cylinder);
                 ReleaseFaces(cone);
-                ComRelease.Release(partModel);
             }
         }
 
         // Select and colour the candidate edges of ONE view (the body of the original per-view loop).
         private void ColorOneView(IDrawingDoc drawing, IModelDoc2 drawingModel, ISelectionMgr selMgr,
-            SelectData selData, IView view, IModelDoc2 partModel,
+            SelectData selData, IView view,
             List<FaceData> planar, List<FaceData> cylinder, List<FaceData> cone,
             Dictionary<(int, int, int), List<FaceData>> planarGrid,
             Dictionary<(int, int, int), List<FaceData>> cylinderGrid,
             Dictionary<(int, int, int), List<FaceData>> coneGrid,
-            int targetSw, EdgeColoringResult result)
+            int targetSw, EdgeColoringResult result, HashSet<(long, long, long)> painted,
+            Vec3 viewNormal, bool real, bool iso)
         {
-            Vec3 viewNormal = ViewNormal(view);
-            var planarPerp = planar.Where(f => ArePerpendicular(viewNormal, f.Normal)).ToList();
-
-            bool real = IsRealView(view, partModel);
-
             // Selecting an entity inside a drawing view needs the view context, otherwise
             // AddSelectionListObject can't resolve a raw model edge to the view and fails.
             drawingModel.ClearSelection2(true);
@@ -391,9 +483,9 @@ namespace VeradeAddin.Services
 
             if (real)
             {
-                var faces3d = IsIsometricView(view)
+                var faces3d = iso
                     ? planar.Concat(cylinder).Concat(cone)
-                    : planarPerp.Concat(cylinder).Concat(cone);
+                    : planar.Where(f => ArePerpendicular(viewNormal, f.Normal)).Concat(cylinder).Concat(cone);
 
                 foreach (var fd in faces3d)
                 {
@@ -403,6 +495,10 @@ namespace VeradeAddin.Services
                         if (edge2d != null)
                         {
                             selMgr.AddSelectionListObject(edge2d, selData);
+                            double emx, emy, emz;
+                            if (EdgeMidpoint(edge3d, out emx, out emy, out emz))
+                                painted.Add(MidpointKey(emx, emy, emz));
+                            ComRelease.Release(edge2d);
                         }
                         ComRelease.Release(edge3d);
                     }
@@ -422,6 +518,7 @@ namespace VeradeAddin.Services
                     if (PointLiesOnGridFace(mx, my, mz, grid))
                     {
                         selMgr.AddSelectionListObject(oedge, selData);
+                        painted.Add(MidpointKey(mx, my, mz));
                     }
                     ComRelease.Release(oedge);
                 }
@@ -439,51 +536,36 @@ namespace VeradeAddin.Services
             drawingModel.ClearSelection2(true);
         }
 
-        private int ColorSilhouettes(IDrawingDoc drawing, IModelDoc2 drawingModel, ISelectionMgr selMgr,
-            SelectData selData, Dictionary<(int, int, int), List<FaceData>> cylinderGrid,
-            Dictionary<(int, int, int), List<FaceData>> coneGrid, int targetSw, string viewName)
+        // Colour the silhouettes (curved-face outlines) of this view whose midpoint lies on a cylinder/cone
+        // face of the current colour. Works off the once-collected silhouette list; selection-filter/suspend
+        // state is managed once by the caller (ApplyEdgeColoring).
+        private int ColorSilhouettesFromList(IDrawingDoc drawing, IModelDoc2 drawingModel, ISelectionMgr selMgr,
+            SelectData selData, List<object> silhouettes,
+            Dictionary<(int, int, int), List<FaceData>> cylinderGrid,
+            Dictionary<(int, int, int), List<FaceData>> coneGrid, int targetSw,
+            HashSet<(long, long, long)> painted)
         {
+            if (silhouettes == null || silhouettes.Count == 0) return 0;
+
             int colored = 0;
-            bool oldApply = _sw.GetApplySelectionFilter();
-            object oldFilters = _sw.GetSelectionFilters();
-            bool suspended = false;
-            List<object> silhouettes = null;
-
-            try
+            foreach (var os in silhouettes)
             {
-                selMgr.SuspendSelectionList();
-                suspended = true;
+                var sil = os as SilhouetteEdge;
+                if (sil == null) continue;
 
-                silhouettes = CollectViewSilhouettes(drawingModel, selMgr, viewName);
+                double x, y, z;
+                if (!SilhouetteMidpoint(sil, out x, out y, out z)) continue;
+                if (!PointLiesOnGridFace(x, y, z, cylinderGrid) && !PointLiesOnGridFace(x, y, z, coneGrid)) continue;
 
-                foreach (var os in silhouettes)
+                if (selMgr.AddSelectionListObject(sil, selData))
                 {
-                    var sil = os as SilhouetteEdge;
-                    if (sil == null) continue;
-
-                    double x, y, z;
-                    if (!SilhouetteMidpoint(sil, out x, out y, out z)) continue;
-                    if (!PointLiesOnGridFace(x, y, z, cylinderGrid) && !PointLiesOnGridFace(x, y, z, coneGrid)) continue;
-
-                    if (selMgr.AddSelectionListObject(sil, selData)) colored++;
+                    colored++;
+                    painted.Add(MidpointKey(x, y, z));
                 }
-
-                if (colored > 0)
-                {
-                    drawing.SetLineColor(targetSw);
-                }
-                drawingModel.ClearSelection2(true);
-            }
-            finally
-            {
-                drawingModel.ClearSelection2(true);
-                ClearActiveSelectionFilters();
-                if (oldFilters != null) _sw.SetSelectionFilters(oldFilters, true);
-                _sw.SetApplySelectionFilter(oldApply);
-                if (suspended) selMgr.ResumeSelectionList2(false);
-                if (silhouettes != null) foreach (var os in silhouettes) ComRelease.Release(os);
             }
 
+            if (colored > 0) drawing.SetLineColor(targetSw);
+            drawingModel.ClearSelection2(true);
             return colored;
         }
 
@@ -493,7 +575,7 @@ namespace VeradeAddin.Services
         // GetCorrespondingEntity (so hidden/obscured edges are reached too — SelectAll would skip them),
         // add the view's silhouettes, then ONE SetLineColor(black). View-scoped and stateless.
         private int BlackenAllEdgesInView(IDrawingDoc drawing, IModelDoc2 drawingModel, ISelectionMgr selMgr,
-            SelectData selData, IView view, int black)
+            SelectData selData, IView view, int black, HashSet<(long, long, long)> restrict)
         {
             // Silhouettes are gathered first because collecting them uses SelectAll, which would otherwise
             // wipe a selection list we had already started building.
@@ -522,8 +604,13 @@ namespace VeradeAddin.Services
                             {
                                 foreach (var oe in edges)
                                 {
+                                    if (!ShouldBlacken(oe, restrict)) { ComRelease.Release(oe); continue; }
                                     var edge2d = view.GetCorrespondingEntity(oe);
-                                    if (edge2d != null) selMgr.AddSelectionListObject(edge2d, selData);
+                                    if (edge2d != null)
+                                    {
+                                        selMgr.AddSelectionListObject(edge2d, selData);
+                                        ComRelease.Release(edge2d);
+                                    }
                                     ComRelease.Release(oe);
                                 }
                             }
@@ -532,11 +619,31 @@ namespace VeradeAddin.Services
                     }
                 }
 
+                // Synthetic views (sections, broken-out) don't map model edges via GetCorrespondingEntity,
+                // so also add the view's directly-selectable visible edges (still under the view context).
+                // When restoring only coloured edges, filter by remembered midpoint; selection de-dups
+                // against the model-edge pass above.
+                foreach (var oedge in VisibleEdges(view))
+                {
+                    if (ShouldBlacken(oedge, restrict))
+                        selMgr.AddSelectionListObject(oedge, selData);
+                    ComRelease.Release(oedge);
+                }
+
                 // Silhouettes are added without a view context (they are already view entities).
                 try { selData.View = null; } catch { }
                 foreach (var os in silhouettes)
                 {
-                    if (os != null) selMgr.AddSelectionListObject(os, selData);
+                    if (os == null) continue;
+                    if (restrict != null)
+                    {
+                        var sil = os as SilhouetteEdge;
+                        double sx, sy, sz;
+                        if (sil == null || !SilhouetteMidpoint(sil, out sx, out sy, out sz) ||
+                            !restrict.Contains(MidpointKey(sx, sy, sz)))
+                            continue;
+                    }
+                    selMgr.AddSelectionListObject(os, selData);
                 }
 
                 int n = selMgr.GetSelectedObjectCount2(-1);
@@ -621,47 +728,43 @@ namespace VeradeAddin.Services
             }
         }
 
-        private static void GatherColoredFaces(IModelDoc2 part, EdgeColorMapping map,
-            List<FaceData> planar, List<FaceData> cylinder, List<FaceData> cone)
+        private static object[] GetRenderMaterialsArray(IModelDoc2 part)
         {
             var ext = part.Extension;
-            if (ext == null) return;
+            if (ext == null) return null;
+            try { return ext.GetRenderMaterials2((int)swDisplayStateOpts_e.swAllDisplayState, string.Empty) as object[]; }
+            finally { ComRelease.Release(ext); }
+        }
 
-            var rms = ext.GetRenderMaterials2((int)swDisplayStateOpts_e.swAllDisplayState, string.Empty) as object[];
-            if (rms == null) { ComRelease.Release(ext); return; }
+        // Gathers the faces carrying this mapping's source colour from the (already-fetched) render
+        // materials. The render-material COM objects are owned and released by the caller.
+        private static void GatherColoredFaces(IModelDoc2 part, object[] rms, EdgeColorMapping map,
+            List<FaceData> planar, List<FaceData> cylinder, List<FaceData> cone)
+        {
+            if (rms == null) return;
 
-            try
+            foreach (var o in rms)
             {
-                foreach (var o in rms)
+                var rm = o as RenderMaterial;
+                if (rm == null) continue;
+
+                int r, g, b;
+                SwColorToRgb(rm.PrimaryColor, out r, out g, out b);
+                if (r != map.SourceR || g != map.SourceG || b != map.SourceB) continue;
+
+                int before = planar.Count + cylinder.Count + cone.Count;
+
+                var ents = rm.GetEntities() as object[];
+                if (ents != null)
                 {
-                    var rm = o as RenderMaterial;
-                    if (rm == null) continue;
-                    try
-                    {
-                        int r, g, b;
-                        SwColorToRgb(rm.PrimaryColor, out r, out g, out b);
-                        if (r != map.SourceR || g != map.SourceG || b != map.SourceB) continue;
-
-                        int before = planar.Count + cylinder.Count + cone.Count;
-
-                        var ents = rm.GetEntities() as object[];
-                        if (ents != null)
-                        {
-                            foreach (var e in ents) AddEntityFaces(e, planar, cylinder, cone);
-                        }
-
-                        // Nothing concrete to attach to => part-level appearance; apply to all faces.
-                        if (planar.Count + cylinder.Count + cone.Count == before)
-                        {
-                            AddAllPartFaces(part, planar, cylinder, cone);
-                        }
-                    }
-                    finally { ComRelease.Release(rm); }
+                    foreach (var e in ents) AddEntityFaces(e, planar, cylinder, cone);
                 }
-            }
-            finally
-            {
-                ComRelease.Release(ext);
+
+                // Nothing concrete to attach to => part-level appearance; apply to all faces.
+                if (planar.Count + cylinder.Count + cone.Count == before)
+                {
+                    AddAllPartFaces(part, planar, cylinder, cone);
+                }
             }
         }
 
@@ -843,14 +946,6 @@ namespace VeradeAddin.Services
             if (surf == null) return -1;
             try { return surf.Identity(); }
             finally { ComRelease.Release(surf); }
-        }
-
-        private static bool SameModel(IView view, string path)
-        {
-            var refDoc = view.ReferencedDocument as IModelDoc2;
-            if (refDoc == null) return false;
-            try { return string.Equals(refDoc.GetPathName(), path, StringComparison.OrdinalIgnoreCase); }
-            finally { ComRelease.Release(refDoc); }
         }
 
         private static Dictionary<(int, int, int), List<FaceData>> BuildGrid(List<FaceData> faces)
@@ -1077,6 +1172,16 @@ namespace VeradeAddin.Services
             object active = _sw.GetSelectionFilters();
             if (active == null) return;
             _sw.SetSelectionFilters(active, false);
+        }
+
+        // "Líneas a negro" filter: when a memory of coloured edges exists for the view, only blacken an
+        // edge whose model-space midpoint was recorded; null restrict => blacken everything.
+        private static bool ShouldBlacken(object oEdge, HashSet<(long, long, long)> restrict)
+        {
+            if (restrict == null) return true;
+            double x, y, z;
+            if (!EdgeMidpoint(oEdge, out x, out y, out z)) return false;
+            return restrict.Contains(MidpointKey(x, y, z));
         }
 
         private static void ReleaseFaces(List<FaceData> faces)

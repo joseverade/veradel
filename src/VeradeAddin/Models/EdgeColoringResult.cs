@@ -18,6 +18,10 @@ namespace VeradeAddin.Models
         /// <summary>Drawing views that were processed.</summary>
         public int ViewsProcessed { get; set; }
 
+        /// <summary>For "Líneas a negro": true if only the remembered coloured edges were restored (a
+        /// memory existed for the view); false if the whole view was blackened.</summary>
+        public bool RestrictedToColored { get; set; }
+
         public List<string> Errors { get; private set; }
 
         /// <summary>Fatal reason when the whole operation could not run.</summary>

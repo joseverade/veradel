@@ -3,6 +3,8 @@ using SolidWorks.Interop.swconst;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Management.Instrumentation;
+using System.Net.Http.Headers;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading.Tasks;
@@ -452,16 +454,162 @@ namespace Veradel.SolidworksConsole.PartCreation
 
             // first we create the line, it start from the left housing
 
-            double posx = (_nRollers - 1) * _distanceBetweenRollers / 2;
+            /*
+             double posx = (_nRollers - 1) * _distanceBetweenRollers / 2;
 
             Point auxStartPoint = new Point(-posx, _positionY); // Center
             Point auxEndPoint = new Point(-posx, _positionY - _dFromRevolveToBottom);   // Bottom
-
+            
+             */
 
             _model.InsertSketch2(true);
 
 
+            double posx = (_nRollers - 1) * _distanceBetweenRollers / 2;
+            // Aux lines
+            Point aux1p1 = new Point(-posx, _positionY);
+            Point aux1p2 = new Point(-posx, _positionY - _dFromRevolveToBottom);
 
+            SketchManager sMan = _model.SketchManager;
+            sMan.AddToDB = true;
+            sMan.DisplayWhenAdded = false;
+            SketchSegment aux1 = sMan.CreateLine(aux1p1.X, aux1p1.Y, 0, aux1p2.X, aux1p2.Y, 0);
+            aux1.ConstructionGeometry = true;
+
+            // line to the left 
+            Point aux2p1 = new Point(-posx, _positionY);
+            Point aux2p2 = new Point(-posx - _distanceBetweenRollers, _positionY);
+            SketchSegment aux2 = sMan.CreateLine(aux2p1.X, aux2p1.Y, 0, aux2p2.X, aux2p2.Y, 0);
+            aux2.ConstructionGeometry = true;
+
+
+            // Point to down
+            Point aux3p1 = new Point(-posx - _distanceBetweenRollers, _positionY); // (aux2p2.X ,  _positionY)
+            Point aux3p2 = new Point(-posx - _distanceBetweenRollers, _positionY - _dFromRevolveToBottom);
+
+            SketchSegment aux3 = sMan.CreateLine(aux3p1.X, aux3p1.Y, 0, aux3p2.X, aux3p2.Y, 0);
+            aux3.ConstructionGeometry = true;
+
+            // 2 extra auxilary points
+
+            Point aux4p2 = new Point(-posx - _distanceBetweenRollers + _hDimension1 / 2.0, _positionY - _dFromRevolveToBottom);
+            SketchSegment aux4 = sMan.CreateLine(aux3p2.X, aux3p2.Y, 0, aux4p2.X, aux4p2.Y, 0);
+            aux4.ConstructionGeometry = true;
+
+            Point aux5p2 = new Point(-posx - _hDimension1 / 2.0, _positionY - _dFromRevolveToBottom);
+            SketchSegment aux5 = sMan.CreateLine(aux1p1.X, aux1p2.Y, 0, aux5p2.X, aux5p2.Y, 0);
+            aux5.ConstructionGeometry = true;
+
+
+            // Aux 6  
+            Point aux6p2 = new Point(-posx + _distanceBetweenRollers, _positionY); // x = p1.X + , y = p1 
+            SketchSegment aux6 = sMan.CreateLine(aux1p1.X, aux1p1.Y, 0, aux6p2.X, aux6p2.Y, 0);
+            aux6.ConstructionGeometry = true;
+
+
+            // we create the lines
+
+            Point l1p2 = new Point(-posx - _distanceBetweenRollers + _hDimension1 / 2.0 + _hDimension2, _positionY - _dFromRevolveToBottom + _vDimension);
+            SketchSegment l1 = sMan.CreateLine(aux4p2.X, aux4p2.Y, 0, l1p2.X, l1p2.Y, 0);
+
+            Point l2p2 = new Point(-posx - _distanceBetweenRollers + _hDimension1 / 2.0 + _hDimension2 + _hDimension3, _positionY - _dFromRevolveToBottom + _vDimension);
+            SketchSegment l2 = sMan.CreateLine(l1p2.X, l1p2.Y, 0, l2p2.X, l2p2.Y, 0);
+
+            // l3 is joining the l2 with aux5
+            SketchSegment l3 = sMan.CreateLine(l2p2.X, l2p2.Y, 0, aux5p2.X, aux5p2.Y, 0);
+
+            // l4 is joinnig the aux5 with aux2
+            SketchSegment l4 = sMan.CreateLine(aux5p2.X, aux5p2.Y, 0, aux4p2.X, aux4p2.Y, 0);
+
+            // we add the constrains
+
+            _model.ClearSelection2(true);
+            Sketch sketch = _model.GetActiveSketch2();
+            sketch.ConstrainAll();
+
+   
+
+            // The first aux 1 and the center of the first circle 
+            _model.ClearSelection2(true);
+            _ext.SelectByID2("", "EDGE", aux1p1.X + _steps[0].Diameter / 2000.0, _positionY, 0, false, 0, null, 0);
+            ((SketchPoint)((SketchLine)aux1).GetStartPoint2()).Select4(true, null);
+            _model.SketchAddConstraints("sgCONCENTRIC");
+
+            // aux6 and the 2nd circle
+            _model.ClearSelection2(true);
+            _ext.SelectByID2("", "EDGE", aux6p2.X + _steps[0].Diameter / 2000.0, _positionY, 0, false, 0, null, 0);
+            ((SketchPoint)((SketchLine)aux6).GetEndPoint2()).Select4(true, null);
+            _model.SketchAddConstraints("sgCONCENTRIC");
+
+            // aux2 and aux6 equal
+            _model.ClearSelection2(true);
+            aux2.Select4(false, null);
+            aux6.Select4(true, null);
+            _model.SketchAddConstraints("sgSAMELENGTH");
+
+
+
+
+            // Endpoint is added
+            _model.ClearSelection2(true);
+            _ext.SelectByID2("", "EDGE", 0, aux1p2.Y, 0, false, 0, null, 0);
+            ((SketchPoint)((SketchLine)aux1).GetEndPoint2()).Select4(true, null);
+            _model.SketchAddConstraints("sgCOINCIDENT");
+
+
+            // Equal dimension
+            _model.ClearSelection2(true);
+            aux4.Select4(false, null);
+            aux5.Select4(true, null);
+            _model.SketchAddConstraints("sgSAMELENGTH");
+
+            // line 1 and line 3 are equal
+            _model.ClearSelection2(true);
+            l1.Select4(false, null);
+            l2.Select4(true, null);
+            _model.SketchAddConstraints("sgSAMELENGTH");
+
+            // the last is added
+            _model.ClearSelection2(true);
+            l1.Select4(false, null);
+            _model.AddHorizontalDimension2(0,0,0);
+
+
+            _model.ClearSelection2(true);
+            l4.Select4(true, null);
+            l2.Select4(true, null);
+            _model.AddVerticalDimension2(0,0,0);
+
+
+            _model.ClearSelection2(true);
+            aux1.Select4(false, null);
+            ((SketchPoint)((SketchLine)aux5).GetEndPoint2()).Select4(true, null);
+            ((DisplayDimension)_model.AddDiameterDimension2(0, 0, 0)).Diametric = true;
+
+            _model.ClearSelection2(true);
+
+
+
+
+            // exit
+            sMan.AddToDB = false;
+            sMan.DisplayWhenAdded = true;
+
+
+            _model.InsertSketch2(true);
+
+            // The cut is done
+
+            FeatureManager feat = _model.FeatureManager;
+            feat.FeatureCut4(true, false, false,
+                (int)swEndConditions_e.swEndCondThroughAll,
+                0, 0, 0, false, false, false, false, 0, 0,
+                false, false, false, false, false, false, true,
+                false, false, false, (int)swStartConditions_e.swStartSketchPlane, 0, false, false);
+
+            #region Obsolete
+            /* Obsolete, why? beacuse the paralelepipid starts in the middle of the 1 and 2 housing, the new method starts in the left side
+            _model.InsertSketch2(true);
             SketchManager sMan = _model.SketchManager;
             sMan.AddToDB = true;
             sMan.DisplayWhenAdded = false;
@@ -584,6 +732,11 @@ namespace Veradel.SolidworksConsole.PartCreation
 
 
             _model.InsertSketch2(true);
+             */
+            #endregion
+
+
+
 
         }
     }

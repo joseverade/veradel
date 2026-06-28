@@ -104,7 +104,10 @@ tras seleccionar las dos entidades.
   entidad(es) **ya seleccionada(s)**. Identificadores usados en el add-in:
   * `"sgHORIZONTAL2D"` — horizontal.
   * `"sgVERTICAL2D"` — vertical.
-  * `"sgCOINCIDENT2D"` — coincidente (punto-punto, punto-arista o punto-cara).
+  * `"sgCOINCIDENT"` — coincidente (punto-punto, punto-arista o punto-silueta). Para anclar un
+    punto de croquis al **origen** se selecciona antes `EXTSKETCHPOINT` en `(0,0,0)`; a una
+    **arista** del cuerpo se usa `EDGE`; a una **cara cilíndrica** vista de canto, `SILHOUETTE`
+    (ver [ModelDocExtension](ModelDocExtension.md) `SelectByID2`).
   * *(Se prefiere a `ISketchRelationManager.AddRelation`, que lanza un AccessViolation no capturable.)*
 
 ### Reconstrucción

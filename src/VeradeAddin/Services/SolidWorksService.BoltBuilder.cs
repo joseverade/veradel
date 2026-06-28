@@ -163,10 +163,10 @@ namespace VeradeAddin.Services
                 // Centreline on the X axis = axis of revolution. Closed half-section above it:
                 // left face → head top (Ø1/L1) → step down → shank top (Ø2/L2) → right face → bottom.
                 var segCl = sketchMgr.CreateLine(0, 0, 0, -total, 0, 0);      // Jose: here i set the center line negative X coordinate negative so the center line is outside 
-                segCl.ConstructionGeometry = true;                            
+                segCl.ConstructionGeometry = true;
                 var segLeft = Line(sketchMgr, 0, 0, 0, r1);         // left face (starts at origin)
 
-               
+
                 var segHeadTop = Line(sketchMgr, 0, r1, l1, r1);    // head top (L1, Ø1)
                 Line(sketchMgr, l1, r1, l1, r2);                    // step down to shank
                 var segShankTop = Line(sketchMgr, l1, r2, total, r2); // shank top (L2, Ø2)
@@ -187,10 +187,10 @@ namespace VeradeAddin.Services
                 // −r), so SolidWorks sees it cross the centreline and reads it as a Ø, not a radius.
                 // Sitting exactly on −r is ambiguous and falls back to a radius.
                 const double off = 0.012;
-                LengthDim(model, segHeadTop, l1 / 2.0, r1 + off);                  // L1
-                DiameterDim(model, segHeadTop, segCl, l1 / 2.0, -(r1 + off));      // Ø1
-                LengthDim(model, segShankTop, (l1 + total) / 2.0, r1 + 2.0 * off); // L2
+                DiameterDim(model, segHeadTop, segCl, l1 / 2.0, -r1);      // Ø1
                 DiameterDim(model, segShankTop, segCl, (l1 + total) / 2.0, -(r2 + off)); // Ø2
+                LengthDim(model, segHeadTop, l1 / 2.0, r1 + off);                  // L1
+                LengthDim(model, segShankTop, (l1 + total) / 2.0, r1 + 2.0 * off); // L2
 
                 model.ClearSelection2(true);
                 sketchMgr.InsertSketch(true);
@@ -239,7 +239,8 @@ namespace VeradeAddin.Services
                 sketchMgr.DisplayWhenAdded = false;
 
                 // Construction axis (for the diameter dimension) + the closed rectangle of the notch.
-                var segCl = sketchMgr.CreateCenterLine(0, 0, 0, total, 0, 0);
+                var segCl = sketchMgr.CreateLine(0, 0, 0, total, 0, 0);
+                segCl.ConstructionGeometry = true;
                 var segNearWall = Line(sketchMgr, xg1, r2, xg1, r3);  // into groove (near wall)
                 var segBottom = Line(sketchMgr, xg1, r3, xg2, r3);    // groove bottom (E1, D3)
                 Line(sketchMgr, xg2, r3, xg2, r2);                    // out of groove (far wall)
@@ -250,10 +251,10 @@ namespace VeradeAddin.Services
                 // and the notch top float free of the model.
                 ConstrainAll(sketchMgr);
                 CoincidentToOrigin(model, StartPt(segCl));                    // axis start ≡ part origin
-                CoincidentPointToFace(model, EndPt(segCl), total, 0, 0);      // axis end on the free-end face
+                CoincidentPointToEdge(model, EndPt(segCl), total, 0, 0);      // axis end on the free-end face
                 double xShank = (l1 + xg1) / 2.0;                             // a point on the shank, before the groove
-                CoincidentPointToFace(model, StartPt(segTop), xShank, r2, 0); // notch top ≡ shank cylindrical face
-                CoincidentPointToFace(model, EndPt(segTop), xShank, r2, 0);
+                CoincidentPointToSilhouetteEdge(model, StartPt(segTop), xShank, r2, 0); // notch top ≡ shank cylindrical face
+                CoincidentPointToEdge(model, EndPt(segTop), xShank, r2, 0);
 
                 const double off = 0.012;
                 // P1: from the head/shank step edge (selected on the body) to the groove's near wall.
@@ -300,12 +301,12 @@ namespace VeradeAddin.Services
                 "", "EDGE", total, r2, 0, false, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
             if (!ok) return "No se pudo seleccionar la arista del extremo para el chaflán.";
 
-            // Angle-Distance chamfer: Width is the set-back measured ALONG the shank (axial) and the
-            // Angle is taken from that face. The flip flag makes SolidWorks measure the distance along
-            // the cylindrical face instead of the flat end face — without it the chamfer comes out
-            // mirrored ("al revés"). TangentPropagation keeps it wrapping the full circular edge.
-            int options = (int)swFeatureChamferOption_e.swFeatureChamferTangentPropagation
-                        | (int)swFeatureChamferOption_e.swFeatureChamferFlipDirection;
+            // Angle-Distance chamfer on the free-end circular edge. Options = TangentPropagation only
+            // (=4), exactly matching the proven reference console BoltCreation.cs. NO FlipDirection: the
+            // flip bit only TOGGLES which adjacent face SolidWorks references for the angle — it does not
+            // stabilise the pick, so adding it made the chamfer come out right only sometimes. With the
+            // same geometry and edge as the console, option 4 is deterministic.
+            int options = (int)swFeatureChamferOption_e.swFeatureChamferTangentPropagation;
             var chamfer = model.FeatureManager.InsertFeatureChamfer(
                 options, (int)swChamferType_e.swChamferAngleDistance,
                 spec.ChamferSizeMm * 0.001, spec.ChamferAngleDeg * Math.PI / 180.0,
@@ -357,11 +358,11 @@ namespace VeradeAddin.Services
             try
             {
                 model.ClearSelection2(true);
-                pt.Select4(false, null);
-                var origin = FeatureByTypeName(model, "OriginProfileFeature");
-                if (origin != null && origin.Select2(true, 0))
+                var startpoint = pt.Select4(false, null);
+                var origin = model.Extension.SelectByID2("", "EXTSKETCHPOINT", 0, 0, 0, true, 0, null, 0);
+                if (origin && startpoint)
                 {
-                    model.SketchAddConstraints("sgCOINCIDENT2D");
+                    model.SketchAddConstraints("sgCOINCIDENT");
                 }
             }
             catch { }
@@ -370,34 +371,42 @@ namespace VeradeAddin.Services
 
         // Coincident (point-on-face) between a sketch point and a model face picked by coordinate.
         // Anchors the groove sketch to the already-built body (free-end face, shank cylindrical face).
-        private static void CoincidentPointToFace(IModelDoc2 model, SketchPoint pt, double fx, double fy, double fz)
+        private static void CoincidentPointToEdge(IModelDoc2 model, SketchPoint pt, double fx, double fy, double fz)
         {
             if (pt == null) return;
             try
             {
                 model.ClearSelection2(true);
                 pt.Select4(false, null);
-                bool gotFace = model.Extension.SelectByID2(
-                    "", "FACE", fx, fy, fz, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
-                if (gotFace)
+                bool gotEdge = model.Extension.SelectByID2(
+                    "", "EDGE", fx, fy, fz, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
+                if (gotEdge)
                 {
-                    model.SketchAddConstraints("sgCOINCIDENT2D");
+                    model.SketchAddConstraints("sgCOINCIDENT");
+                }
+            }
+            catch { }
+            finally { model.ClearSelection2(true); }
+        }
+        private static void CoincidentPointToSilhouetteEdge(IModelDoc2 model, SketchPoint pt, double fx, double fy, double fz)
+        {
+            if (pt == null) return;
+            try
+            {
+                model.ClearSelection2(true);
+                pt.Select4(false, null);
+                bool gotEdge = model.Extension.SelectByID2(
+                    "", "SILHOUETTE", fx, fy, fz, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
+                if (gotEdge)
+                {
+                    model.SketchAddConstraints("sgCOINCIDENT");
                 }
             }
             catch { }
             finally { model.ClearSelection2(true); }
         }
 
-        private static Feature FeatureByTypeName(IModelDoc2 model, string typeName)
-        {
-            var f = model.FirstFeature() as Feature;
-            while (f != null)
-            {
-                if (f.GetTypeName2() == typeName) return f;
-                f = f.GetNextFeature() as Feature;
-            }
-            return null;
-        }
+
 
         private static void RestoreSketch(SketchManager sketchMgr, bool addToDbWas, bool displayWas)
         {
@@ -468,7 +477,8 @@ namespace VeradeAddin.Services
                 // reference console). Reversed, AddDiameterDimension2 falls back to a radius.
                 line.Select4(true, null);
                 axis.Select4(true, null);    // line + centreline ⇒ AddDiameterDimension2 makes it a Ø dim
-                model.AddDiameterDimension2(x, y, 0); // was AddDimension2, which produced a radius
+                DisplayDimension display = (DisplayDimension)model.AddDiameterDimension2(x, y, 0); // was AddDimension2, which produced a radius
+                display.Diametric = true;
             }
             catch { }
             finally { model.ClearSelection2(true); }
