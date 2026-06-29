@@ -110,11 +110,15 @@ namespace Veradel.SolidworksConsole.PartCreation
             BodyCut();
             SecondBodyCut();
 
+
+
             if (_chanferCut)
             {
                 ChamferBodyCut();
             }
 
+
+            LastCut();
             _swApp.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swInputDimValOnCreate, true);
         }
 
@@ -526,7 +530,7 @@ namespace Veradel.SolidworksConsole.PartCreation
             Sketch sketch = _model.GetActiveSketch2();
             sketch.ConstrainAll();
 
-   
+
 
             // The first aux 1 and the center of the first circle 
             _model.ClearSelection2(true);
@@ -565,19 +569,19 @@ namespace Veradel.SolidworksConsole.PartCreation
             // line 1 and line 3 are equal
             _model.ClearSelection2(true);
             l1.Select4(false, null);
-            l2.Select4(true, null);
+            l3.Select4(true, null);
             _model.SketchAddConstraints("sgSAMELENGTH");
 
             // the last is added
             _model.ClearSelection2(true);
             l1.Select4(false, null);
-            _model.AddHorizontalDimension2(0,0,0);
+            _model.AddHorizontalDimension2(0, 0, 0);
 
 
             _model.ClearSelection2(true);
             l4.Select4(true, null);
             l2.Select4(true, null);
-            _model.AddVerticalDimension2(0,0,0);
+            _model.AddVerticalDimension2(0, 0, 0);
 
 
             _model.ClearSelection2(true);
@@ -617,7 +621,7 @@ namespace Veradel.SolidworksConsole.PartCreation
             swLinearPatternFeatureData.D1EndCondition = 0;
             swLinearPatternFeatureData.D1ReverseDirection = false;
             swLinearPatternFeatureData.D1Spacing = _distanceBetweenRollers / 1000;
-            swLinearPatternFeatureData.D1TotalInstances = _nRollers;
+            swLinearPatternFeatureData.D1TotalInstances = _nRollers + 1;
             swLinearPatternFeatureData.D2EndCondition = 0;
             swLinearPatternFeatureData.D2PatternSeedOnly = false;
             swLinearPatternFeatureData.D2ReverseDirection = false;
@@ -758,6 +762,40 @@ namespace Veradel.SolidworksConsole.PartCreation
 
 
         }
+    
+        private void LastCut()
+        {
+            // Front face selection
+            _model.ClearSelection2(true);
+            double topLinePosY = _positionY - _dFromRevolveToBottom + _totalHeight;
+            bool status = _ext.SelectByRay(0, topLinePosY / 1000.0, 0, 0, 0, 1, 1, (int)swSelectType_e.swSelFACES,
+                false, 0, (int)swSelectOption_e.swSelectOptionDefault);
+            _model.InsertSketch2(true);
+
+            // A rectangle is created
+
+            SketchManager sMan = _model.SketchManager;
+            sMan.AddToDB = true;
+            sMan.DisplayWhenAdded = false;
+
+            double posx = (_nRollers - 1) * _distanceBetweenRollers / 2;
+
+            Point rec1p1 = new Point(-posx - _distanceBetweenRollers + _hDimension1 / 2.0 + _hDimension2 + _hDimension3, _positionY - _dFromRevolveToBottom + _vDimension);
+            Point rec1p2 = new Point( -(_externalDiameter / 2.0) - 100 , _positionY - _dFromRevolveToBottom);
+
+
+            SketchSegment[] segs =  sMan.CreateCornerRectangle(rec1p1.X, rec1p1.Y, 0, rec1p2.X, rec1p2.Y,0);
+
+            _model.ClearSelection2();
+            segs[4].Select4(false, null);
+
+
+
+            sMan.AddToDB = false;
+            sMan.DisplayWhenAdded = true;
+
+        }
+    
     }
 
     public class Step
