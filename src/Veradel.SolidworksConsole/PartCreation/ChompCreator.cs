@@ -762,7 +762,7 @@ namespace Veradel.SolidworksConsole.PartCreation
 
 
         }
-    
+
         private void LastCut()
         {
             // Front face selection
@@ -781,21 +781,24 @@ namespace Veradel.SolidworksConsole.PartCreation
             double posx = (_nRollers - 1) * _distanceBetweenRollers / 2;
 
             Point rec1p1 = new Point(-posx - _distanceBetweenRollers + _hDimension1 / 2.0 + _hDimension2 + _hDimension3, _positionY - _dFromRevolveToBottom + _vDimension);
-            Point rec1p2 = new Point( -(_externalDiameter / 2.0) - 100 , _positionY - _dFromRevolveToBottom);
+            Point rec1p2 = new Point(-(_externalDiameter / 2.0) - 100, _positionY - _dFromRevolveToBottom);
 
 
-            SketchSegment[] segs =  sMan.CreateCornerRectangle(rec1p1.X, rec1p1.Y, 0, rec1p2.X, rec1p2.Y,0);
+            object[] segs = sMan.CreateCornerRectangle(rec1p1.X, rec1p1.Y, 0, rec1p2.X, rec1p2.Y, 0);
 
-            _model.ClearSelection2();
-            segs[4].Select4(false, null);
 
+            // select the outer edge and make them
+            _model.ClearSelection2(true);
+            ((SketchSegment)segs[3]).Select4(false, null);
+            _ext.SelectByID2("", "EDGE", -_externalDiameter / 2000.0, 0, 0, true, 0, null, 0);
+            _model.SketchAddConstraints("sgTANGENT");
 
 
             sMan.AddToDB = false;
             sMan.DisplayWhenAdded = true;
 
         }
-    
+
     }
 
     public class Step
