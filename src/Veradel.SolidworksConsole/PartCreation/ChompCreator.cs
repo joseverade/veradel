@@ -767,7 +767,7 @@ namespace Veradel.SolidworksConsole.PartCreation
         {
             // Front face selection
             _model.ClearSelection2(true);
-            double topLinePosY = _positionY - _dFromRevolveToBottom + _totalHeight;
+            double topLinePosY = _positionY - _dFromRevolveToBottom + _totalHeight - _dFromTop - 2; //harcoded a margin
             bool status = _ext.SelectByRay(0, topLinePosY / 1000.0, 0, 0, 0, 1, 1, (int)swSelectType_e.swSelFACES,
                 false, 0, (int)swSelectOption_e.swSelectOptionDefault);
             _model.InsertSketch2(true);
@@ -793,6 +793,57 @@ namespace Veradel.SolidworksConsole.PartCreation
             _ext.SelectByID2("", "EDGE", -_externalDiameter / 2000.0, 0, 0, true, 0, null, 0);
             _model.SketchAddConstraints("sgTANGENT");
 
+
+            // then the second line end point is selected, and coincident to the point
+            _model.ClearSelection2(true);
+            ((SketchPoint)((SketchLine)((SketchSegment)segs[1])).GetStartPoint2()).Select4(false, null);
+            Point l1p2 = new Point(-posx - _distanceBetweenRollers + _hDimension1 / 2.0 + _hDimension2, _positionY - _dFromRevolveToBottom + _vDimension);
+            _ext.SelectByID2("", "VERTEX", l1p2.X, l1p2.Y, 0, true, 0, null, 0);
+            _model.SketchAddConstraints("sgCOINCIDENT");
+
+            // select the bottom line and a vertex
+            _model.ClearSelection2(true);
+            ((SketchSegment)segs[2]).Select4(false, null);
+            Point aux4p2 = new Point(-posx - _distanceBetweenRollers + _hDimension1 / 2.0, _positionY - _dFromRevolveToBottom);
+            _ext.SelectByID2("", "VERTEX", aux4p2.X, aux4p2.Y, 0, true, 0, null, 0);
+            _model.SketchAddConstraints("sgCOINCIDENT");
+
+
+            // we create a middle line in order to the the symetric operation
+            _model.ClearSelection2(true);
+            SketchSegment mirrorLine = sMan.CreateLine(0, 0, 0, 0, 10 / 1000.0, 0);
+            mirrorLine.ConstructionGeometry = true;
+
+            // constraints are added
+            _model.ClearSelection2(true);
+            ((SketchPoint)((SketchLine)((SketchSegment)mirrorLine)).GetStartPoint2()).Select4(false, null);
+            _ext.SelectByID2("", "EXTSKETCHPOINT", 0, 0, 0, true, 0, null, 0);
+            _model.SketchAddConstraints("sgCOINCIDENT");
+
+            _model.ClearSelection2(true);
+            mirrorLine.Select4(false, null);
+            _model.SketchAddConstraints("sgVERTICAL2D");
+
+            SelectionMgr selMan = _model.SelectionManager;
+            SelectData selData = selMan.CreateSelectData();
+            selData.Mark = 1;
+
+            for (int i = 0; i < segs.Length; i++)
+            {
+                ((SketchSegment)segs[i]).Select4(true, selData);
+            }
+
+            selData.Mark = 2;
+            mirrorLine.Select4(true, selData);
+
+            _model.SketchMirror();
+
+            FeatureManager feat = _model.FeatureManager;
+            feat.FeatureCut4(true, false, false,
+                (int)swEndConditions_e.swEndCondThroughAll,
+                0, 0, 0, false, false, false, false, 0, 0,
+                false, false, false, false, false, false, true,
+                false, false, false, (int)swStartConditions_e.swStartSketchPlane, 0, false, false);
 
             sMan.AddToDB = false;
             sMan.DisplayWhenAdded = true;
