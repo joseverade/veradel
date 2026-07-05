@@ -118,6 +118,8 @@
     <Compile Include="Models\BoltSpec.cs" />
     <Compile Include="Models\CommandIcon.cs" />
     <Compile Include="Models\BoltBuildResult.cs" />
+    <Compile Include="Models\ShaftSpec.cs" />
+    <Compile Include="Models\ShaftBuildResult.cs" />
     <Compile Include="Models\PartConfiguratorSelection.cs" />
     <Compile Include="Models\DocumentKind.cs" />
     <Compile Include="Services\Din471Table.cs" />
@@ -130,6 +132,7 @@
     <Compile Include="Services\SolidWorksService.EdgeColoring.cs" />
     <Compile Include="Services\SolidWorksService.Boilermaking.cs" />
     <Compile Include="Services\SolidWorksService.BoltBuilder.cs" />
+    <Compile Include="Services\SolidWorksService.ShaftBuilder.cs" />
     <Compile Include="Services\IScreenCaptureService.cs" />
     <Compile Include="Services\ScreenCaptureService.cs" />
     <Compile Include="UI\ComponentTreeDialog.cs">

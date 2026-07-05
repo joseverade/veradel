@@ -69,10 +69,38 @@ namespace VeradeAddin.Commands
                 case ConfigurablePart.Bolt:
                     BuildBolt(selection.Bolt, docType);
                     break;
+                case ConfigurablePart.Shaft:
+                    BuildShaft(selection.Shaft, docType);
+                    break;
                 default:
                     _log.Log(Name, docType, LogOutcome.Error, "Unknown part kind: " + selection.Part);
                     _dialog.ShowMessage(Name, "Pieza no reconocida.");
                     break;
+            }
+        }
+
+        private void BuildShaft(ShaftSpec spec, string docType)
+        {
+            var result = _sw.CreateShaft(spec);
+            if (result.Success)
+            {
+                _log.Log(Name, docType, LogOutcome.Success,
+                    "Shaft created (" + result.LevelCount + " levels, total " + result.TotalLengthMm +
+                    " mm, " + result.SplitLineCount + " split lines, " + result.KeywayCount + " keyways, " +
+                    result.GrooveCount + " grooves, " + result.UndercutCount + " undercuts)");
+                _dialog.ShowMessage(Name,
+                    "Eje creado.\n" +
+                    "Niveles: " + result.LevelCount + "\n" +
+                    (result.SplitLineCount > 0 ? "Líneas de división: " + result.SplitLineCount + "\n" : "") +
+                    (result.KeywayCount > 0 ? "Chavetas: " + result.KeywayCount + "\n" : "") +
+                    (result.GrooveCount > 0 ? "Ranuras de anillo: " + result.GrooveCount + "\n" : "") +
+                    (result.UndercutCount > 0 ? "Entalladuras: " + result.UndercutCount + "\n" : "") +
+                    "Longitud total: " + result.TotalLengthMm + " mm");
+            }
+            else
+            {
+                _log.Log(Name, docType, LogOutcome.Error, "Shaft creation failed", result.Error);
+                _dialog.ShowMessage(Name, "No se pudo crear el eje:\n" + result.Error);
             }
         }
 

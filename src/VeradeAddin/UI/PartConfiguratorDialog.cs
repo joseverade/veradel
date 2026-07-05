@@ -38,7 +38,7 @@ namespace VeradeAddin.UI
             ShowIcon = false;
             ShowInTaskbar = false;
             TopMost = true;
-            ClientSize = new Size(1000, 620);
+            ClientSize = new Size(1200, 740);
             BackColor = Color.FromArgb(0xDA, 0xDD, 0xD8);
 
             _web = new WebView2 { Dock = DockStyle.Fill };
@@ -121,6 +121,104 @@ namespace VeradeAddin.UI
             {
                 HandleBolt(parts);
             }
+            else if (parts[1] == "shaft")
+            {
+                HandleShaft(parts);
+            }
+        }
+
+        // create|shaft|n|d1|l1|...|dn|ln|K|b|l|edge|off|depth|refd|ang|cnt|...|G|e1|d3|edge|off|...|U|bnd|r|t1|f|...
+        // (K keyways × 8 values, G retaining-ring grooves × 4 values, U DIN 509-E undercuts × 4 values)
+        private void HandleShaft(string[] parts)
+        {
+            if (parts.Length < 5) return;
+            if (!int.TryParse(parts[2], out int n) || n < 1) return;
+            int keyBase = 3 + 2 * n;
+            if (parts.Length < keyBase + 1) return;
+
+            var spec = new ShaftSpec();
+            for (int i = 0; i < n; i++)
+            {
+                if (!TryParse(parts[3 + 2 * i], out double d) || !TryParse(parts[4 + 2 * i], out double l))
+                {
+                    return;
+                }
+                spec.Levels.Add(new ShaftLevel { DiameterMm = d, LengthMm = l });
+            }
+
+            if (!int.TryParse(parts[keyBase], out int keyCount) || keyCount < 0) return;
+            int grooveBase = keyBase + 1 + 8 * keyCount;
+            if (parts.Length < grooveBase + 1) return;
+            for (int k = 0; k < keyCount; k++)
+            {
+                int p = keyBase + 1 + 8 * k;
+                if (!TryParse(parts[p], out double b) || !TryParse(parts[p + 1], out double kl) ||
+                    !int.TryParse(parts[p + 2], out int edge) || !TryParse(parts[p + 3], out double off) ||
+                    !TryParse(parts[p + 4], out double depth) || !TryParse(parts[p + 5], out double refd) ||
+                    !TryParse(parts[p + 6], out double ang) || !int.TryParse(parts[p + 7], out int cnt))
+                {
+                    return;
+                }
+                spec.Keyways.Add(new ShaftKeyway
+                {
+                    WidthMm = b,
+                    LengthMm = kl,
+                    EdgeIndex = edge,
+                    OffsetMm = off,
+                    DepthMm = depth,
+                    RefDiameterMm = refd,
+                    AngleDeg = ang,
+                    Count = cnt
+                });
+            }
+
+            if (!int.TryParse(parts[grooveBase], out int grooveCount) || grooveCount < 0) return;
+            int ucBase = grooveBase + 1 + 4 * grooveCount;
+            if (parts.Length < ucBase + 1) return;
+            for (int g = 0; g < grooveCount; g++)
+            {
+                int p = grooveBase + 1 + 4 * g;
+                if (!TryParse(parts[p], out double e1) || !TryParse(parts[p + 1], out double d3) ||
+                    !int.TryParse(parts[p + 2], out int gEdge) || !TryParse(parts[p + 3], out double gOff))
+                {
+                    return;
+                }
+                spec.Grooves.Add(new ShaftGroove
+                {
+                    WidthMm = e1,
+                    BottomDiameterMm = d3,
+                    EdgeIndex = gEdge,
+                    OffsetMm = gOff
+                });
+            }
+
+            if (!int.TryParse(parts[ucBase], out int ucCount) || ucCount < 0) return;
+            if (parts.Length != ucBase + 1 + 4 * ucCount) return;
+            for (int u = 0; u < ucCount; u++)
+            {
+                int p = ucBase + 1 + 4 * u;
+                if (!int.TryParse(parts[p], out int bnd) || !TryParse(parts[p + 1], out double ur) ||
+                    !TryParse(parts[p + 2], out double ut1) || !TryParse(parts[p + 3], out double uf))
+                {
+                    return;
+                }
+                spec.Undercuts.Add(new ShaftUndercut
+                {
+                    BoundaryIndex = bnd,
+                    RadiusMm = ur,
+                    DepthMm = ut1,
+                    WidthMm = uf
+                });
+            }
+
+            if (!spec.IsValid)
+            {
+                return; // page should not have allowed this
+            }
+
+            Selection = new PartConfiguratorSelection { Part = ConfigurablePart.Shaft, Shaft = spec };
+            DialogResult = DialogResult.OK;
+            Close();
         }
 
         // create|bolt|d1|l1|d2|l2|g|p1|e1|d3|c|cang|csize  (decimals use '.', produced by JS)

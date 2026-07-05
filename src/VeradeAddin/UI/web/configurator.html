@@ -8,10 +8,14 @@
     3) Ranura (opcional): P1 (posición desde la cabeza), E1 (ancho), D3 (Ø fondo) + botón "usar DIN 471"
     4) Chaflán (opcional): ángulo (45° por defecto) y medida (cateto axial) en el extremo libre
 
+  Pantalla 3 = asistente del EJE, 4 pasos: 1) cuerpo (n niveles Ø × L; Ø iguales consecutivos se
+  funden y la frontera es línea de división), 2) chavetas DIN 6885-A, 3) ranuras de anillo DIN 471,
+  4) entalladuras DIN 509-E en los hombros (tamaño de la norma según el Ø menor).
+
   Estilos en configurator.css, lógica en configurator.js.
   El host inyecta la tabla DIN 471 en window.DIN471 antes de cargar el JS; abrir este .html suelto
   en el navegador funciona igual (la tabla queda vacía). Al confirmar publica
-  create|bolt|d1|l1|d2|l2|g|p1|e1|d3|c|cang|csize (o cancel) al host.
+  create|bolt|d1|l1|d2|l2|g|p1|e1|d3|c|cang|csize, o create|shaft|n|d1|l1|...|dn|ln (o cancel) al host.
 -->
 <html lang="es">
 <head>
@@ -33,7 +37,14 @@
         </svg>
         <div class="ttl">BULON</div>
       </div>
-      <div class="card soon"><span class="badge">Próximamente</span><div class="desc">Más piezas</div></div>
+      <div class="card" id="cardShaft">
+        <svg width="64" height="44" viewBox="0 0 64 44">
+          <rect x="6" y="16" width="14" height="12" fill="none" stroke="#1C1C1C" stroke-width="1.5"/>
+          <rect x="20" y="10" width="22" height="24" fill="none" stroke="#1C1C1C" stroke-width="1.5"/>
+          <rect x="42" y="14" width="16" height="16" fill="none" stroke="#1C1C1C" stroke-width="1.5"/>
+        </svg>
+        <div class="ttl">EJE</div>
+      </div>
       <div class="card soon"><span class="badge">Próximamente</span><div class="desc">Más piezas</div></div>
     </div>
   </section>
@@ -95,6 +106,118 @@
         <div class="actions">
           <button class="ghost" id="btnBack">Volver</button>
           <button class="primary" id="btnNext">Siguiente</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== pantalla 3: asistente del eje (paso 1 cuerpo, paso 2 chavetas, paso 3 ranuras de anillo) ===== -->
+  <section id="shaft" class="hidden">
+    <h1>EJE</h1>
+    <div class="sub" id="shaftSub"></div>
+    <div class="cfg">
+      <div class="left" id="shaftCanvas"></div>
+      <div class="right">
+        <div class="steps">
+          <div class="dot" id="sdot1">1</div><div class="bar"></div>
+          <div class="dot" id="sdot2">2</div><div class="bar"></div>
+          <div class="dot" id="sdot3">3</div><div class="bar"></div>
+          <div class="dot" id="sdot4">4</div>
+        </div>
+
+        <!-- paso 1: cuerpo -->
+        <div class="group shaft-body" id="sgrp1">
+          <h2>Paso 1 &middot; Cuerpo (niveles)</h2>
+          <div class="field">
+            <label>Número de niveles</label>
+            <div class="inp"><input id="shaftN" type="number" min="1" max="20" step="1" value="3"></div>
+          </div>
+          <div id="levelList" class="lvl-list"></div>
+          <div class="note" id="shaftSplitNote"></div>
+        </div>
+
+        <!-- paso 2: chavetas -->
+        <div class="group shaft-keys hidden" id="sgrp2">
+          <h2>Paso 2 &middot; Chavetas</h2>
+          <div id="keyList"></div>
+          <button id="btnAddKey" class="addkey">+ Añadir chaveta</button>
+          <div id="keyForm" class="hidden">
+            <div class="krow">
+              <div class="kfield"><label>Ancho b</label><div class="inp"><input id="kb" type="number" min="0" step="any" value="6"><span class="u">mm</span></div></div>
+              <div class="kfield"><label>Largo L</label><div class="inp"><input id="kl" type="number" min="0" step="any" value="20"><span class="u">mm</span></div></div>
+            </div>
+            <div class="field">
+              <label>Arista de referencia (clic en el dibujo o elige)</label>
+              <select id="kedge"></select>
+            </div>
+            <div class="field"><label>Cota de la arista al extremo izquierdo (±, nunca 0)</label><div class="inp"><input id="koff" type="number" step="any" value="10"><span class="u">mm</span></div></div>
+            <div class="field" id="krefWrap">
+              <label>Ø de referencia (la profundidad se mide desde su superficie)</label>
+              <select id="krefd"></select>
+            </div>
+            <div class="krow">
+              <div class="kfield"><label>Prof. t</label><div class="inp"><input id="kdepth" type="number" min="0" step="any" value="3.5"><span class="u">mm</span></div></div>
+              <div class="kfield"><label>Ángulo</label><div class="inp"><input id="kang" type="number" step="any" value="0"><span class="u">°</span></div></div>
+              <div class="kfield"><label>Nº</label><div class="inp"><input id="kcnt" type="number" min="1" step="1" value="1"><span class="u">uds</span></div></div>
+            </div>
+            <div id="keySection"></div>
+            <div class="krow">
+              <button id="btnKeyOk" class="primary">Aceptar chaveta</button>
+              <button id="btnKeyDel" class="ghost">Eliminar</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- paso 3: ranuras de anillo de retención (DIN 471) -->
+        <div class="group shaft-grooves hidden" id="sgrp3">
+          <h2>Paso 3 &middot; Ranuras de anillo</h2>
+          <div id="grvList"></div>
+          <button id="btnAddGrv" class="addkey">+ Añadir ranura</button>
+          <div id="grvForm" class="hidden">
+            <div class="field">
+              <label>Arista de referencia (clic en el dibujo o elige)</label>
+              <select id="gedge"></select>
+            </div>
+            <div class="field"><label>Cota de la arista a la pared izquierda (±, nunca 0)</label><div class="inp"><input id="goff" type="number" step="any" value="3"><span class="u">mm</span></div></div>
+            <label class="toggle"><input id="gdin" type="checkbox"><span>Usar DIN 471 (según el Ø del nivel)</span></label>
+            <div class="note" id="gdinNote"></div>
+            <div class="krow">
+              <div class="kfield"><label>Ancho E1</label><div class="inp"><input id="ge1" type="number" min="0" step="any" value="1.3"><span class="u">mm</span></div></div>
+              <div class="kfield"><label>Ø fondo D3</label><div class="inp"><input id="gd3" type="number" min="0" step="any" value="19"><span class="u">mm</span></div></div>
+            </div>
+            <div class="krow">
+              <button id="btnGrvOk" class="primary">Aceptar ranura</button>
+              <button id="btnGrvDel" class="ghost">Eliminar</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- paso 4: entalladuras DIN 509-E en los hombros -->
+        <div class="group shaft-undercuts hidden" id="sgrp4">
+          <h2>Paso 4 &middot; Entalladuras (DIN 509-E)</h2>
+          <div id="ucList"></div>
+          <button id="btnAddUc" class="addkey">+ Añadir entalladura</button>
+          <div id="ucForm" class="hidden">
+            <div class="field">
+              <label>Hombro (clic en el dibujo o elige)</label>
+              <select id="uedge"></select>
+            </div>
+            <div class="field">
+              <label>Tamaño DIN 509-E (según el Ø menor del hombro)</label>
+              <select id="usize"></select>
+            </div>
+            <div class="note" id="ucNote"></div>
+            <div class="krow">
+              <button id="btnUcOk" class="primary">Aceptar entalladura</button>
+              <button id="btnUcDel" class="ghost">Eliminar</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="shaftErr" class="err"></div>
+        <div class="actions">
+          <button class="ghost" id="shaftBack">Volver</button>
+          <button class="primary" id="shaftNext">Siguiente</button>
         </div>
       </div>
     </div>

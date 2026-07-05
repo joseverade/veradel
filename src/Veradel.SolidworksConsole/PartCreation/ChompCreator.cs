@@ -826,7 +826,7 @@ namespace Veradel.SolidworksConsole.PartCreation
 
             SelectionMgr selMan = _model.SelectionManager;
             SelectData selData = selMan.CreateSelectData();
-            selData.Mark = 1;
+            selData.Mark = 1; 
 
             for (int i = 0; i < segs.Length; i++)
             {

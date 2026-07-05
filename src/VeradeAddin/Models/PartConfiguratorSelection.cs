@@ -4,7 +4,8 @@ namespace VeradeAddin.Models
     public enum ConfigurablePart
     {
         None = 0,
-        Bolt = 1
+        Bolt = 1,
+        Shaft = 2
     }
 
     /// <summary>
@@ -17,5 +18,8 @@ namespace VeradeAddin.Models
 
         /// <summary>Set when <see cref="Part"/> is <see cref="ConfigurablePart.Bolt"/>.</summary>
         public BoltSpec Bolt { get; set; }
+
+        /// <summary>Set when <see cref="Part"/> is <see cref="ConfigurablePart.Shaft"/>.</summary>
+        public ShaftSpec Shaft { get; set; }
     }
 }

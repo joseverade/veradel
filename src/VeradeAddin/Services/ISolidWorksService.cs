@@ -129,5 +129,13 @@ namespace VeradeAddin.Services
         /// COM-free summary. Assumes <see cref="IsActivePartEmpty"/> and <see cref="BoltSpec.IsValid"/>.
         /// </summary>
         BoltBuildResult CreateCustomBolt(BoltSpec spec);
+
+        /// <summary>
+        /// Builds the custom stepped shaft in the active (empty) part: one 360° revolve of the whole
+        /// stepped half-section built left → right, plus a split line ringing the shaft at every
+        /// boundary between merged equal-diameter levels. Returns a COM-free summary. Assumes
+        /// <see cref="IsActivePartEmpty"/> and <see cref="ShaftSpec.IsValid"/>.
+        /// </summary>
+        ShaftBuildResult CreateShaft(ShaftSpec spec);
     }
 }

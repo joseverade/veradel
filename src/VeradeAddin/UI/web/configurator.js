@@ -1,4 +1,4 @@
-// Lógica del configurador de pieza (Bulón). Cargado por configurator.html.
+// Lógica del configurador de pieza (Bulón + Eje). Cargado por configurator.html.
 //
 // La tabla DIN 471 la inyecta el host en window.DIN471 antes de este script
 // (ver PartConfiguratorDialog.AddScriptToExecuteOnDocumentCreatedAsync). Si abres el .html
@@ -9,6 +9,27 @@
 // a sus hermanos (ese era el bug del render). Nunca escribas etiquetas SVG a mano: usa mk()/LINE/RECT/PATH/POLY/TEXT.
 
 var DIN471 = window.DIN471 || { rows: [] };
+
+// Tabla 1 de DIN 509:1998, filas forma E (entalladuras). r × t1 = designación, f = ancho total
+// desde la cara del hombro; rango de Ø del nivel MENOR: "más de min hasta max" (min < d ≤ max).
+// ser: 'normal' = solicitación normal, 'elevada' = mayor resistencia a fatiga. pref: radio de la
+// serie 1 de DIN 250 (preferente cuando hay dos medidas para el mismo rango). Norma fija →
+// tabla embebida (decisión 2026-07-05).
+var DIN509E = [
+    { r: 0.2, t1: 0.1, f: 1.0, min: 1.6, max: 3, ser: 'normal', pref: true },
+    { r: 0.4, t1: 0.2, f: 2.0, min: 3, max: 18, ser: 'normal', pref: true },
+    { r: 0.6, t1: 0.2, f: 2.0, min: 10, max: 18, ser: 'normal', pref: false },
+    { r: 0.8, t1: 0.3, f: 2.5, min: 18, max: 80, ser: 'normal', pref: true },
+    { r: 0.6, t1: 0.3, f: 2.5, min: 18, max: 80, ser: 'normal', pref: false },
+    { r: 1.2, t1: 0.4, f: 4.0, min: 80, max: Infinity, ser: 'normal', pref: true },
+    { r: 1.0, t1: 0.4, f: 4.0, min: 80, max: Infinity, ser: 'normal', pref: false },
+    { r: 1.2, t1: 0.2, f: 2.5, min: 18, max: 50, ser: 'elevada', pref: true },
+    { r: 1.0, t1: 0.2, f: 2.5, min: 18, max: 50, ser: 'elevada', pref: false },
+    { r: 1.6, t1: 0.3, f: 4.0, min: 50, max: 80, ser: 'elevada', pref: true },
+    { r: 2.5, t1: 0.4, f: 5.0, min: 80, max: 125, ser: 'elevada', pref: true },
+    { r: 4.0, t1: 0.5, f: 7.0, min: 125, max: Infinity, ser: 'elevada', pref: true }
+];
+var UC_RAMP = 1 / Math.tan(15 * Math.PI / 180);   // avance axial por mm de t1 de la salida a 15°
 
 var catalog = document.getElementById('catalog');
 var bolt = document.getElementById('bolt');
@@ -174,7 +195,7 @@ function update() {
 // Cada elemento se crea con mk(): TODOS los atributos van entrecomillados, así cada etiqueta se
 // autocierra. (Un valor sin comillas antes de '/>' mete el '/' en el valor, la etiqueta no cierra
 // y se traga a sus hermanos — ese era el bug del render.)
-var INK = '#1C1C1C', RED = '#E10000';
+var INK = '#1C1C1C', RED = '#E10000', BLU = '#2F6FB3';
 
 function mk(tag, attrs, body) {
     var s = '<' + tag;
@@ -200,15 +221,27 @@ function RECT(x, y, w, h, col, sw) {
         fill: 'none', stroke: col, 'stroke-width': sw
     });
 }
-function PATH(pts, col, w) {
+function PATH(pts, col, w, dash) {
     var d = 'M ' + n1(pts[0][0]) + ' ' + n1(pts[0][1]);
     for (var i = 1; i < pts.length; i++) d += ' L ' + n1(pts[i][0]) + ' ' + n1(pts[i][1]);
-    return mk('path', { d: d, fill: 'none', stroke: col, 'stroke-width': w, 'stroke-linejoin': 'round' });
+    return mk('path', { d: d, fill: 'none', stroke: col, 'stroke-width': w, 'stroke-linejoin': 'round', 'stroke-dasharray': dash });
+}
+// ranura tipo estadio (rectángulo + extremos semicirculares), eje horizontal en yc
+function SLOT(xa, xb, yc, r, col, w, dash) {
+    var d = 'M ' + n1(xa + r) + ' ' + n1(yc - r) +
+        ' L ' + n1(xb - r) + ' ' + n1(yc - r) +
+        ' A ' + n1(r) + ' ' + n1(r) + ' 0 0 1 ' + n1(xb - r) + ' ' + n1(yc + r) +
+        ' L ' + n1(xa + r) + ' ' + n1(yc + r) +
+        ' A ' + n1(r) + ' ' + n1(r) + ' 0 0 1 ' + n1(xa + r) + ' ' + n1(yc - r) + ' Z';
+    return mk('path', { d: d, fill: 'none', stroke: col, 'stroke-width': w, 'stroke-linejoin': 'round', 'stroke-dasharray': dash });
 }
 function POLY(pts, col) {
     var p = '';
     for (var i = 0; i < pts.length; i++) p += (i ? ' ' : '') + n1(pts[i][0]) + ',' + n1(pts[i][1]);
     return mk('polygon', { points: p, fill: col });
+}
+function CIRC(cx, cy, r, col, w, dash) {
+    return mk('circle', { cx: n1(cx), cy: n1(cy), r: n1(r), fill: 'none', stroke: col, 'stroke-width': w, 'stroke-dasharray': dash });
 }
 function TEXT(x, y, t, col, rot) {
     return mk('text', {
@@ -264,7 +297,7 @@ function vDim(y1, y2, x, text) {
 function draw() {
 
     // Se obtienen los valores
-    var d1 = val('d1'), lenght1 = val('l1'), d2 = val('d2'), length2 = val('l2');       
+    var d1 = val('d1'), lenght1 = val('l1'), d2 = val('d2'), length2 = val('l2');
 
     // Valores por defecto si d1, l1, d2 y l2 < 0
     if (!(d1 > 0)) d1 = 30; if (!(lenght1 > 0)) lenght1 = 5;
@@ -422,4 +455,1074 @@ ids.forEach(function (k) {
 document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') { post('cancel'); }
     if (e.key === 'Enter' && !bolt.classList.contains('hidden') && !btnNext.disabled) { btnNext.click(); }
+    if (e.key === 'Enter' && !shaftSec.classList.contains('hidden')) {
+        if (editKey && !btnKeyOk.disabled) { btnKeyOk.click(); }
+        else if (editGrv && !btnGrvOk.disabled) { btnGrvOk.click(); }
+        else if (editUc && !btnUcOk.disabled) { btnUcOk.click(); }
+        else if (!editKey && !editGrv && !editUc && !shaftNextBtn.disabled) { shaftNextBtn.click(); }
+    }
 });
+
+// ================================================================
+// EJE — asistente de 3 pasos.
+//  Paso 1 · Cuerpo: n niveles Ø × L de izquierda a derecha. Niveles
+//  consecutivos con el mismo Ø se funden en un tramo (la revolución no
+//  admite un escalón de altura cero) y la frontera se materializa en
+//  SolidWorks como LÍNEA DE DIVISIÓN (aquí discontinua roja). Espejo de
+//  ShaftSpec.GetMergedSegments() del host.
+//  Paso 2 · Chavetas (DIN 6885 forma A): lista editable. Posición =
+//  arista de referencia (clic en el dibujo o combo) + cota con signo
+//  (nunca 0) que SIEMPRE apunta al extremo izquierdo de la chaveta:
+//  x1 = arista + cota (negativa = el extremo izq queda a la izquierda
+//  de la arista y la chaveta puede cruzarla).
+//  Profundidad t radial desde la superficie del Ø de referencia (combo
+//  cuando la chaveta atraviesa 2+ niveles). Vista de sección con ángulo
+//  inicial y nº de copias polares. Espejo de ShaftSpec.ValidateKeyway.
+//  Paso 3 · Ranuras de anillo (DIN 471): lista editable, misma mecánica
+//  de posición que las chavetas (x1 = arista + cota, a la pared izq).
+//  E1 × D3 a mano o autorrellenados desde window.DIN471 con el Ø del
+//  nivel donde cae la ranura. Debe caber entera en un nivel (las líneas
+//  de división no son paredes). Espejo de ShaftSpec.ValidateGroove.
+//  Paso 4 · Entalladuras (DIN 509-E): una por hombro (cambio de Ø) como
+//  máximo, talladas en el nivel MENOR contra la cara del hombro. Sin
+//  cota: la posición es el hombro mismo. Tamaño = combobox DIN509E
+//  filtrado por el Ø menor (ambas series, preferente primero). Espejo
+//  de ShaftSpec.ValidateUndercut.
+//  Protocolo: create|shaft|n|d,l...|K|<chavetas×8>|G|<ranuras×4>|U|hombro|r|t1|f|...
+// ================================================================
+
+var shaftSec = document.getElementById('shaft');
+var shaftCanvasEl = document.getElementById('shaftCanvas');
+var shaftNEl = document.getElementById('shaftN');
+var levelListEl = document.getElementById('levelList');
+var shaftErrEl = document.getElementById('shaftErr');
+var shaftSplitNoteEl = document.getElementById('shaftSplitNote');
+var shaftNextBtn = document.getElementById('shaftNext');
+var shaftBackBtn = document.getElementById('shaftBack');
+var shaftSubEl = document.getElementById('shaftSub');
+var keyListEl = document.getElementById('keyList');
+var keyFormEl = document.getElementById('keyForm');
+var keySectionEl = document.getElementById('keySection');
+var krefWrapEl = document.getElementById('krefWrap');
+var btnAddKey = document.getElementById('btnAddKey');
+var btnKeyOk = document.getElementById('btnKeyOk');
+var btnKeyDel = document.getElementById('btnKeyDel');
+var kEdgeSel = document.getElementById('kedge');
+var kRefSel = document.getElementById('krefd');
+var kIds = ['kb', 'kl', 'koff', 'kdepth', 'kang', 'kcnt'];
+var kEl = {};
+kIds.forEach(function (k) { kEl[k] = document.getElementById(k); });
+var grvListEl = document.getElementById('grvList');
+var grvFormEl = document.getElementById('grvForm');
+var btnAddGrv = document.getElementById('btnAddGrv');
+var btnGrvOk = document.getElementById('btnGrvOk');
+var btnGrvDel = document.getElementById('btnGrvDel');
+var gEdgeSel = document.getElementById('gedge');
+var gDinChk = document.getElementById('gdin');
+var gDinNote = document.getElementById('gdinNote');
+var gIds = ['goff', 'ge1', 'gd3'];
+var gEl = {};
+gIds.forEach(function (g) { gEl[g] = document.getElementById(g); });
+var ucListEl = document.getElementById('ucList');
+var ucFormEl = document.getElementById('ucForm');
+var btnAddUc = document.getElementById('btnAddUc');
+var btnUcOk = document.getElementById('btnUcOk');
+var btnUcDel = document.getElementById('btnUcDel');
+var uEdgeSel = document.getElementById('uedge');
+var ucSizeSel = document.getElementById('usize');
+var ucNoteEl = document.getElementById('ucNote');
+
+var shaftLevels = [{ d: 20, l: 30 }, { d: 30, l: 40 }, { d: 20, l: 30 }];
+var shaftFocus = 0;      // nivel con foco en el paso 1 (rojo + cotas)
+var shaftStep = 1;       // 1 = cuerpo, 2 = chavetas, 3 = ranuras de anillo
+var shaftKeys = [];      // chavetas aceptadas
+var editKey = null;      // chaveta en edición (copia de trabajo) o null
+var editIdx = -1;        // índice en shaftKeys si se edita una existente; -1 = nueva
+var shaftGrvs = [];      // ranuras de anillo aceptadas
+var editGrv = null;      // ranura en edición (copia de trabajo) o null
+var editGrvIdx = -1;     // índice en shaftGrvs si se edita una existente; -1 = nueva
+var shaftUcs = [];       // entalladuras DIN 509-E aceptadas
+var editUc = null;       // entalladura en edición (copia de trabajo) o null
+var editUcIdx = -1;      // índice en shaftUcs si se edita una existente; -1 = nueva
+var ucSizeOpts = [];     // filas DIN509E del combobox actual (filtradas por el Ø menor)
+
+var KTOL = 1e-6;
+
+document.getElementById('cardShaft').addEventListener('click', function () {
+    catalog.classList.add('hidden'); shaftSec.classList.remove('hidden');
+    shaftStep = 1; shaftFocus = 0; closeKeyForm(); closeGrvForm(); closeUcForm(); buildLevelRows(); shaftRender();
+});
+shaftBackBtn.addEventListener('click', function () {
+    if (editKey) { closeKeyForm(); shaftUpdate(); return; }
+    if (editGrv) { closeGrvForm(); shaftUpdate(); return; }
+    if (editUc) { closeUcForm(); shaftUpdate(); return; }
+    if (shaftStep === 4) { shaftStep = 3; shaftRender(); return; }
+    if (shaftStep === 3) { shaftStep = 2; shaftRender(); return; }
+    if (shaftStep === 2) { shaftStep = 1; shaftRender(); return; }
+    shaftSec.classList.add('hidden'); catalog.classList.remove('hidden');
+});
+shaftNextBtn.addEventListener('click', function () {
+    if (shaftStep === 1) {
+        if (shaftValidate() !== null) return;
+        shaftStep = 2; shaftRender(); return;
+    }
+    if (shaftStep === 2) {
+        if (editKey || shaftFirstBadKey() !== null) return;
+        shaftStep = 3; shaftRender(); return;
+    }
+    if (shaftStep === 3) {
+        if (editGrv || shaftFirstBadGrv() !== null) return;
+        shaftStep = 4; shaftRender(); return;
+    }
+    if (editUc || shaftFirstBadUc() !== null) return;
+    shaftSubmit();
+});
+shaftNEl.addEventListener('input', function () {
+    var n = parseInt(shaftNEl.value, 10);
+    if (!isFinite(n)) return;
+    n = Math.max(1, Math.min(20, n));
+    if (String(n) !== shaftNEl.value) shaftNEl.value = n;   // re-clampa lo tecleado (p.ej. 50 → 20)
+    while (shaftLevels.length < n) {
+        var prev = shaftLevels[shaftLevels.length - 1];
+        shaftLevels.push({ d: prev ? prev.d : 20, l: prev ? prev.l : 30 });
+    }
+    shaftLevels.length = n;
+    if (shaftFocus >= n) shaftFocus = n - 1;
+    buildLevelRows(); shaftUpdate();
+});
+
+function shaftSubmit() {
+    var msg = ['create', 'shaft', shaftLevels.length];
+    for (var i = 0; i < shaftLevels.length; i++) { msg.push(shaftLevels[i].d, shaftLevels[i].l); }
+    msg.push(shaftKeys.length);
+    for (var k = 0; k < shaftKeys.length; k++) {
+        var ky = shaftKeys[k];
+        msg.push(ky.b, ky.l, ky.edge, ky.off, ky.depth, ky.refd, ky.ang, ky.cnt);
+    }
+    msg.push(shaftGrvs.length);
+    for (var g = 0; g < shaftGrvs.length; g++) {
+        var gv = shaftGrvs[g];
+        msg.push(gv.e1, gv.d3, gv.edge, gv.off);
+    }
+    msg.push(shaftUcs.length);
+    for (var u = 0; u < shaftUcs.length; u++) {
+        var uv = shaftUcs[u];
+        msg.push(uv.bnd, uv.r, uv.t1, uv.f);
+    }
+    post(msg.join('|'));
+}
+
+// ---- paso 1: niveles ----------------------------------------------------
+
+// (re)construye las filas de niveles conservando los valores actuales
+function buildLevelRows() {
+    var html = '';
+    for (var i = 0; i < shaftLevels.length; i++) {
+        html += '<div class="lvlrow" id="lvlrow' + i + '">' +
+            '<span class="idx">' + (i + 1) + '</span>' +
+            '<div class="inp"><input id="lvld' + i + '" type="number" min="0" step="any" value="' + shaftLevels[i].d + '"><span class="u">Ø</span></div>' +
+            '<div class="inp"><input id="lvll' + i + '" type="number" min="0" step="any" value="' + shaftLevels[i].l + '"><span class="u">L</span></div>' +
+            '</div>';
+    }
+    levelListEl.innerHTML = html;
+    for (var j = 0; j < shaftLevels.length; j++) {
+        (function (k) {
+            var dEl = document.getElementById('lvld' + k), lEl = document.getElementById('lvll' + k);
+            function grab() {
+                var d = parseFloat(dEl.value), l = parseFloat(lEl.value);
+                shaftLevels[k].d = isFinite(d) ? d : NaN;
+                shaftLevels[k].l = isFinite(l) ? l : NaN;
+                shaftUpdate();
+            }
+            function focus() { shaftFocus = k; markFocusRow(); drawShaft(); }
+            dEl.addEventListener('input', grab); lEl.addEventListener('input', grab);
+            dEl.addEventListener('focus', focus); lEl.addEventListener('focus', focus);
+        })(j);
+    }
+    markFocusRow();
+}
+function markFocusRow() {
+    for (var i = 0; i < shaftLevels.length; i++) {
+        var row = document.getElementById('lvlrow' + i);
+        if (row) row.classList.toggle('focus', i === shaftFocus);
+    }
+}
+
+// null = válido; si no, el motivo (mismas reglas que ShaftSpec.Validate del host)
+function shaftValidate() {
+    if (shaftLevels.length < 1) return 'El eje necesita al menos un nivel.';
+    for (var i = 0; i < shaftLevels.length; i++) {
+        if (!(shaftLevels[i].d > 0) || !(shaftLevels[i].l > 0)) {
+            return 'Nivel ' + (i + 1) + ': Ø y L deben ser mayores que 0.';
+        }
+    }
+    return null;
+}
+// fronteras x (mm desde la izquierda): 0, tras nivel 1, ..., total
+function shaftBounds() {
+    var xs = [0], x = 0;
+    for (var i = 0; i < shaftLevels.length; i++) { x += shaftLevels[i].l; xs.push(x); }
+    return xs;
+}
+function shaftTotal() { var xs = shaftBounds(); return xs[xs.length - 1]; }
+// posiciones x donde dos niveles consecutivos comparten Ø (línea de división)
+function shaftSplits() {
+    var splits = [], x = 0;
+    for (var i = 0; i < shaftLevels.length - 1; i++) {
+        x += shaftLevels[i].l;
+        if (Math.abs(shaftLevels[i].d - shaftLevels[i + 1].d) < 1e-9) splits.push(x);
+    }
+    return splits;
+}
+
+// ---- paso 2: chavetas ---------------------------------------------------
+
+function keyX1(k) {
+    var xs = shaftBounds();
+    var xe = xs[Math.max(0, Math.min(k.edge, xs.length - 1))];
+    // la cota SIEMPRE apunta al extremo izquierdo: x1 = arista + cota (negativa = a la izq)
+    return xe + k.off;
+}
+// diámetros (únicos, en orden) de los niveles que la chaveta atraviesa
+function keySpannedDiams(k) {
+    var x1 = keyX1(k), x2 = x1 + k.l, xs = shaftBounds(), out = [];
+    if (!isFinite(x1) || !isFinite(x2)) return out;
+    for (var i = 0; i < shaftLevels.length; i++) {
+        if (xs[i + 1] <= x1 + KTOL || xs[i] >= x2 - KTOL) continue;
+        var d = shaftLevels[i].d;
+        var seen = false;
+        for (var j = 0; j < out.length; j++) if (Math.abs(out[j] - d) < 1e-9) seen = true;
+        if (!seen) out.push(d);
+    }
+    return out;
+}
+// null = válida; espejo de ShaftSpec.ValidateKeyway del host
+function validateKey(k) {
+    if (!(k.b > 0) || !(k.l > 0) || !(k.depth > 0)) return 'Ancho, largo y profundidad deben ser > 0.';
+    if (!(k.l >= k.b)) return 'El largo debe ser ≥ el ancho (forma A).';
+    if (!(k.edge >= 0) || !(k.edge <= shaftLevels.length)) return 'Arista de referencia no válida (¿cambiaste los niveles?).';
+    if (!(Math.abs(k.off) > KTOL)) return 'La cota de posición no puede ser 0.';
+    if (!(k.cnt >= 1)) return 'El número de chavetas debe ser al menos 1.';
+    var xs = shaftBounds(), total = shaftTotal();
+    var x1 = keyX1(k), x2 = x1 + k.l;
+    if (!(x1 > KTOL) || !(x2 < total - KTOL)) return 'La chaveta se sale del eje (o toca un extremo).';
+    for (var i = 1; i < shaftLevels.length; i++) {
+        if (Math.abs(shaftLevels[i - 1].d - shaftLevels[i].d) < 1e-9) continue; // split line, no es pared
+        var xc = xs[i];
+        if (Math.abs(x1 - xc) <= KTOL || Math.abs(x2 - xc) <= KTOL) {
+            return 'Un extremo del arco cae justo en el cambio de nivel (x = ' + fmt(xc) + ').';
+        }
+    }
+    var diams = keySpannedDiams(k), refOk = false;
+    for (var j = 0; j < diams.length; j++) if (Math.abs(diams[j] - k.refd) < 1e-9) refOk = true;
+    if (!refOk) return 'El Ø de referencia debe ser el de un nivel que la chaveta atraviesa.';
+    if (!(k.depth < k.refd / 2)) return 'La profundidad debe ser menor que el radio de referencia (' + fmt(k.refd / 2) + ').';
+    if (!(k.b < k.refd)) return 'El ancho debe ser menor que el Ø de referencia.';
+    return null;
+}
+// primera chaveta aceptada que dejó de ser válida (p.ej. tras cambiar niveles); null = todas bien
+function shaftFirstBadKey() {
+    for (var i = 0; i < shaftKeys.length; i++) {
+        var msg = validateKey(shaftKeys[i]);
+        if (msg !== null) return 'Chaveta ' + (i + 1) + ': ' + msg;
+    }
+    return null;
+}
+
+btnAddKey.addEventListener('click', function () {
+    var total = shaftTotal();
+    var l = Math.min(20, total * 0.4), b = Math.min(6, l);
+    var off = total / 2 - l / 2;              // arranca centrada en el eje visible
+    if (!(Math.abs(off) > KTOL)) off = 1;
+    var k = { b: b, l: l, edge: 0, off: off, depth: 3.5, refd: 0, ang: 0, cnt: 1 };
+    var diams = keySpannedDiams(k);
+    k.refd = diams.length ? diams[0] : (shaftLevels[0].d || 0);
+    if (!(k.depth < k.refd / 2)) k.depth = Math.max(0.5, fmt(k.refd / 4));
+    editKey = k; editIdx = -1;
+    openKeyForm(); shaftUpdate();
+});
+btnKeyOk.addEventListener('click', function () {
+    if (!editKey || validateKey(editKey) !== null) return;
+    if (editIdx >= 0) shaftKeys[editIdx] = editKey; else shaftKeys.push(editKey);
+    closeKeyForm(); shaftUpdate();
+});
+btnKeyDel.addEventListener('click', function () {
+    if (editIdx >= 0) shaftKeys.splice(editIdx, 1);
+    closeKeyForm(); shaftUpdate();
+});
+kIds.forEach(function (id) {
+    kEl[id].addEventListener('input', function () {
+        if (!editKey) return;
+        var v = parseFloat(kEl[id].value);
+        if (id === 'kb') editKey.b = v;
+        else if (id === 'kl') editKey.l = v;
+        else if (id === 'koff') editKey.off = v;
+        else if (id === 'kdepth') editKey.depth = v;
+        else if (id === 'kang') editKey.ang = isFinite(v) ? v : 0;
+        else if (id === 'kcnt') editKey.cnt = Math.max(1, Math.round(v) || 1);
+        syncRefOptions();
+        shaftUpdate();
+    });
+});
+kEdgeSel.addEventListener('change', function () {
+    if (!editKey) return;
+    editKey.edge = parseInt(kEdgeSel.value, 10) || 0;
+    editKey.off = 3; kEl.koff.value = 3;        // default al elegir arista
+    syncRefOptions(); shaftUpdate();
+});
+kRefSel.addEventListener('change', function () {
+    if (!editKey) return;
+    editKey.refd = parseFloat(kRefSel.value) || 0;
+    shaftUpdate();
+});
+// clic en una arista del dibujo = elegirla como referencia (chaveta, ranura o entalladura)
+shaftCanvasEl.addEventListener('click', function (e) {
+    var t = e.target;
+    if ((!editKey && !editGrv && !editUc) || !t || !t.getAttribute) return;
+    var idx = t.getAttribute('data-edge');
+    if (idx === null) return;
+    if (editKey) {
+        editKey.edge = parseInt(idx, 10);
+        kEdgeSel.value = String(editKey.edge);
+        editKey.off = 3; kEl.koff.value = 3;    // default al elegir arista
+        syncRefOptions();
+    } else if (editGrv) {
+        editGrv.edge = parseInt(idx, 10);
+        gEdgeSel.value = String(editGrv.edge);
+        editGrv.off = 3; gEl.goff.value = 3;    // default al elegir arista
+        applyGrvDin();
+    } else {
+        var bnd = parseInt(idx, 10);
+        if (!shoulderInfo(bnd)) return;         // solo hombros (cambio de Ø)
+        editUc.bnd = bnd;
+        uEdgeSel.value = String(bnd);
+        syncUcSizes();
+    }
+    shaftUpdate();
+});
+
+function openKeyForm() {
+    kEl.kb.value = editKey.b; kEl.kl.value = editKey.l; kEl.koff.value = editKey.off;
+    kEl.kdepth.value = editKey.depth; kEl.kang.value = editKey.ang; kEl.kcnt.value = editKey.cnt;
+    var xs = shaftBounds(), opts = '';
+    for (var i = 0; i < xs.length; i++) {
+        var label = i === 0 ? 'Extremo izquierdo (x = 0)'
+            : i === xs.length - 1 ? 'Extremo derecho (x = ' + fmt(xs[i]) + ')'
+                : 'Cambio nivel ' + i + '→' + (i + 1) + ' (x = ' + fmt(xs[i]) + ')';
+        opts += '<option value="' + i + '">' + label + '</option>';
+    }
+    kEdgeSel.innerHTML = opts;
+    kEdgeSel.value = String(editKey.edge);
+    syncRefOptions();
+    keyFormEl.classList.remove('hidden');
+    btnAddKey.classList.add('hidden');
+    btnKeyDel.style.display = editIdx >= 0 ? '' : 'none';
+    renderKeyList();
+}
+function closeKeyForm() {
+    editKey = null; editIdx = -1;
+    keyFormEl.classList.add('hidden');
+    btnAddKey.classList.remove('hidden');
+    renderKeyList();
+}
+// combo del Ø de referencia = diámetros que la chaveta atraviesa ahora mismo
+function syncRefOptions() {
+    if (!editKey) return;
+    var diams = keySpannedDiams(editKey);
+    if (!diams.length) { kRefSel.innerHTML = '<option value="0">—</option>'; kRefSel.disabled = true; return; }
+    var keep = false, opts = '';
+    for (var i = 0; i < diams.length; i++) {
+        opts += '<option value="' + diams[i] + '">Ø ' + fmt(diams[i]) + ' mm</option>';
+        if (Math.abs(diams[i] - editKey.refd) < 1e-9) keep = true;
+    }
+    kRefSel.innerHTML = opts;
+    if (!keep) editKey.refd = diams[0];
+    kRefSel.value = String(editKey.refd);
+    kRefSel.disabled = diams.length === 1;
+    krefWrapEl.style.display = '';
+}
+function renderKeyList() {
+    var html = '';
+    for (var i = 0; i < shaftKeys.length; i++) {
+        var k = shaftKeys[i], x1 = keyX1(k);
+        var pos = isFinite(x1) ? fmt(x1) + '…' + fmt(x1 + k.l) : '—';
+        html += '<div class="keyitem' + (i === editIdx ? ' editing' : '') + '" data-key="' + i + '">' +
+            '<span>' + (i + 1) + ' · b' + fmt(k.b) + '×L' + fmt(k.l) + ' · x ' + pos +
+            ' · t' + fmt(k.depth) + (k.cnt > 1 ? ' · ' + k.cnt + ' uds' : '') + (k.ang ? ' · ' + fmt(k.ang) + '°' : '') + '</span>' +
+            '<span class="kx" data-del="' + i + '">✕</span></div>';
+    }
+    keyListEl.innerHTML = html;
+    var items = keyListEl.querySelectorAll('.keyitem');
+    for (var j = 0; j < items.length; j++) {
+        items[j].addEventListener('click', function (e) {
+            var del = e.target.getAttribute && e.target.getAttribute('data-del');
+            if (del !== null && del !== undefined) {
+                shaftKeys.splice(parseInt(del, 10), 1);
+                closeKeyForm(); shaftUpdate();
+                e.stopPropagation();
+                return;
+            }
+            editIdx = parseInt(this.getAttribute('data-key'), 10);
+            editKey = JSON.parse(JSON.stringify(shaftKeys[editIdx]));
+            openKeyForm(); shaftUpdate();
+        });
+    }
+}
+
+// ---- paso 3: ranuras de anillo (DIN 471) --------------------------------
+
+// pared izquierda de la ranura; misma regla de signo que keyX1 (ancho = e1)
+function grvX1(g) {
+    var xs = shaftBounds();
+    var xe = xs[Math.max(0, Math.min(g.edge, xs.length - 1))];
+    // la cota SIEMPRE apunta a la pared izquierda: x1 = arista + cota (negativa = a la izq)
+    return xe + g.off;
+}
+// Ø del (único) nivel donde cae la ranura; 0 si pisa niveles con Ø distinto
+function grvDiam(g) {
+    var x1 = grvX1(g), x2 = x1 + g.e1, xs = shaftBounds(), d = 0;
+    if (!isFinite(x1) || !isFinite(x2)) return 0;
+    for (var i = 0; i < shaftLevels.length; i++) {
+        if (xs[i + 1] <= x1 + KTOL || xs[i] >= x2 - KTOL) continue;
+        if (!d) d = shaftLevels[i].d;
+        else if (Math.abs(shaftLevels[i].d - d) >= 1e-9) return 0;
+    }
+    return d;
+}
+// null = válida; espejo de ShaftSpec.ValidateGroove del host
+function validateGrv(g) {
+    if (!(g.e1 > 0) || !(g.d3 > 0)) return 'El ancho E1 y el Ø de fondo D3 deben ser > 0.';
+    if (!(g.edge >= 0) || !(g.edge <= shaftLevels.length)) return 'Arista de referencia no válida (¿cambiaste los niveles?).';
+    if (!(Math.abs(g.off) > KTOL)) return 'La cota de posición no puede ser 0.';
+    var xs = shaftBounds(), total = shaftTotal();
+    var x1 = grvX1(g), x2 = x1 + g.e1;
+    if (!(x1 > KTOL) || !(x2 < total - KTOL)) return 'La ranura se sale del eje (o toca un extremo).';
+    for (var i = 1; i < shaftLevels.length; i++) {
+        if (Math.abs(shaftLevels[i - 1].d - shaftLevels[i].d) < 1e-9) continue; // línea de división, no es pared
+        var xc = xs[i];
+        if (x1 <= xc + KTOL && x2 >= xc - KTOL) return 'La ranura cruza o toca un cambio de nivel (x = ' + fmt(xc) + ').';
+    }
+    var d = grvDiam(g);
+    if (!(d > 0)) return 'La ranura debe caber entera en un nivel.';
+    if (!(g.d3 < d)) return 'El Ø de fondo D3 debe ser menor que el Ø del nivel (' + fmt(d) + ').';
+    return null;
+}
+// primera ranura aceptada que dejó de ser válida; null = todas bien
+function shaftFirstBadGrv() {
+    for (var i = 0; i < shaftGrvs.length; i++) {
+        var msg = validateGrv(shaftGrvs[i]);
+        if (msg !== null) return 'Ranura ' + (i + 1) + ': ' + msg;
+    }
+    return null;
+}
+
+btnAddGrv.addEventListener('click', function () {
+    // arranca centrada en el eje visible; E1/D3 desde DIN 471 si hay fila
+    var g = { e1: 1.3, d3: 0, edge: 0, off: Math.max(1, shaftTotal() / 2 - 0.65) };
+    var d = grvDiam(g);
+    var row = d > 0 ? dinLookup(d) : null;
+    if (row) { g.e1 = row.m; g.d3 = row.d3; }
+    else if (d > 0) { g.d3 = fmt(d - Math.max(1, d * 0.07)); }
+    editGrv = g; editGrvIdx = -1;
+    openGrvForm(); shaftUpdate();
+});
+btnGrvOk.addEventListener('click', function () {
+    if (!editGrv || validateGrv(editGrv) !== null) return;
+    if (editGrvIdx >= 0) shaftGrvs[editGrvIdx] = editGrv; else shaftGrvs.push(editGrv);
+    closeGrvForm(); shaftUpdate();
+});
+btnGrvDel.addEventListener('click', function () {
+    if (editGrvIdx >= 0) shaftGrvs.splice(editGrvIdx, 1);
+    closeGrvForm(); shaftUpdate();
+});
+gIds.forEach(function (id) {
+    gEl[id].addEventListener('input', function () {
+        if (!editGrv) return;
+        var v = parseFloat(gEl[id].value);
+        if (id === 'goff') { editGrv.off = v; applyGrvDin(); } // moverla puede cambiar de nivel
+        else if (id === 'ge1') editGrv.e1 = v;
+        else if (id === 'gd3') editGrv.d3 = v;
+        shaftUpdate();
+    });
+});
+gEdgeSel.addEventListener('change', function () {
+    if (!editGrv) return;
+    editGrv.edge = parseInt(gEdgeSel.value, 10) || 0;
+    editGrv.off = 3; gEl.goff.value = 3;        // default al elegir arista
+    applyGrvDin(); shaftUpdate();
+});
+
+// autorrelleno DIN 471 con el Ø del nivel donde cae la ranura ahora mismo
+function applyGrvDin() {
+    if (!editGrv) return;
+    var on = gDinChk.checked;
+    gEl.ge1.disabled = on; gEl.gd3.disabled = on;
+    if (!on) { gDinNote.textContent = ''; gDinNote.className = 'note'; return; }
+    var d = grvDiam(editGrv);
+    var row = d > 0 ? dinLookup(d) : null;
+    if (row) {
+        editGrv.e1 = row.m; editGrv.d3 = row.d3;
+        gEl.ge1.value = row.m; gEl.gd3.value = row.d3;
+        gDinNote.textContent = 'DIN 471 d=' + fmt(d) + ': E1=' + fmt(row.m) + ' · D3=' + fmt(row.d3);
+        gDinNote.className = 'note';
+    } else {
+        gEl.ge1.disabled = false; gEl.gd3.disabled = false;
+        gDinNote.textContent = 'Sin dato DIN 471 para Ø' + (d > 0 ? fmt(d) : '?') + ' — introduce E1/D3 manual.';
+        gDinNote.className = 'note warn';
+    }
+}
+gDinChk.addEventListener('change', function () { applyGrvDin(); shaftUpdate(); });
+
+function openGrvForm() {
+    gEl.ge1.value = editGrv.e1; gEl.gd3.value = editGrv.d3; gEl.goff.value = editGrv.off;
+    var xs = shaftBounds(), opts = '';
+    for (var i = 0; i < xs.length; i++) {
+        var label = i === 0 ? 'Extremo izquierdo (x = 0)'
+            : i === xs.length - 1 ? 'Extremo derecho (x = ' + fmt(xs[i]) + ')'
+                : 'Cambio nivel ' + i + '→' + (i + 1) + ' (x = ' + fmt(xs[i]) + ')';
+        opts += '<option value="' + i + '">' + label + '</option>';
+    }
+    gEdgeSel.innerHTML = opts;
+    gEdgeSel.value = String(editGrv.edge);
+    gDinChk.checked = false; applyGrvDin();
+    grvFormEl.classList.remove('hidden');
+    btnAddGrv.classList.add('hidden');
+    btnGrvDel.style.display = editGrvIdx >= 0 ? '' : 'none';
+    renderGrvList();
+}
+function closeGrvForm() {
+    editGrv = null; editGrvIdx = -1;
+    grvFormEl.classList.add('hidden');
+    btnAddGrv.classList.remove('hidden');
+    renderGrvList();
+}
+function renderGrvList() {
+    var html = '';
+    for (var i = 0; i < shaftGrvs.length; i++) {
+        var g = shaftGrvs[i], x1 = grvX1(g);
+        var pos = isFinite(x1) ? fmt(x1) + '…' + fmt(x1 + g.e1) : '—';
+        html += '<div class="keyitem' + (i === editGrvIdx ? ' editing' : '') + '" data-grv="' + i + '">' +
+            '<span>' + (i + 1) + ' · E1 ' + fmt(g.e1) + ' × D3 ' + fmt(g.d3) + ' · x ' + pos + '</span>' +
+            '<span class="kx" data-gdel="' + i + '">✕</span></div>';
+    }
+    grvListEl.innerHTML = html;
+    var items = grvListEl.querySelectorAll('.keyitem');
+    for (var j = 0; j < items.length; j++) {
+        items[j].addEventListener('click', function (e) {
+            var del = e.target.getAttribute && e.target.getAttribute('data-gdel');
+            if (del !== null && del !== undefined) {
+                shaftGrvs.splice(parseInt(del, 10), 1);
+                closeGrvForm(); shaftUpdate();
+                e.stopPropagation();
+                return;
+            }
+            editGrvIdx = parseInt(this.getAttribute('data-grv'), 10);
+            editGrv = JSON.parse(JSON.stringify(shaftGrvs[editGrvIdx]));
+            openGrvForm(); shaftUpdate();
+        });
+    }
+}
+
+// ---- paso 4: entalladuras DIN 509-E --------------------------------------
+
+// hombros = fronteras con cambio de Ø (una línea de división no es un hombro)
+function shoulderList() {
+    var xs = shaftBounds(), out = [];
+    for (var i = 1; i < shaftLevels.length; i++) {
+        var dL = shaftLevels[i - 1].d, dR = shaftLevels[i].d;
+        if (!(dL > 0) || !(dR > 0) || Math.abs(dL - dR) < 1e-9) continue;
+        out.push({ bnd: i, x: xs[i], dL: dL, dR: dR, dSmall: Math.min(dL, dR), h: Math.abs(dL - dR) / 2 });
+    }
+    return out;
+}
+function shoulderInfo(bnd) {
+    var sh = shoulderList();
+    for (var i = 0; i < sh.length; i++) if (sh[i].bnd === bnd) return sh[i];
+    return null;
+}
+function ucSmallLeft(u) { return shaftLevels[u.bnd - 1].d < shaftLevels[u.bnd].d; }
+// zona axial [z1, z2] que ocupa la entalladura + Ø de la superficie tallada
+function ucZone(u) {
+    var xs = shaftBounds(), x = xs[u.bnd];
+    return ucSmallLeft(u)
+        ? [x - u.f, x, shaftLevels[u.bnd - 1].d]
+        : [x, x + u.f, shaftLevels[u.bnd].d];
+}
+// tramo continuo [ini, fin] de la superficie menor (niveles de igual Ø fundidos)
+function ucSegment(u) {
+    var xs = shaftBounds();
+    var idx = ucSmallLeft(u) ? u.bnd - 1 : u.bnd;
+    var d = shaftLevels[idx].d, first = idx, last = idx;
+    while (first > 0 && Math.abs(shaftLevels[first - 1].d - d) < 1e-9) first--;
+    while (last < shaftLevels.length - 1 && Math.abs(shaftLevels[last + 1].d - d) < 1e-9) last++;
+    return [xs[first], xs[last + 1]];
+}
+// medidas DIN 509-E aplicables al Ø (más de min hasta max), preferentes primero
+function din509Options(d) {
+    var out = [];
+    for (var i = 0; i < DIN509E.length; i++) {
+        if (d > DIN509E[i].min && d <= DIN509E[i].max + 1e-9) out.push(DIN509E[i]);
+    }
+    out.sort(function (a, b) {
+        if (a.ser !== b.ser) return a.ser === 'normal' ? -1 : 1;
+        return (a.pref ? 0 : 1) - (b.pref ? 0 : 1);
+    });
+    return out;
+}
+// null = válida; espejo de ShaftSpec.ValidateUndercut del host
+function validateUc(u, idx) {
+    if (!(u.bnd >= 1) || !(u.bnd <= shaftLevels.length - 1)) return 'Hombro no válido (¿cambiaste los niveles?).';
+    var dL = shaftLevels[u.bnd - 1].d, dR = shaftLevels[u.bnd].d;
+    if (!(dL > 0) || !(dR > 0)) return 'Los Ø del hombro deben ser mayores que 0.';
+    if (Math.abs(dL - dR) < 1e-9) return 'La frontera elegida ya no es un hombro (Ø iguales).';
+    if (!(u.r > 0) || !(u.t1 > 0) || !(u.f > 0)) return 'Elige un tamaño DIN 509-E.';
+    var h = Math.abs(dL - dR) / 2;
+    if (!(h > u.r - u.t1 + KTOL)) {
+        return 'El hombro es demasiado bajo para E ' + u.r + '×' + u.t1 + ' (altura ' + fmt(h) + ' ≤ r − t1 = ' + fmt(u.r - u.t1) + ' mm).';
+    }
+    // un extremo de la zona ES el hombro (= frontera del tramo); solo el extremo
+    // lejano (la salida a 15°) debe quedar estrictamente dentro del tramo
+    var z = ucZone(u), seg = ucSegment(u);
+    var fits = ucSmallLeft(u) ? (z[0] > seg[0] + KTOL) : (z[1] < seg[1] - KTOL);
+    if (!fits) {
+        return 'El ancho f (' + fmt(u.f) + ' mm) no cabe en el tramo de Ø' + fmt(z[2]) + '.';
+    }
+    for (var i = 0; i < shaftUcs.length; i++) {
+        if (i === idx) continue;
+        var o = shaftUcs[i];
+        if (o.bnd === u.bnd) return 'Ya hay otra entalladura en ese hombro.';
+        if (!(o.bnd >= 1) || !(o.bnd <= shaftLevels.length - 1)) continue;
+        var oz = ucZone(o);
+        if (z[0] < oz[1] + KTOL && z[1] > oz[0] - KTOL) return 'Se solapa con la entalladura ' + (i + 1) + '.';
+    }
+    for (var g = 0; g < shaftGrvs.length; g++) {
+        var g1 = grvX1(shaftGrvs[g]), g2 = g1 + shaftGrvs[g].e1;
+        if (isFinite(g1) && z[0] < g2 + KTOL && z[1] > g1 - KTOL) return 'Se solapa con la ranura de anillo ' + (g + 1) + '.';
+    }
+    for (var k = 0; k < shaftKeys.length; k++) {
+        var k1 = keyX1(shaftKeys[k]), k2 = k1 + shaftKeys[k].l;
+        if (isFinite(k1) && z[0] < k2 + KTOL && z[1] > k1 - KTOL) return 'Se solapa con la chaveta ' + (k + 1) + '.';
+    }
+    return null;
+}
+// primera entalladura aceptada que dejó de ser válida; null = todas bien
+function shaftFirstBadUc() {
+    for (var i = 0; i < shaftUcs.length; i++) {
+        var msg = validateUc(shaftUcs[i], i);
+        if (msg !== null) return 'Entalladura ' + (i + 1) + ': ' + msg;
+    }
+    return null;
+}
+
+btnAddUc.addEventListener('click', function () {
+    var sh = shoulderList();
+    // primer hombro libre (sin entalladura); si no hay libres, el primero
+    var bnd = sh.length ? sh[0].bnd : 0;
+    for (var i = 0; i < sh.length; i++) {
+        var taken = false;
+        for (var j = 0; j < shaftUcs.length; j++) if (shaftUcs[j].bnd === sh[i].bnd) taken = true;
+        if (!taken) { bnd = sh[i].bnd; break; }
+    }
+    editUc = { bnd: bnd, r: 0, t1: 0, f: 0, ser: '' };
+    editUcIdx = -1;
+    openUcForm(); shaftUpdate();
+});
+btnUcOk.addEventListener('click', function () {
+    if (!editUc || validateUc(editUc, editUcIdx) !== null) return;
+    if (editUcIdx >= 0) shaftUcs[editUcIdx] = editUc; else shaftUcs.push(editUc);
+    closeUcForm(); shaftUpdate();
+});
+btnUcDel.addEventListener('click', function () {
+    if (editUcIdx >= 0) shaftUcs.splice(editUcIdx, 1);
+    closeUcForm(); shaftUpdate();
+});
+uEdgeSel.addEventListener('change', function () {
+    if (!editUc) return;
+    editUc.bnd = parseInt(uEdgeSel.value, 10) || 0;
+    syncUcSizes(); shaftUpdate();
+});
+ucSizeSel.addEventListener('change', function () {
+    if (!editUc) return;
+    applyUcSize(parseInt(ucSizeSel.value, 10));
+    shaftUpdate();
+});
+
+// combobox de tamaños del hombro actual; conserva la medida si sigue disponible
+function syncUcSizes() {
+    if (!editUc) return;
+    var sh = shoulderInfo(editUc.bnd);
+    ucSizeOpts = sh ? din509Options(sh.dSmall) : [];
+    var opts = '', selIdx = -1;
+    for (var i = 0; i < ucSizeOpts.length; i++) {
+        var o = ucSizeOpts[i];
+        if (selIdx < 0 && Math.abs(o.r - editUc.r) < 1e-9 && Math.abs(o.t1 - editUc.t1) < 1e-9 && o.ser === editUc.ser) selIdx = i;
+        opts += '<option value="' + i + '">E ' + o.r + '×' + o.t1 + ' · f ' + o.f + ' mm · serie ' + o.ser + (o.pref ? '' : ' (alt.)') + '</option>';
+    }
+    ucSizeSel.innerHTML = opts;
+    ucSizeSel.disabled = ucSizeOpts.length === 0;
+    if (!ucSizeOpts.length) {
+        editUc.r = 0; editUc.t1 = 0; editUc.f = 0; editUc.ser = '';
+        ucNoteEl.textContent = sh
+            ? 'Sin tamaño DIN 509-E para Ø' + fmt(sh.dSmall) + ' (la norma empieza en Ø > 1,6).'
+            : 'El eje no tiene hombros (ningún cambio de Ø).';
+        ucNoteEl.className = 'note warn';
+        return;
+    }
+    applyUcSize(selIdx < 0 ? 0 : selIdx);
+    ucSizeSel.value = String(selIdx < 0 ? 0 : selIdx);
+}
+function applyUcSize(i) {
+    var o = ucSizeOpts[i];
+    if (!o || !editUc) return;
+    editUc.r = o.r; editUc.t1 = o.t1; editUc.f = o.f; editUc.ser = o.ser;
+    var sh = shoulderInfo(editUc.bnd);
+    ucNoteEl.textContent = 'DIN 509 – E ' + o.r + '×' + o.t1 + ' · f ' + o.f + ' mm' +
+        (sh ? ' · fondo Ø' + fmt(sh.dSmall - 2 * o.t1) : '');
+    ucNoteEl.className = 'note';
+}
+
+function openUcForm() {
+    var sh = shoulderList(), opts = '';
+    for (var i = 0; i < sh.length; i++) {
+        opts += '<option value="' + sh[i].bnd + '">Hombro ' + sh[i].bnd + '→' + (sh[i].bnd + 1) +
+            ': Ø' + fmt(sh[i].dL) + ' → Ø' + fmt(sh[i].dR) + ' (x = ' + fmt(sh[i].x) + ')</option>';
+    }
+    uEdgeSel.innerHTML = opts;
+    uEdgeSel.disabled = sh.length === 0;
+    if (sh.length) uEdgeSel.value = String(editUc.bnd);
+    syncUcSizes();
+    ucFormEl.classList.remove('hidden');
+    btnAddUc.classList.add('hidden');
+    btnUcDel.style.display = editUcIdx >= 0 ? '' : 'none';
+    renderUcList();
+}
+function closeUcForm() {
+    editUc = null; editUcIdx = -1;
+    ucFormEl.classList.add('hidden');
+    btnAddUc.classList.remove('hidden');
+    renderUcList();
+}
+function renderUcList() {
+    var html = '';
+    for (var i = 0; i < shaftUcs.length; i++) {
+        var u = shaftUcs[i];
+        var sh = shoulderInfo(u.bnd);
+        html += '<div class="keyitem' + (i === editUcIdx ? ' editing' : '') + '" data-uc="' + i + '">' +
+            '<span>' + (i + 1) + ' · E ' + u.r + '×' + u.t1 + ' · serie ' + u.ser +
+            (sh ? ' · hombro x ' + fmt(sh.x) + ' · Ø' + fmt(sh.dSmall) : ' · hombro ?') + '</span>' +
+            '<span class="kx" data-udel="' + i + '">✕</span></div>';
+    }
+    ucListEl.innerHTML = html;
+    var items = ucListEl.querySelectorAll('.keyitem');
+    for (var j = 0; j < items.length; j++) {
+        items[j].addEventListener('click', function (e) {
+            var del = e.target.getAttribute && e.target.getAttribute('data-udel');
+            if (del !== null && del !== undefined) {
+                shaftUcs.splice(parseInt(del, 10), 1);
+                closeUcForm(); shaftUpdate();
+                e.stopPropagation();
+                return;
+            }
+            editUcIdx = parseInt(this.getAttribute('data-uc'), 10);
+            editUc = JSON.parse(JSON.stringify(shaftUcs[editUcIdx]));
+            openUcForm(); shaftUpdate();
+        });
+    }
+}
+
+// ---- render / estado ------------------------------------------------------
+
+function shaftRender() {
+    document.getElementById('sgrp1').classList.toggle('hidden', shaftStep !== 1);
+    document.getElementById('sgrp2').classList.toggle('hidden', shaftStep !== 2);
+    document.getElementById('sgrp3').classList.toggle('hidden', shaftStep !== 3);
+    document.getElementById('sgrp4').classList.toggle('hidden', shaftStep !== 4);
+    document.getElementById('sdot1').className = 'dot ' + (shaftStep === 1 ? 'active' : 'done');
+    document.getElementById('sdot2').className = 'dot ' + (shaftStep === 2 ? 'active' : shaftStep > 2 ? 'done' : '');
+    document.getElementById('sdot3').className = 'dot ' + (shaftStep === 3 ? 'active' : shaftStep > 3 ? 'done' : '');
+    document.getElementById('sdot4').className = 'dot ' + (shaftStep === 4 ? 'active' : '');
+    shaftBackBtn.textContent = shaftStep === 1 ? 'Volver' : 'Atrás';
+    shaftNextBtn.textContent = shaftStep === 4 ? 'Crear' : 'Siguiente';
+    shaftSubEl.textContent = shaftStep === 1
+        ? 'Paso 1 de 4 · niveles de izquierda a derecha · un nivel = Ø × L'
+        : shaftStep === 2
+            ? 'Paso 2 de 4 · chavetas (forma A) · elige arista, cota ±, profundidad, ángulo y nº'
+            : shaftStep === 3
+                ? 'Paso 3 de 4 · ranuras de anillo (DIN 471) · elige arista, cota ±, E1 y D3'
+                : 'Paso 4 de 4 · entalladuras (DIN 509-E) · elige hombro y tamaño';
+    if (shaftStep === 2) renderKeyList();
+    if (shaftStep === 3) renderGrvList();
+    if (shaftStep === 4) renderUcList();
+    shaftUpdate();
+}
+
+function shaftUpdate() {
+    shaftErrEl.className = 'err'; shaftErrEl.textContent = '';
+    if (shaftStep === 1) {
+        var reason = shaftValidate();
+        if (reason) { shaftErrEl.textContent = reason; }
+        else {
+            shaftErrEl.className = 'err ok';
+            shaftErrEl.textContent = shaftLevels.length + ' nivel(es) · longitud total ' + fmt(shaftTotal()) + ' mm';
+        }
+        shaftNextBtn.disabled = reason !== null;
+        var splits = reason === null ? shaftSplits() : [];
+        shaftSplitNoteEl.textContent = splits.length
+            ? 'Ø iguales consecutivos → línea de división en x = ' + splits.map(fmt).join(', ') + ' mm'
+            : '';
+    } else if (shaftStep === 2) {
+        if (editKey) {
+            var kmsg = validateKey(editKey);
+            btnKeyOk.disabled = kmsg !== null;
+            shaftNextBtn.disabled = true;
+            if (kmsg) { shaftErrEl.textContent = kmsg; }
+            else {
+                var x1 = keyX1(editKey);
+                shaftErrEl.className = 'err ok';
+                shaftErrEl.textContent = 'Chaveta x ' + fmt(x1) + '…' + fmt(x1 + editKey.l) +
+                    ' mm · fondo Ø' + fmt(editKey.refd - 2 * editKey.depth);
+            }
+            drawKeySection();
+        } else {
+            var bad = shaftFirstBadKey();
+            if (bad) { shaftErrEl.textContent = bad + ' (edítala o bórrala)'; }
+            else {
+                shaftErrEl.className = 'err ok';
+                shaftErrEl.textContent = shaftKeys.length + ' chaveta(s) · siguiente: ranuras de anillo';
+            }
+            shaftNextBtn.disabled = bad !== null;
+        }
+    } else if (shaftStep === 3) {
+        if (editGrv) {
+            var gmsg = validateGrv(editGrv);
+            btnGrvOk.disabled = gmsg !== null;
+            shaftNextBtn.disabled = true;
+            if (gmsg) { shaftErrEl.textContent = gmsg; }
+            else {
+                var gx1 = grvX1(editGrv);
+                shaftErrEl.className = 'err ok';
+                shaftErrEl.textContent = 'Ranura x ' + fmt(gx1) + '…' + fmt(gx1 + editGrv.e1) +
+                    ' mm · fondo Ø' + fmt(editGrv.d3);
+            }
+        } else {
+            var gbad = shaftFirstBadGrv();
+            if (gbad) { shaftErrEl.textContent = gbad + ' (edítala o bórrala)'; }
+            else {
+                shaftErrEl.className = 'err ok';
+                shaftErrEl.textContent = shaftGrvs.length + ' ranura(s) · siguiente: entalladuras';
+            }
+            shaftNextBtn.disabled = gbad !== null;
+        }
+    } else {
+        if (editUc) {
+            var umsg = validateUc(editUc, editUcIdx);
+            btnUcOk.disabled = umsg !== null;
+            shaftNextBtn.disabled = true;
+            if (umsg) { shaftErrEl.textContent = umsg; }
+            else {
+                var uz = ucZone(editUc);
+                shaftErrEl.className = 'err ok';
+                shaftErrEl.textContent = 'Entalladura E ' + editUc.r + '×' + editUc.t1 +
+                    ' · x ' + fmt(uz[0]) + '…' + fmt(uz[1]) + ' mm · fondo Ø' + fmt(uz[2] - 2 * editUc.t1);
+            }
+        } else {
+            var ubad = shaftFirstBadUc();
+            if (ubad) { shaftErrEl.textContent = ubad + ' (edítala o bórrala)'; }
+            else {
+                shaftErrEl.className = 'err ok';
+                shaftErrEl.textContent = shaftUcs.length + ' entalladura(s) · listo para crear';
+            }
+            shaftNextBtn.disabled = ubad !== null;
+        }
+    }
+    drawShaft();
+}
+
+// ---- dibujo: alzado del eje ------------------------------------------------
+
+function drawShaft() {
+    // valores saneados solo para el dibujo (la validación real es shaftValidate)
+    var lv = [];
+    for (var i = 0; i < shaftLevels.length; i++) {
+        lv.push({
+            d: shaftLevels[i].d > 0 ? shaftLevels[i].d : 20,
+            l: shaftLevels[i].l > 0 ? shaftLevels[i].l : 20
+        });
+    }
+    var total = 0, dmax = 0;
+    for (var i2 = 0; i2 < lv.length; i2++) { total += lv[i2].l; dmax = Math.max(dmax, lv[i2].d); }
+
+    var VBW = 460, VBH = 320, mL = 86, mR = 86, mT = 84, mB = 46;
+    var roomW = VBW - mL - mR, roomH = VBH - mT - mB;
+    var sc = Math.min(roomW / total, roomH / dmax);
+    var x0 = mL + (roomW - total * sc) / 2, cy = mT + roomH / 2;
+
+    var boxTop = cy - dmax * sc / 2, boxBot = cy + dmax * sc / 2, dimY = boxTop - 34;
+    var out = LINE(x0 - 30, cy, x0 + total * sc + 30, cy, INK, 0.8, '7,3,2,3');   // eje
+
+    // tramos fundidos (espejo de GetMergedSegments) + fronteras internas
+    var segs = [], splitMarks = [];
+    for (var i3 = 0; i3 < lv.length; i3++) {
+        var last = segs.length ? segs[segs.length - 1] : null;
+        if (last && Math.abs(last.d - lv[i3].d) < 1e-9) {
+            splitMarks.push({ x: last.x1 + last.len, d: last.d });
+            last.len += lv[i3].l;
+        } else {
+            segs.push({ x1: (last ? last.x1 + last.len : 0), len: lv[i3].l, d: lv[i3].d });
+        }
+    }
+
+    // contorno: un rectángulo por tramo fundido (sin aristas internas)
+    for (var s2 = 0; s2 < segs.length; s2++) {
+        var sg = segs[s2];
+        out += RECT(x0 + sg.x1 * sc, cy - sg.d * sc / 2, sg.len * sc, sg.d * sc, INK, 1.5);
+    }
+    // líneas de división: discontinuas en rojo sobre el Ø del tramo
+    for (var s3 = 0; s3 < splitMarks.length; s3++) {
+        var sp = splitMarks[s3];
+        out += LINE(x0 + sp.x * sc, cy - sp.d * sc / 2, x0 + sp.x * sc, cy + sp.d * sc / 2, RED, 1.2, '5,4');
+    }
+
+    // chavetas aceptadas (y la editada en rojo): ranura en planta proyectada sobre el
+    // alzado — estadio de ancho b (extremos redondeados radio b/2) centrado en el eje
+    var allKeys = shaftKeys.slice();
+    if (editKey) allKeys.push(editKey);
+    for (var kk = 0; kk < allKeys.length; kk++) {
+        if (editKey && kk === editIdx) continue;    // en edición se dibuja la copia roja, no la original
+        var ky = allKeys[kk];
+        var x1 = keyX1(ky), x2 = x1 + ky.l;
+        if (!isFinite(x1) || !isFinite(x2) || !(ky.b > 0) || !(x2 > x1)) continue;
+        var isEdit = editKey && kk === allKeys.length - 1;
+        var col = isEdit ? RED : INK;
+        var kr = Math.min(ky.b * sc / 2, (x2 - x1) * sc / 2);
+        out += SLOT(x0 + x1 * sc, x0 + x2 * sc, cy, kr, col, isEdit ? 1.8 : 1.2, isEdit ? null : '4,3');
+    }
+
+    // ranuras de anillo aceptadas (y la editada en rojo): muesca rectangular
+    // hasta D3 en ambas siluetas del nivel
+    var allGrvs = shaftGrvs.slice();
+    if (editGrv) allGrvs.push(editGrv);
+    for (var gg = 0; gg < allGrvs.length; gg++) {
+        if (editGrv && gg === editGrvIdx) continue;  // en edición se dibuja la copia roja, no la original
+        var gv = allGrvs[gg];
+        var gx1 = grvX1(gv), gx2 = gx1 + gv.e1;
+        var gd = grvDiam(gv);
+        if (!isFinite(gx1) || !isFinite(gx2) || !(gv.e1 > 0) || !(gd > 0)) continue;
+        var gEdit2 = editGrv && gg === allGrvs.length - 1;
+        var gcol = gEdit2 ? RED : INK;
+        var gw = gEdit2 ? 1.8 : 1.2;
+        var rS = gd * sc / 2, rB = Math.max(0, Math.min(gv.d3 > 0 ? gv.d3 : 0, gd) * sc / 2);
+        var ga = x0 + gx1 * sc, gb = x0 + gx2 * sc;
+        out += PATH([[ga, cy - rS], [ga, cy - rB], [gb, cy - rB], [gb, cy - rS]], gcol, gw);
+        out += PATH([[ga, cy + rS], [ga, cy + rB], [gb, cy + rB], [gb, cy + rS]], gcol, gw);
+    }
+
+    // entalladuras aceptadas (y la editada en rojo): muesca DIN 509-E en ambas
+    // siluetas — rampa a 15° desde la superficie, fondo plano hasta la cara del hombro
+    var allUcs = shaftUcs.slice();
+    if (editUc) allUcs.push(editUc);
+    for (var uu = 0; uu < allUcs.length; uu++) {
+        if (editUc && uu === editUcIdx) continue;   // en edición se dibuja la copia roja, no la original
+        var uv = allUcs[uu];
+        if (!(uv.bnd >= 1 && uv.bnd <= shaftLevels.length - 1) || !(uv.f > 0) || !(uv.t1 > 0)) continue;
+        if (Math.abs(shaftLevels[uv.bnd - 1].d - shaftLevels[uv.bnd].d) < 1e-9) continue;
+        var uEdit = editUc && uu === allUcs.length - 1;
+        var ucol = uEdit ? RED : INK, uw = uEdit ? 1.8 : 1.2;
+        var z = ucZone(uv);
+        var uLeft = ucSmallLeft(uv);
+        var xsh = x0 + (uLeft ? z[1] : z[0]) * sc;      // cara del hombro
+        var xfar = x0 + (uLeft ? z[0] : z[1]) * sc;     // extremo de la rampa
+        var xrmp = xfar + (uLeft ? 1 : -1) * uv.t1 * UC_RAMP * sc;  // fin de rampa (fondo)
+        var urs = z[2] * sc / 2, urb = urs - uv.t1 * sc;
+        out += PATH([[xfar, cy - urs], [xrmp, cy - urb], [xsh, cy - urb], [xsh, cy - urs]], ucol, uw);
+        out += PATH([[xfar, cy + urs], [xrmp, cy + urb], [xsh, cy + urb], [xsh, cy + urs]], ucol, uw);
+    }
+
+    if (shaftStep === 1) {
+        // nivel con foco: resaltado en rojo + cotas Ø y L
+        if (shaftFocus >= 0 && shaftFocus < lv.length) {
+            var fx = 0;
+            for (var f = 0; f < shaftFocus; f++) fx += lv[f].l;
+            var flv = lv[shaftFocus];
+            var rx1 = x0 + fx * sc, rx2 = rx1 + flv.l * sc;
+            var ry1 = cy - flv.d * sc / 2, ry2 = cy + flv.d * sc / 2;
+            out += RECT(rx1, ry1, flv.l * sc, flv.d * sc, RED, 1.8);
+
+            out += LINE(rx1, ry1, rx1, dimY, INK, 1) + LINE(rx2, ry1, rx2, dimY, INK, 1);
+            out += hDim(rx1, rx2, dimY, 'L' + (shaftFocus + 1) + ' = ' + fmt(shaftLevels[shaftFocus].l || 0));
+
+            var leftHalf = (fx + flv.l / 2) < total / 2;
+            var xQ = leftHalf ? x0 - 40 : x0 + total * sc + 40;
+            out += LINE(rx1, ry1, xQ, ry1, INK, 1) + LINE(rx1, ry2, xQ, ry2, INK, 1);
+            out += vDim(ry1, ry2, xQ, 'Ø' + (shaftFocus + 1) + ' = ' + fmt(shaftLevels[shaftFocus].d || 0));
+        }
+    } else if (editKey || editGrv || editUc) {
+        // aristas seleccionables: marcador azul + zona de clic ancha invisible.
+        // Para la entalladura solo son elegibles los HOMBROS (cambio de Ø).
+        var cur = editKey || editGrv || editUc;
+        var curSel = editUc ? editUc.bnd : cur.edge;
+        var xs = shaftBounds();
+        for (var e2 = 0; e2 < xs.length; e2++) {
+            if (editUc && !shoulderInfo(e2)) continue;
+            var ex = x0 + xs[e2] * sc;
+            var sel = e2 === curSel;
+            out += LINE(ex, boxTop - 10, ex, boxBot + 10, sel ? BLU : '#9AA0A6', sel ? 2.2 : 1, sel ? null : '3,3');
+            out += mk('line', {
+                x1: n1(ex), y1: n1(boxTop - 14), x2: n1(ex), y2: n1(boxBot + 14),
+                stroke: '#000000', 'stroke-opacity': '0', 'stroke-width': 14,
+                'pointer-events': 'stroke',      // clicable aunque el trazo sea invisible
+                'class': 'edgehit', 'data-edge': e2
+            });
+        }
+        // cota de posición: arista → extremo IZQUIERDO siempre; la línea auxiliar baja
+        // hasta la pieza en edición, centrada en la línea de eje. La entalladura no
+        // lleva cota: su posición es el propio hombro.
+        var cx1 = editKey ? keyX1(editKey) : editGrv ? grvX1(editGrv) : NaN;
+        if (isFinite(cx1)) {
+            var exSel = x0 + xs[cur.edge] * sc;
+            var target = x0 + cx1 * sc;
+            out += LINE(target, cy, target, dimY, INK, 1) + LINE(exSel, boxTop - 10, exSel, dimY, INK, 1);
+            out += hDim(exSel, target, dimY, fmt(cur.off) + ' mm');
+        }
+    }
+
+    out = mk('svg', { viewBox: '0 0 ' + VBW + ' ' + VBH, preserveAspectRatio: 'xMidYMid meet' }, out);
+    shaftCanvasEl.innerHTML = out;
+}
+
+// ---- dibujo: sección con la chaveta -----------------------------------------
+// Vista desde el extremo derecho: 0° = arriba; ángulo positivo gira en sentido
+// horario en pantalla (equivale al sentido +Z→−Y validado en SolidWorks).
+function drawKeySection() {
+    if (!editKey) { keySectionEl.innerHTML = ''; return; }
+    var W = 300, H = 130, cx = W / 2, cyc = H / 2 + 4;
+    var refd = editKey.refd > 0 ? editKey.refd : 20;
+    var diams = keySpannedDiams(editKey);
+    var dmax = refd;
+    for (var i = 0; i < diams.length; i++) dmax = Math.max(dmax, diams[i]);
+    var s = 52 / (dmax / 2);
+    var R = refd / 2;
+
+    var out = CIRC(cx, cyc, R * s, INK, 1.5);
+    for (var j = 0; j < diams.length; j++) {
+        if (Math.abs(diams[j] - refd) < 1e-9) continue;
+        out += CIRC(cx, cyc, diams[j] / 2 * s, '#9AA0A6', 1, '4,3');   // otros niveles atravesados
+    }
+    out += LINE(cx - 4, cyc, cx + 4, cyc, INK, 0.8) + LINE(cx, cyc - 4, cx, cyc + 4, INK, 0.8); // centro
+
+    var b2 = editKey.b > 0 ? editKey.b / 2 : 3;
+    var t = editKey.depth > 0 ? editKey.depth : 3;
+    var rf = Math.max(0.5, R - t);
+    var wallOut = b2 < R ? Math.sqrt(R * R - b2 * b2) : R;
+    var cnt = Math.max(1, editKey.cnt || 1);
+    for (var kI = 0; kI < cnt; kI++) {
+        var phi = ((editKey.ang || 0) + kI * 360 / cnt) * Math.PI / 180;
+        var sin = Math.sin(phi), cos = Math.cos(phi);
+        // punto local (u = tangencial, v = radial) → pantalla
+        function P(u, v) { return [cx + (v * sin + u * cos) * s, cyc - (v * cos - u * sin) * s]; }
+        out += PATH([P(-b2, wallOut), P(-b2, rf), P(b2, rf), P(b2, wallOut)], kI === 0 ? RED : '#C0392B', 1.6);
+    }
+    out += TEXT(cx, H - 4, 'Sección · Ø' + fmt(refd) + ' · fondo Ø' + fmt(2 * rf) + (cnt > 1 ? ' · ' + cnt + ' uds' : ''), '#5A6068', false);
+
+    keySectionEl.innerHTML = mk('svg', { viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'xMidYMid meet' }, out);
+}
