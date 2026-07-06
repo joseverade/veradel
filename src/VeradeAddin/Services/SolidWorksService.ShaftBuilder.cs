@@ -880,12 +880,21 @@ namespace VeradeAddin.Services
         private static string FilletFace(IModelDoc2 model, double radius, double x, double y)
         {
             model.ClearSelection2(true);
+
+            /* 
             if (!model.Extension.SelectByID2("", "FACE", x, y, 0.0, false, 1, null,
                 (int)swSelectOption_e.swSelectOptionDefault))
             {
                 model.ClearSelection2(true);
                 return "no se pudo seleccionar la cara del fondo para el redondeo.";
             }
+             */
+
+            // SelectByRay
+
+            model.Extension.SelectByRay(x, 0, 0, 0, 0, 1, 1,
+                (int)swSelectType_e.swSelFACES, false, 1, (int)swSelectOption_e.swSelectOptionDefault);
+
             var fillet = model.FeatureManager.FeatureFillet3(
                 (int)(swFeatureFilletOptions_e.swFeatureFilletPropagate
                     | swFeatureFilletOptions_e.swFeatureFilletUniformRadius
