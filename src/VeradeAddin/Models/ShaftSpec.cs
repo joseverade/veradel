@@ -35,13 +35,18 @@ namespace VeradeAddin.Models
     /// <summary>
     /// One keyway (chaveta, DIN 6885 form A: slot with rounded ends) on the shaft. Modelled as a
     /// plane tangent to the shaft (parallel to the front plane, or rotated <see cref="AngleDeg"/>
-    /// about the axis) + slot extrude-cut + optional circular pattern.
+    /// about the axis) + slot extrude-cut + optional circular pattern. May overhang a shaft end
+    /// PARTIALLY (open keyway) — some stretch must remain on the shaft.
     /// </summary>
     public sealed class ShaftKeyway
     {
         /// <summary>b: slot width (also the end-arc diameter).</summary>
         public double WidthMm { get; set; }
-        /// <summary>l: TOTAL slot length along the axis, arc ends included. l ≥ b.</summary>
+        /// <summary>
+        /// l: with <see cref="CenterArc"/> = 0 the TOTAL slot length (arc ends included, l &gt; b).
+        /// With CenterArc = 1/2 it is the cota the user sees: anchored arc CENTRE → opposite arc
+        /// EXTREME (l &gt; b/2; the total span is then l + b/2, see <see cref="SpanMm"/>).
+        /// </summary>
         public double LengthMm { get; set; }
         /// <summary>
         /// Reference edge the position is measured from: 0 = shaft left face, i = boundary after
@@ -51,9 +56,16 @@ namespace VeradeAddin.Models
         /// <summary>
         /// Signed distance, never 0, ALWAYS from the edge to the LEFT arc extreme:
         /// x1 = edge + value. Negative puts the left extreme left of the edge (the key may
-        /// straddle it).
+        /// straddle it). Ignored unless <see cref="CenterArc"/> is 0.
         /// </summary>
         public double OffsetMm { get; set; }
+        /// <summary>
+        /// Anchor mode: 0 = position by <see cref="OffsetMm"/> (cota edge → left extreme);
+        /// 1 = LEFT arc CENTRE exactly on the reference edge; 2 = RIGHT arc CENTRE on it.
+        /// With 1/2 there is no position dim (the centre is related to the edge) and
+        /// <see cref="LengthMm"/> is measured anchored-centre → opposite extreme.
+        /// </summary>
+        public int CenterArc { get; set; }
         /// <summary>t: radial depth measured from the reference-diameter surface toward the axis.</summary>
         public double DepthMm { get; set; }
         /// <summary>
@@ -66,9 +78,19 @@ namespace VeradeAddin.Models
         /// <summary>Number of keys equally spaced around the axis (circular pattern). ≥ 1.</summary>
         public int Count { get; set; }
 
+        /// <summary>TOTAL extreme-to-extreme span (mm): l, or l + b/2 in the centre-anchored modes.</summary>
+        public double SpanMm
+        {
+            get { return CenterArc == 0 ? LengthMm : LengthMm + WidthMm / 2.0; }
+        }
+
         /// <summary>Left arc extreme X (mm from the shaft left face), given the edge position.</summary>
         public double StartXMm(double edgeX)
         {
+            // LEFT centre on edge: the left extreme is b/2 left of it.
+            if (CenterArc == 1) return edgeX - WidthMm / 2.0;
+            // RIGHT centre on edge: l runs from that centre to the LEFT extreme.
+            if (CenterArc == 2) return edgeX - LengthMm;
             // The cota always points at the LEFT arc extreme: x1 = edge + offset.
             return edgeX + OffsetMm;
         }
@@ -88,38 +110,48 @@ namespace VeradeAddin.Models
         /// <summary>Reference edge, same indexing as <see cref="ShaftKeyway.EdgeIndex"/>.</summary>
         public int EdgeIndex { get; set; }
         /// <summary>
-        /// Signed distance, never 0, ALWAYS from the edge to the LEFT wall: x1 = edge + value.
-        /// Negative puts the left wall left of the edge.
+        /// Signed distance, never 0, from the edge to the NEAR wall of the groove: positive →
+        /// LEFT wall right of the edge (x1 = edge + value); negative → RIGHT wall left of the
+        /// edge (x2 = edge + value), so flipping the sign mirrors the cota to the other wall.
         /// </summary>
         public double OffsetMm { get; set; }
 
         /// <summary>Left wall X (mm from the shaft left face), given the edge position.</summary>
         public double StartXMm(double edgeX)
         {
-            // The cota always points at the LEFT wall: x1 = edge + offset.
-            return edgeX + OffsetMm;
+            // Positive cota → LEFT wall (x1 = edge + offset); negative cota → RIGHT wall
+            // (x2 = edge + offset, so x1 = x2 − E1). Mirrors grvX1 in configurator.js.
+            return OffsetMm < 0 ? edgeX + OffsetMm - WidthMm : edgeX + OffsetMm;
         }
     }
 
     /// <summary>
-    /// One DIN 509 form E undercut (entalladura) at a diameter-change shoulder. The relief is
-    /// machined into the SMALLER-diameter cylinder against the shoulder face: width <see cref="WidthMm"/>
-    /// (f) along the axis, depth <see cref="DepthMm"/> (t1) below the small surface, corner radius
-    /// <see cref="RadiusMm"/> (r) tangent to the shoulder face, 15° run-out back to the surface.
-    /// Sizes come from the DIN 509:1998 table (combobox in the UI, filtered by the small diameter);
-    /// the host revalidates the geometry but not norm membership.
+    /// One DIN 509 undercut (entalladura), form E or F, at a diameter-change shoulder. The relief
+    /// is machined into the SMALLER-diameter cylinder against the shoulder face: width
+    /// <see cref="WidthMm"/> (f) along the axis, depth <see cref="DepthMm"/> (t1) below the small
+    /// surface, corner radius <see cref="RadiusMm"/> (r), 15° run-out back to the surface. Form F
+    /// additionally cuts INTO the shoulder face to axial depth <see cref="Depth2Mm"/> (t2) with an
+    /// 8° run-out up the face. Sizes come from the DIN 509 table (UI, keyed by small diameter and
+    /// series usual/fatiga); the host revalidates the geometry but not norm membership.
     /// </summary>
     public sealed class ShaftUndercut
     {
         /// <summary>Boundary index of the shoulder (1 … Levels.Count − 1). The two adjacent levels
         /// must have DIFFERENT diameters (an equal-diameter split boundary is not a shoulder).</summary>
         public int BoundaryIndex { get; set; }
-        /// <summary>r: tool/corner radius, tangent to the shoulder face and the groove bottom.</summary>
+        /// <summary>"E" or "F" (DIN 509 form).</summary>
+        public string Form { get; set; }
+        /// <summary>r: tool/corner radius at both ends of the flat bottom.</summary>
         public double RadiusMm { get; set; }
         /// <summary>t1: depth below the small-diameter surface.</summary>
         public double DepthMm { get; set; }
         /// <summary>f: total axial width measured from the shoulder face.</summary>
         public double WidthMm { get; set; }
+        /// <summary>t2: axial depth of the relief into the shoulder face. Form F only (0 for E).</summary>
+        public double Depth2Mm { get; set; }
+
+        /// <summary>True when this undercut is DIN 509 form F (relief also into the shoulder face).</summary>
+        public bool IsFormF { get { return Form == "F"; } }
     }
 
     /// <summary>
@@ -137,8 +169,11 @@ namespace VeradeAddin.Models
         /// <summary>Tolerance (mm) for "an arc extreme sits exactly on an edge" checks.</summary>
         public const double PositionToleranceMm = 1e-6;
 
-        /// <summary>Run-out angle of the form E relief back to the cylindrical surface (DIN 509).</summary>
+        /// <summary>Run-out angle of the relief back to the cylindrical surface (DIN 509, forms E and F).</summary>
         public const double UndercutRunOutDeg = 15.0;
+
+        /// <summary>Run-out angle of the form F relief up the shoulder FACE (DIN 509).</summary>
+        public const double UndercutFaceRunOutDeg = 8.0;
 
         public ShaftSpec()
         {
@@ -157,7 +192,7 @@ namespace VeradeAddin.Models
         /// <summary>Retaining-ring grooves (ranuras DIN 471) to cut, in order. May be empty.</summary>
         public List<ShaftGroove> Grooves { get; set; }
 
-        /// <summary>DIN 509-E undercuts (entalladuras), one per shoulder at most. May be empty.</summary>
+        /// <summary>DIN 509 undercuts (entalladuras E/F), one per shoulder at most. May be empty.</summary>
         public List<ShaftUndercut> Undercuts { get; set; }
 
         public double TotalLengthMm
@@ -240,15 +275,23 @@ namespace VeradeAddin.Models
             {
                 return "ancho, largo y profundidad deben ser mayores que 0.";
             }
-            if (!(key.LengthMm >= key.WidthMm))
+            if (key.CenterArc < 0 || key.CenterArc > 2)
             {
-                return "el largo debe ser ≥ el ancho (forma A, extremos redondeados).";
+                return "modo de anclaje no válido.";
+            }
+            if (key.CenterArc == 0 && !(key.LengthMm > key.WidthMm))
+            {
+                return "el largo debe ser mayor que el ancho (forma A, extremos redondeados).";
+            }
+            if (key.CenterArc != 0 && !(key.LengthMm > key.WidthMm / 2.0))
+            {
+                return "la cota centro→extremo debe ser mayor que b/2.";
             }
             if (key.EdgeIndex < 0 || key.EdgeIndex > Levels.Count)
             {
                 return "arista de referencia no válida.";
             }
-            if (!(System.Math.Abs(key.OffsetMm) > PositionToleranceMm))
+            if (key.CenterArc == 0 && !(System.Math.Abs(key.OffsetMm) > PositionToleranceMm))
             {
                 return "la cota de posición no puede ser 0.";
             }
@@ -260,11 +303,19 @@ namespace VeradeAddin.Models
             var xs = BoundariesMm();
             double total = xs[xs.Count - 1];
             double x1 = key.StartXMm(xs[key.EdgeIndex]);
-            double x2 = x1 + key.LengthMm;
+            double x2 = x1 + key.SpanMm;
 
-            if (!(x1 > PositionToleranceMm) || !(x2 < total - PositionToleranceMm))
+            // PARTIAL overhang past a shaft end is allowed (open keyway): some stretch must stay
+            // on the shaft…
+            if (!(x2 > PositionToleranceMm) || !(x1 < total - PositionToleranceMm))
             {
-                return "la chaveta se sale del eje (o toca un extremo).";
+                return "la chaveta queda fuera del eje.";
+            }
+            // …but an arc extreme exactly ON an end face would leave a zero-thickness wall.
+            if (System.Math.Abs(x1) <= PositionToleranceMm || System.Math.Abs(x2) <= PositionToleranceMm ||
+                System.Math.Abs(x1 - total) <= PositionToleranceMm || System.Math.Abs(x2 - total) <= PositionToleranceMm)
+            {
+                return "un extremo del arco cae justo en la cara del extremo del eje.";
             }
 
             // Arc extremes must not sit exactly on a DIAMETER-CHANGE boundary (the cut would leave a
@@ -398,21 +449,23 @@ namespace VeradeAddin.Models
 
         /// <summary>
         /// Axial zone [z1, z2] the relief occupies (mm from the left face) and the diameter of the
-        /// surface it is cut into. One end of the zone is always the shoulder itself.
+        /// surface it is cut into. For form E one end of the zone is the shoulder itself; form F
+        /// extends t2 PAST the shoulder into the big-diameter side (the face relief).
         /// </summary>
         public void UndercutZoneMm(ShaftUndercut undercut, out double z1, out double z2, out double smallDiameter)
         {
             var xs = BoundariesMm();
             double xShoulder = xs[undercut.BoundaryIndex];
+            double t2 = undercut.IsFormF ? undercut.Depth2Mm : 0.0;
             if (UndercutSmallSideIsLeft(undercut))
             {
                 z1 = xShoulder - undercut.WidthMm;
-                z2 = xShoulder;
+                z2 = xShoulder + t2;
                 smallDiameter = Levels[undercut.BoundaryIndex - 1].DiameterMm;
             }
             else
             {
-                z1 = xShoulder;
+                z1 = xShoulder - t2;
                 z2 = xShoulder + undercut.WidthMm;
                 smallDiameter = Levels[undercut.BoundaryIndex].DiameterMm;
             }
@@ -447,18 +500,34 @@ namespace VeradeAddin.Models
             {
                 return "la frontera elegida no es un hombro (los Ø son iguales).";
             }
+            if (undercut.Form != "E" && undercut.Form != "F")
+            {
+                return "el tipo debe ser E o F (DIN 509).";
+            }
             if (!(undercut.RadiusMm > 0) || !(undercut.DepthMm > 0) || !(undercut.WidthMm > 0))
             {
-                return "elige un tamaño DIN 509-E (r, t1 y f deben ser mayores que 0).";
+                return "elige un tamaño DIN 509 (r, t1 y f deben ser mayores que 0).";
+            }
+            if (undercut.IsFormF && !(undercut.Depth2Mm > 0))
+            {
+                return "la forma F necesita t2 mayor que 0.";
             }
 
-            // The corner arc is tangent to the shoulder face at height r − t1 ABOVE the small
-            // surface: the shoulder must be tall enough to receive it.
+            // Form E: the corner arc is tangent to the shoulder face at height r − t1 ABOVE the
+            // small surface. Form F: the face relief exits on the shoulder face at height
+            // max(r, t2/tan 8°) − t1 (the 8° run-out, or the fillet if it reaches higher). Either
+            // way the shoulder must be tall enough to receive it.
             double shoulderH = System.Math.Abs(dLeft - dRight) / 2.0;
-            if (!(shoulderH > undercut.RadiusMm - undercut.DepthMm + PositionToleranceMm))
+            double reliefTop = undercut.RadiusMm - undercut.DepthMm;
+            if (undercut.IsFormF)
             {
-                return "el hombro es demasiado bajo para este tamaño (altura " + shoulderH +
-                       " ≤ r − t1 = " + (undercut.RadiusMm - undercut.DepthMm) + " mm).";
+                double faceRun = undercut.Depth2Mm / System.Math.Tan(UndercutFaceRunOutDeg * System.Math.PI / 180.0);
+                reliefTop = System.Math.Max(undercut.RadiusMm, faceRun) - undercut.DepthMm;
+            }
+            if (!(shoulderH > reliefTop + PositionToleranceMm))
+            {
+                return "el hombro es demasiado bajo para este tamaño " + undercut.Form +
+                       " (altura " + shoulderH + " ≤ " + reliefTop + " mm).";
             }
             // Profile must close with a flat bottom: f > r + t1/tan(15°). Always true for the
             // published table; guards a corrupt message.
@@ -490,6 +559,24 @@ namespace VeradeAddin.Models
             if (!fits)
             {
                 return "el ancho f (" + undercut.WidthMm + " mm) no cabe en el tramo de Ø" + smallD + ".";
+            }
+
+            // Form F pokes t2 past the shoulder into the BIG side: that continuous surface must be
+            // longer than t2 (split lines are not walls there either).
+            if (undercut.IsFormF)
+            {
+                var xsB = BoundariesMm();
+                double xShoulder = xsB[undercut.BoundaryIndex];
+                int bigIdx = UndercutSmallSideIsLeft(undercut) ? undercut.BoundaryIndex : undercut.BoundaryIndex - 1;
+                double dBig = Levels[bigIdx].DiameterMm;
+                int firstB = bigIdx, lastB = bigIdx;
+                while (firstB > 0 && System.Math.Abs(Levels[firstB - 1].DiameterMm - dBig) < DiameterToleranceMm) firstB--;
+                while (lastB < Levels.Count - 1 && System.Math.Abs(Levels[lastB + 1].DiameterMm - dBig) < DiameterToleranceMm) lastB++;
+                double room = UndercutSmallSideIsLeft(undercut) ? xsB[lastB + 1] - xShoulder : xShoulder - xsB[firstB];
+                if (!(room > undercut.Depth2Mm + PositionToleranceMm))
+                {
+                    return "la profundidad t2 (" + undercut.Depth2Mm + " mm) no cabe en el tramo de Ø" + dBig + ".";
+                }
             }
 
             // No overlap (or touch) with the other undercuts' zones…
@@ -528,7 +615,7 @@ namespace VeradeAddin.Models
                     var key = Keyways[k];
                     if (key == null || key.EdgeIndex < 0 || key.EdgeIndex > Levels.Count) continue;
                     double k1 = key.StartXMm(xs[key.EdgeIndex]);
-                    double k2 = k1 + key.LengthMm;
+                    double k2 = k1 + key.SpanMm;
                     if (z1 < k2 + PositionToleranceMm && z2 > k1 - PositionToleranceMm)
                     {
                         return "se solapa con la chaveta " + (k + 1) + ".";

@@ -31,8 +31,16 @@ h1 { font-size: 16px; font-weight: 600; margin: 0 0 2px; }
 .left {
   flex: 1; background: #FFFFFF; border: 1px solid #C9CDD2; border-radius: 4px;
   display: flex; align-items: center; justify-content: center; padding: 8px; min-height: 460px;
+  position: relative;
 }
 .left svg { width: 100%; height: 100%; display: block; }
+/* el zoom cambia el viewBox: sin esto las líneas engordarían en pantalla */
+.left svg line, .left svg path, .left svg rect, .left svg circle { vector-effect: non-scaling-stroke; }
+.zoombar {
+  position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 4px;
+}
+.zbtn { padding: 3px 10px; font-size: 14px; line-height: 1.2; border-radius: 3px; }
 .right { width: 335px; display: flex; flex-direction: column; }
 
 .steps { display: flex; align-items: center; gap: 6px; margin-bottom: 16px; }

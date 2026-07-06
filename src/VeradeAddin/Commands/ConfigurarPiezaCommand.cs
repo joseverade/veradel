@@ -87,7 +87,8 @@ namespace VeradeAddin.Commands
                 _log.Log(Name, docType, LogOutcome.Success,
                     "Shaft created (" + result.LevelCount + " levels, total " + result.TotalLengthMm +
                     " mm, " + result.SplitLineCount + " split lines, " + result.KeywayCount + " keyways, " +
-                    result.GrooveCount + " grooves, " + result.UndercutCount + " undercuts)");
+                    result.GrooveCount + " grooves, " + result.UndercutCount + " undercuts)" +
+                    (result.Warning != null ? " — skipped: " + result.Warning.Replace("\n", " | ") : ""));
                 _dialog.ShowMessage(Name,
                     "Eje creado.\n" +
                     "Niveles: " + result.LevelCount + "\n" +
@@ -95,7 +96,10 @@ namespace VeradeAddin.Commands
                     (result.KeywayCount > 0 ? "Chavetas: " + result.KeywayCount + "\n" : "") +
                     (result.GrooveCount > 0 ? "Ranuras de anillo: " + result.GrooveCount + "\n" : "") +
                     (result.UndercutCount > 0 ? "Entalladuras: " + result.UndercutCount + "\n" : "") +
-                    "Longitud total: " + result.TotalLengthMm + " mm");
+                    "Longitud total: " + result.TotalLengthMm + " mm" +
+                    (result.Warning != null
+                        ? "\n\nATENCIÓN — operaciones omitidas por error:\n" + result.Warning
+                        : ""));
             }
             else
             {

@@ -127,8 +127,10 @@ namespace VeradeAddin.UI
             }
         }
 
-        // create|shaft|n|d1|l1|...|dn|ln|K|b|l|edge|off|depth|refd|ang|cnt|...|G|e1|d3|edge|off|...|U|bnd|r|t1|f|...
-        // (K keyways × 8 values, G retaining-ring grooves × 4 values, U DIN 509-E undercuts × 4 values)
+        // create|shaft|n|d1|l1|...|dn|ln|K|b|l|edge|off|depth|refd|ang|cnt|ctr|...|G|e1|d3|edge|off|...|U|bnd|form|r|t1|f|t2|...
+        // (K keyways × 9 values — ctr: 0 = position by off, 1/2 = LEFT/RIGHT arc CENTRE on the edge
+        //  (off ignored, l = centre→opposite extreme) —, G retaining-ring grooves × 4 values,
+        //  U DIN 509 undercuts × 6 values — form: "E" | "F", t2 only meaningful for F)
         private void HandleShaft(string[] parts)
         {
             if (parts.Length < 5) return;
@@ -147,15 +149,16 @@ namespace VeradeAddin.UI
             }
 
             if (!int.TryParse(parts[keyBase], out int keyCount) || keyCount < 0) return;
-            int grooveBase = keyBase + 1 + 8 * keyCount;
+            int grooveBase = keyBase + 1 + 9 * keyCount;
             if (parts.Length < grooveBase + 1) return;
             for (int k = 0; k < keyCount; k++)
             {
-                int p = keyBase + 1 + 8 * k;
+                int p = keyBase + 1 + 9 * k;
                 if (!TryParse(parts[p], out double b) || !TryParse(parts[p + 1], out double kl) ||
                     !int.TryParse(parts[p + 2], out int edge) || !TryParse(parts[p + 3], out double off) ||
                     !TryParse(parts[p + 4], out double depth) || !TryParse(parts[p + 5], out double refd) ||
-                    !TryParse(parts[p + 6], out double ang) || !int.TryParse(parts[p + 7], out int cnt))
+                    !TryParse(parts[p + 6], out double ang) || !int.TryParse(parts[p + 7], out int cnt) ||
+                    !int.TryParse(parts[p + 8], out int ctr) || ctr < 0 || ctr > 2)
                 {
                     return;
                 }
@@ -168,7 +171,8 @@ namespace VeradeAddin.UI
                     DepthMm = depth,
                     RefDiameterMm = refd,
                     AngleDeg = ang,
-                    Count = cnt
+                    Count = cnt,
+                    CenterArc = ctr
                 });
             }
 
@@ -193,21 +197,25 @@ namespace VeradeAddin.UI
             }
 
             if (!int.TryParse(parts[ucBase], out int ucCount) || ucCount < 0) return;
-            if (parts.Length != ucBase + 1 + 4 * ucCount) return;
+            if (parts.Length != ucBase + 1 + 6 * ucCount) return;
             for (int u = 0; u < ucCount; u++)
             {
-                int p = ucBase + 1 + 4 * u;
-                if (!int.TryParse(parts[p], out int bnd) || !TryParse(parts[p + 1], out double ur) ||
-                    !TryParse(parts[p + 2], out double ut1) || !TryParse(parts[p + 3], out double uf))
+                int p = ucBase + 1 + 6 * u;
+                string form = parts[p + 1];
+                if (!int.TryParse(parts[p], out int bnd) || (form != "E" && form != "F") ||
+                    !TryParse(parts[p + 2], out double ur) || !TryParse(parts[p + 3], out double ut1) ||
+                    !TryParse(parts[p + 4], out double uf) || !TryParse(parts[p + 5], out double ut2))
                 {
                     return;
                 }
                 spec.Undercuts.Add(new ShaftUndercut
                 {
                     BoundaryIndex = bnd,
+                    Form = form,
                     RadiusMm = ur,
                     DepthMm = ut1,
-                    WidthMm = uf
+                    WidthMm = uf,
+                    Depth2Mm = ut2
                 });
             }
 

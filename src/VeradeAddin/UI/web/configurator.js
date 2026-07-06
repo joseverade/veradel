@@ -10,26 +10,24 @@
 
 var DIN471 = window.DIN471 || { rows: [] };
 
-// Tabla 1 de DIN 509:1998, filas forma E (entalladuras). r × t1 = designación, f = ancho total
-// desde la cara del hombro; rango de Ø del nivel MENOR: "más de min hasta max" (min < d ≤ max).
-// ser: 'normal' = solicitación normal, 'elevada' = mayor resistencia a fatiga. pref: radio de la
-// serie 1 de DIN 250 (preferente cuando hay dos medidas para el mismo rango). Norma fija →
-// tabla embebida (decisión 2026-07-05).
-var DIN509E = [
-    { r: 0.2, t1: 0.1, f: 1.0, min: 1.6, max: 3, ser: 'normal', pref: true },
-    { r: 0.4, t1: 0.2, f: 2.0, min: 3, max: 18, ser: 'normal', pref: true },
-    { r: 0.6, t1: 0.2, f: 2.0, min: 10, max: 18, ser: 'normal', pref: false },
-    { r: 0.8, t1: 0.3, f: 2.5, min: 18, max: 80, ser: 'normal', pref: true },
-    { r: 0.6, t1: 0.3, f: 2.5, min: 18, max: 80, ser: 'normal', pref: false },
-    { r: 1.2, t1: 0.4, f: 4.0, min: 80, max: Infinity, ser: 'normal', pref: true },
-    { r: 1.0, t1: 0.4, f: 4.0, min: 80, max: Infinity, ser: 'normal', pref: false },
-    { r: 1.2, t1: 0.2, f: 2.5, min: 18, max: 50, ser: 'elevada', pref: true },
-    { r: 1.0, t1: 0.2, f: 2.5, min: 18, max: 50, ser: 'elevada', pref: false },
-    { r: 1.6, t1: 0.3, f: 4.0, min: 50, max: 80, ser: 'elevada', pref: true },
-    { r: 2.5, t1: 0.4, f: 5.0, min: 80, max: 125, ser: 'elevada', pref: true },
-    { r: 4.0, t1: 0.5, f: 7.0, min: 125, max: Infinity, ser: 'elevada', pref: true }
+// Tabla DIN 509 (resources/data/din_509.txt): r, t1 y f valen para las formas E y F; t2 solo
+// para la F (profundidad axial del rebaje en la cara del hombro). Rango de Ø del nivel MENOR:
+// "más de min hasta max" (min < d ≤ max). ser: 'usual' = con esfuerzo usual, 'fatiga' = con
+// resistencia a la fatiga aumentada (solo Ø > 18). Una fila por rango y serie.
+var DIN509 = [
+    { r: 0.1, t1: 0.1, f: 0.5, t2: 0.1, min: 0, max: 1.6, ser: 'usual' },
+    { r: 0.2, t1: 0.1, f: 1.0, t2: 0.1, min: 1.6, max: 3, ser: 'usual' },
+    { r: 0.4, t1: 0.2, f: 2.0, t2: 0.1, min: 3, max: 10, ser: 'usual' },
+    { r: 0.6, t1: 0.2, f: 2.0, t2: 0.1, min: 10, max: 18, ser: 'usual' },
+    { r: 0.6, t1: 0.3, f: 2.5, t2: 0.2, min: 18, max: 80, ser: 'usual' },
+    { r: 1.0, t1: 0.4, f: 4.0, t2: 0.3, min: 80, max: Infinity, ser: 'usual' },
+    { r: 1.0, t1: 0.2, f: 2.5, t2: 0.1, min: 18, max: 50, ser: 'fatiga' },
+    { r: 1.6, t1: 0.3, f: 4.0, t2: 0.2, min: 50, max: 80, ser: 'fatiga' },
+    { r: 2.5, t1: 0.4, f: 5.0, t2: 0.3, min: 80, max: 125, ser: 'fatiga' },
+    { r: 4.0, t1: 0.5, f: 7.0, t2: 0.3, min: 125, max: Infinity, ser: 'fatiga' }
 ];
 var UC_RAMP = 1 / Math.tan(15 * Math.PI / 180);   // avance axial por mm de t1 de la salida a 15°
+var UC_RAMP8 = 1 / Math.tan(8 * Math.PI / 180);   // avance radial por mm de t2 de la salida a 8° (forma F)
 
 var catalog = document.getElementById('catalog');
 var bolt = document.getElementById('bolt');
@@ -474,7 +472,11 @@ document.addEventListener('keydown', function (e) {
 //  arista de referencia (clic en el dibujo o combo) + cota con signo
 //  (nunca 0) que SIEMPRE apunta al extremo izquierdo de la chaveta:
 //  x1 = arista + cota (negativa = el extremo izq queda a la izquierda
-//  de la arista y la chaveta puede cruzarla).
+//  de la arista y la chaveta puede cruzarla). Alternativas (ctr): el
+//  CENTRO del arco izq (ctr=1) o der (ctr=2) cae en la arista (ubicación,
+//  sin cota); entonces L = cota centro anclado→extremo opuesto y el largo
+//  total es L + b/2. Puede sobresalir PARCIALMENTE por un extremo del eje
+//  (chavetero abierto): basta con que algún tramo quede sobre el eje.
 //  Profundidad t radial desde la superficie del Ø de referencia (combo
 //  cuando la chaveta atraviesa 2+ niveles). Vista de sección con ángulo
 //  inicial y nº de copias polares. Espejo de ShaftSpec.ValidateKeyway.
@@ -483,12 +485,13 @@ document.addEventListener('keydown', function (e) {
 //  E1 × D3 a mano o autorrellenados desde window.DIN471 con el Ø del
 //  nivel donde cae la ranura. Debe caber entera en un nivel (las líneas
 //  de división no son paredes). Espejo de ShaftSpec.ValidateGroove.
-//  Paso 4 · Entalladuras (DIN 509-E): una por hombro (cambio de Ø) como
-//  máximo, talladas en el nivel MENOR contra la cara del hombro. Sin
-//  cota: la posición es el hombro mismo. Tamaño = combobox DIN509E
-//  filtrado por el Ø menor (ambas series, preferente primero). Espejo
-//  de ShaftSpec.ValidateUndercut.
-//  Protocolo: create|shaft|n|d,l...|K|<chavetas×8>|G|<ranuras×4>|U|hombro|r|t1|f|...
+//  Paso 4 · Entalladuras (DIN 509 E/F): una por hombro (cambio de Ø)
+//  como máximo, talladas en el nivel MENOR contra la cara del hombro
+//  (la F rebaja además la cara t2 con salida a 8°). Sin cota: la
+//  posición es el hombro mismo. Se pregunta tipo (E/F) y solicitación
+//  (usual/fatiga); la medida sale de DIN509 con el Ø menor. Espejo de
+//  ShaftSpec.ValidateUndercut.
+//  Protocolo: create|shaft|n|d,l...|K|<chavetas×9>|G|<ranuras×4>|U|hombro|tipo|r|t1|f|t2|...
 // ================================================================
 
 var shaftSec = document.getElementById('shaft');
@@ -512,6 +515,9 @@ var kRefSel = document.getElementById('krefd');
 var kIds = ['kb', 'kl', 'koff', 'kdepth', 'kang', 'kcnt'];
 var kEl = {};
 kIds.forEach(function (k) { kEl[k] = document.getElementById(k); });
+var kAnchorSel = document.getElementById('kanchor');
+var kOffWrap = document.getElementById('koffWrap');
+var klLabelEl = document.getElementById('klLabel');
 var grvListEl = document.getElementById('grvList');
 var grvFormEl = document.getElementById('grvForm');
 var btnAddGrv = document.getElementById('btnAddGrv');
@@ -529,7 +535,8 @@ var btnAddUc = document.getElementById('btnAddUc');
 var btnUcOk = document.getElementById('btnUcOk');
 var btnUcDel = document.getElementById('btnUcDel');
 var uEdgeSel = document.getElementById('uedge');
-var ucSizeSel = document.getElementById('usize');
+var ucTypeSel = document.getElementById('utype');
+var ucSerieSel = document.getElementById('userie');
 var ucNoteEl = document.getElementById('ucNote');
 
 var shaftLevels = [{ d: 20, l: 30 }, { d: 30, l: 40 }, { d: 20, l: 30 }];
@@ -541,10 +548,9 @@ var editIdx = -1;        // índice en shaftKeys si se edita una existente; -1 =
 var shaftGrvs = [];      // ranuras de anillo aceptadas
 var editGrv = null;      // ranura en edición (copia de trabajo) o null
 var editGrvIdx = -1;     // índice en shaftGrvs si se edita una existente; -1 = nueva
-var shaftUcs = [];       // entalladuras DIN 509-E aceptadas
+var shaftUcs = [];       // entalladuras DIN 509 aceptadas
 var editUc = null;       // entalladura en edición (copia de trabajo) o null
 var editUcIdx = -1;      // índice en shaftUcs si se edita una existente; -1 = nueva
-var ucSizeOpts = [];     // filas DIN509E del combobox actual (filtradas por el Ø menor)
 
 var KTOL = 1e-6;
 
@@ -597,7 +603,7 @@ function shaftSubmit() {
     msg.push(shaftKeys.length);
     for (var k = 0; k < shaftKeys.length; k++) {
         var ky = shaftKeys[k];
-        msg.push(ky.b, ky.l, ky.edge, ky.off, ky.depth, ky.refd, ky.ang, ky.cnt);
+        msg.push(ky.b, ky.l, ky.edge, ky.off, ky.depth, ky.refd, ky.ang, ky.cnt, ky.ctr || 0);
     }
     msg.push(shaftGrvs.length);
     for (var g = 0; g < shaftGrvs.length; g++) {
@@ -607,7 +613,7 @@ function shaftSubmit() {
     msg.push(shaftUcs.length);
     for (var u = 0; u < shaftUcs.length; u++) {
         var uv = shaftUcs[u];
-        msg.push(uv.bnd, uv.r, uv.t1, uv.f);
+        msg.push(uv.bnd, uv.form, uv.r, uv.t1, uv.f, uv.t2);
     }
     post(msg.join('|'));
 }
@@ -680,12 +686,20 @@ function shaftSplits() {
 function keyX1(k) {
     var xs = shaftBounds();
     var xe = xs[Math.max(0, Math.min(k.edge, xs.length - 1))];
+    // ctr=1: centro del arco IZQ en la arista → extremo izq = arista − b/2
+    if (k.ctr === 1) return xe - (k.b > 0 ? k.b / 2 : 0);
+    // ctr=2: centro del arco DER en la arista; L = centro→extremo IZQ → x1 = arista − L
+    if (k.ctr === 2) return xe - k.l;
     // la cota SIEMPRE apunta al extremo izquierdo: x1 = arista + cota (negativa = a la izq)
     return xe + k.off;
 }
+// longitud TOTAL extremo a extremo: L, o L + b/2 en los modos de centro anclado
+function keySpan(k) {
+    return k.ctr ? k.l + (k.b > 0 ? k.b / 2 : 0) : k.l;
+}
 // diámetros (únicos, en orden) de los niveles que la chaveta atraviesa
 function keySpannedDiams(k) {
-    var x1 = keyX1(k), x2 = x1 + k.l, xs = shaftBounds(), out = [];
+    var x1 = keyX1(k), x2 = x1 + keySpan(k), xs = shaftBounds(), out = [];
     if (!isFinite(x1) || !isFinite(x2)) return out;
     for (var i = 0; i < shaftLevels.length; i++) {
         if (xs[i + 1] <= x1 + KTOL || xs[i] >= x2 - KTOL) continue;
@@ -699,13 +713,21 @@ function keySpannedDiams(k) {
 // null = válida; espejo de ShaftSpec.ValidateKeyway del host
 function validateKey(k) {
     if (!(k.b > 0) || !(k.l > 0) || !(k.depth > 0)) return 'Ancho, largo y profundidad deben ser > 0.';
-    if (!(k.l >= k.b)) return 'El largo debe ser ≥ el ancho (forma A).';
+    if (!k.ctr && !(k.l > k.b)) return 'El largo debe ser mayor que el ancho (forma A).';
+    if (k.ctr && !(k.l > k.b / 2)) return 'La cota centro→extremo debe ser mayor que b/2.';
     if (!(k.edge >= 0) || !(k.edge <= shaftLevels.length)) return 'Arista de referencia no válida (¿cambiaste los niveles?).';
-    if (!(Math.abs(k.off) > KTOL)) return 'La cota de posición no puede ser 0.';
+    if (!k.ctr && !(Math.abs(k.off) > KTOL)) return 'La cota de posición no puede ser 0.';
     if (!(k.cnt >= 1)) return 'El número de chavetas debe ser al menos 1.';
     var xs = shaftBounds(), total = shaftTotal();
-    var x1 = keyX1(k), x2 = x1 + k.l;
-    if (!(x1 > KTOL) || !(x2 < total - KTOL)) return 'La chaveta se sale del eje (o toca un extremo).';
+    var x1 = keyX1(k), x2 = x1 + keySpan(k);
+    // sobresalir PARCIALMENTE por un extremo es válido (chavetero abierto): basta con que
+    // algún tramo quede sobre el eje…
+    if (!(x2 > KTOL) || !(x1 < total - KTOL)) return 'La chaveta queda fuera del eje.';
+    // …pero un extremo del arco justo EN la cara del extremo deja pared de espesor cero
+    if (Math.abs(x1) <= KTOL || Math.abs(x2) <= KTOL ||
+        Math.abs(x1 - total) <= KTOL || Math.abs(x2 - total) <= KTOL) {
+        return 'Un extremo del arco cae justo en la cara del extremo del eje.';
+    }
     for (var i = 1; i < shaftLevels.length; i++) {
         if (Math.abs(shaftLevels[i - 1].d - shaftLevels[i].d) < 1e-9) continue; // split line, no es pared
         var xc = xs[i];
@@ -734,7 +756,7 @@ btnAddKey.addEventListener('click', function () {
     var l = Math.min(20, total * 0.4), b = Math.min(6, l);
     var off = total / 2 - l / 2;              // arranca centrada en el eje visible
     if (!(Math.abs(off) > KTOL)) off = 1;
-    var k = { b: b, l: l, edge: 0, off: off, depth: 3.5, refd: 0, ang: 0, cnt: 1 };
+    var k = { b: b, l: l, edge: 0, off: off, depth: 3.5, refd: 0, ang: 0, cnt: 1, ctr: 0 };
     var diams = keySpannedDiams(k);
     k.refd = diams.length ? diams[0] : (shaftLevels[0].d || 0);
     if (!(k.depth < k.refd / 2)) k.depth = Math.max(0.5, fmt(k.refd / 4));
@@ -770,15 +792,31 @@ kEdgeSel.addEventListener('change', function () {
     editKey.off = 3; kEl.koff.value = 3;        // default al elegir arista
     syncRefOptions(); shaftUpdate();
 });
+kAnchorSel.addEventListener('change', function () {
+    if (!editKey) return;
+    editKey.ctr = parseInt(kAnchorSel.value, 10) || 0;
+    syncAnchorUi();
+    syncRefOptions(); shaftUpdate();
+});
+// campo de cota solo en modo cota; la etiqueta de L cambia de significado en modos de centro
+function syncAnchorUi() {
+    var ctr = editKey ? (editKey.ctr || 0) : 0;
+    kOffWrap.style.display = ctr ? 'none' : '';
+    klLabelEl.textContent = ctr ? 'Largo L (centro→extremo)' : 'Largo L (total)';
+}
 kRefSel.addEventListener('change', function () {
     if (!editKey) return;
     editKey.refd = parseFloat(kRefSel.value) || 0;
     shaftUpdate();
 });
-// clic en una arista del dibujo = elegirla como referencia (chaveta, ranura o entalladura)
+// clic en una arista del dibujo = elegirla como referencia (chaveta, ranura o entalladura);
+// clic en la botonera de zoom = zoom/pan del alzado (activo en todos los pasos)
 shaftCanvasEl.addEventListener('click', function (e) {
     var t = e.target;
-    if ((!editKey && !editGrv && !editUc) || !t || !t.getAttribute) return;
+    if (!t || !t.getAttribute) return;
+    var zAct = t.getAttribute('data-z');
+    if (zAct) { shaftZoomAction(zAct); return; }
+    if (!editKey && !editGrv && !editUc) return;
     var idx = t.getAttribute('data-edge');
     if (idx === null) return;
     if (editKey) {
@@ -796,7 +834,7 @@ shaftCanvasEl.addEventListener('click', function (e) {
         if (!shoulderInfo(bnd)) return;         // solo hombros (cambio de Ø)
         editUc.bnd = bnd;
         uEdgeSel.value = String(bnd);
-        syncUcSizes();
+        syncUcSize();
     }
     shaftUpdate();
 });
@@ -804,6 +842,8 @@ shaftCanvasEl.addEventListener('click', function (e) {
 function openKeyForm() {
     kEl.kb.value = editKey.b; kEl.kl.value = editKey.l; kEl.koff.value = editKey.off;
     kEl.kdepth.value = editKey.depth; kEl.kang.value = editKey.ang; kEl.kcnt.value = editKey.cnt;
+    kAnchorSel.value = String(editKey.ctr || 0);
+    syncAnchorUi();
     var xs = shaftBounds(), opts = '';
     for (var i = 0; i < xs.length; i++) {
         var label = i === 0 ? 'Extremo izquierdo (x = 0)'
@@ -845,10 +885,11 @@ function renderKeyList() {
     var html = '';
     for (var i = 0; i < shaftKeys.length; i++) {
         var k = shaftKeys[i], x1 = keyX1(k);
-        var pos = isFinite(x1) ? fmt(x1) + '…' + fmt(x1 + k.l) : '—';
+        var pos = isFinite(x1) ? fmt(x1) + '…' + fmt(x1 + keySpan(k)) : '—';
         html += '<div class="keyitem' + (i === editIdx ? ' editing' : '') + '" data-key="' + i + '">' +
             '<span>' + (i + 1) + ' · b' + fmt(k.b) + '×L' + fmt(k.l) + ' · x ' + pos +
-            ' · t' + fmt(k.depth) + (k.cnt > 1 ? ' · ' + k.cnt + ' uds' : '') + (k.ang ? ' · ' + fmt(k.ang) + '°' : '') + '</span>' +
+            ' · t' + fmt(k.depth) + (k.ctr === 1 ? ' · centro izq=arista' : k.ctr === 2 ? ' · centro der=arista' : '') +
+            (k.cnt > 1 ? ' · ' + k.cnt + ' uds' : '') + (k.ang ? ' · ' + fmt(k.ang) + '°' : '') + '</span>' +
             '<span class="kx" data-del="' + i + '">✕</span></div>';
     }
     keyListEl.innerHTML = html;
@@ -871,12 +912,14 @@ function renderKeyList() {
 
 // ---- paso 3: ranuras de anillo (DIN 471) --------------------------------
 
-// pared izquierda de la ranura; misma regla de signo que keyX1 (ancho = e1)
+// pared izquierda de la ranura (ancho = e1). Regla de signo ESPEJO:
+// cota positiva → pared IZQUIERDA a la derecha de la arista (x1 = arista + cota);
+// cota negativa → pared DERECHA a la izquierda de la arista (x2 = arista + cota).
+// Al cambiar el sentido, la cota se toma desde la otra pared (igual en SolidWorks).
 function grvX1(g) {
     var xs = shaftBounds();
     var xe = xs[Math.max(0, Math.min(g.edge, xs.length - 1))];
-    // la cota SIEMPRE apunta a la pared izquierda: x1 = arista + cota (negativa = a la izq)
-    return xe + g.off;
+    return g.off < 0 ? xe + g.off - g.e1 : xe + g.off;
 }
 // Ø del (único) nivel donde cae la ranura; 0 si pisa niveles con Ø distinto
 function grvDiam(g) {
@@ -916,13 +959,30 @@ function shaftFirstBadGrv() {
     return null;
 }
 
+// D3 cuando no hay fila DIN 471 para el Ø del nivel: Ø − 1 mm
+function dinD3Fallback(d) { return d > 1 ? d - 1 : d * 0.9; }
+
+// Re-aplica DIN 471 a las ranuras aceptadas con el check activado: si el Ø del
+// nivel donde caen cambió (paso 1 o al moverlas), E1/D3 se actualizan solos.
+function refreshGrvsDin() {
+    for (var i = 0; i < shaftGrvs.length; i++) {
+        var g = shaftGrvs[i];
+        if (!g.din) continue;
+        var d = grvDiam(g);
+        if (!(d > 0)) continue;
+        var row = dinLookup(d);
+        if (row) { g.e1 = row.m; g.d3 = row.d3; }
+        else { g.d3 = dinD3Fallback(d); }
+    }
+}
+
 btnAddGrv.addEventListener('click', function () {
     // arranca centrada en el eje visible; E1/D3 desde DIN 471 si hay fila
-    var g = { e1: 1.3, d3: 0, edge: 0, off: Math.max(1, shaftTotal() / 2 - 0.65) };
+    var g = { e1: 1.3, d3: 0, edge: 0, off: Math.max(1, shaftTotal() / 2 - 0.65), din: true };
     var d = grvDiam(g);
     var row = d > 0 ? dinLookup(d) : null;
     if (row) { g.e1 = row.m; g.d3 = row.d3; }
-    else if (d > 0) { g.d3 = fmt(d - Math.max(1, d * 0.07)); }
+    else if (d > 0) { g.d3 = dinD3Fallback(d); }
     editGrv = g; editGrvIdx = -1;
     openGrvForm(); shaftUpdate();
 });
@@ -956,6 +1016,7 @@ gEdgeSel.addEventListener('change', function () {
 function applyGrvDin() {
     if (!editGrv) return;
     var on = gDinChk.checked;
+    editGrv.din = on;                       // persiste: al cambiar el eje se re-aplica solo
     gEl.ge1.disabled = on; gEl.gd3.disabled = on;
     if (!on) { gDinNote.textContent = ''; gDinNote.className = 'note'; return; }
     var d = grvDiam(editGrv);
@@ -965,9 +1026,15 @@ function applyGrvDin() {
         gEl.ge1.value = row.m; gEl.gd3.value = row.d3;
         gDinNote.textContent = 'DIN 471 d=' + fmt(d) + ': E1=' + fmt(row.m) + ' · D3=' + fmt(row.d3);
         gDinNote.className = 'note';
+    } else if (d > 0) {
+        editGrv.d3 = dinD3Fallback(d);
+        gEl.gd3.value = editGrv.d3;
+        gEl.ge1.disabled = false;
+        gDinNote.textContent = 'Sin fila DIN 471 para Ø' + fmt(d) + ' → D3 = Ø−1 = ' + fmt(editGrv.d3) + ' · E1 manual.';
+        gDinNote.className = 'note warn';
     } else {
         gEl.ge1.disabled = false; gEl.gd3.disabled = false;
-        gDinNote.textContent = 'Sin dato DIN 471 para Ø' + (d > 0 ? fmt(d) : '?') + ' — introduce E1/D3 manual.';
+        gDinNote.textContent = 'La ranura no cae en un único nivel — colócala primero.';
         gDinNote.className = 'note warn';
     }
 }
@@ -984,7 +1051,7 @@ function openGrvForm() {
     }
     gEdgeSel.innerHTML = opts;
     gEdgeSel.value = String(editGrv.edge);
-    gDinChk.checked = false; applyGrvDin();
+    gDinChk.checked = editGrv.din !== false; applyGrvDin();
     grvFormEl.classList.remove('hidden');
     btnAddGrv.classList.add('hidden');
     btnGrvDel.style.display = editGrvIdx >= 0 ? '' : 'none';
@@ -1057,17 +1124,24 @@ function ucSegment(u) {
     while (last < shaftLevels.length - 1 && Math.abs(shaftLevels[last + 1].d - d) < 1e-9) last++;
     return [xs[first], xs[last + 1]];
 }
-// medidas DIN 509-E aplicables al Ø (más de min hasta max), preferentes primero
-function din509Options(d) {
-    var out = [];
-    for (var i = 0; i < DIN509E.length; i++) {
-        if (d > DIN509E[i].min && d <= DIN509E[i].max + 1e-9) out.push(DIN509E[i]);
+// fila DIN 509 para el Ø menor y la solicitación ('usual' | 'fatiga'); null si no hay
+// (la serie fatiga solo existe para Ø > 18)
+function din509Row(d, ser) {
+    for (var i = 0; i < DIN509.length; i++) {
+        var o = DIN509[i];
+        if (o.ser === ser && d > o.min && d <= o.max + 1e-9) return o;
     }
-    out.sort(function (a, b) {
-        if (a.ser !== b.ser) return a.ser === 'normal' ? -1 : 1;
-        return (a.pref ? 0 : 1) - (b.pref ? 0 : 1);
-    });
-    return out;
+    return null;
+}
+function serLabel(ser) { return ser === 'fatiga' ? 'fatiga aumentada' : 'esfuerzo usual'; }
+// zona REAL que ocupa el corte: la de ucZone, extendida t2 hacia el lado mayor si es F
+function ucSpan(u) {
+    var z = ucZone(u);
+    if (u.form === 'F' && u.t2 > 0) {
+        if (ucSmallLeft(u)) z = [z[0], z[1] + u.t2, z[2]];
+        else z = [z[0] - u.t2, z[1], z[2]];
+    }
+    return z;
 }
 // null = válida; espejo de ShaftSpec.ValidateUndercut del host
 function validateUc(u, idx) {
@@ -1075,10 +1149,16 @@ function validateUc(u, idx) {
     var dL = shaftLevels[u.bnd - 1].d, dR = shaftLevels[u.bnd].d;
     if (!(dL > 0) || !(dR > 0)) return 'Los Ø del hombro deben ser mayores que 0.';
     if (Math.abs(dL - dR) < 1e-9) return 'La frontera elegida ya no es un hombro (Ø iguales).';
-    if (!(u.r > 0) || !(u.t1 > 0) || !(u.f > 0)) return 'Elige un tamaño DIN 509-E.';
+    if (u.form !== 'E' && u.form !== 'F') return 'Elige el tipo (E o F).';
+    if (!(u.r > 0) || !(u.t1 > 0) || !(u.f > 0)) return 'No hay medida DIN 509 para ese Ø y solicitación.';
+    if (u.form === 'F' && !(u.t2 > 0)) return 'La forma F necesita t2 mayor que 0.';
+    // E: la tangencia del redondeo sube hasta r − t1 sobre la superficie menor.
+    // F: la salida a 8° por la cara llega a max(r, t2/tan 8°) − t1. El hombro debe superarlo.
     var h = Math.abs(dL - dR) / 2;
-    if (!(h > u.r - u.t1 + KTOL)) {
-        return 'El hombro es demasiado bajo para E ' + u.r + '×' + u.t1 + ' (altura ' + fmt(h) + ' ≤ r − t1 = ' + fmt(u.r - u.t1) + ' mm).';
+    var top = (u.form === 'F' ? Math.max(u.r, u.t2 * UC_RAMP8) : u.r) - u.t1;
+    if (!(h > top + KTOL)) {
+        return 'El hombro es demasiado bajo para ' + u.form + ' ' + u.r + '×' + u.t1 +
+            ' (altura ' + fmt(h) + ' ≤ ' + fmt(top) + ' mm).';
     }
     // un extremo de la zona ES el hombro (= frontera del tramo); solo el extremo
     // lejano (la salida a 15°) debe quedar estrictamente dentro del tramo
@@ -1087,21 +1167,34 @@ function validateUc(u, idx) {
     if (!fits) {
         return 'El ancho f (' + fmt(u.f) + ' mm) no cabe en el tramo de Ø' + fmt(z[2]) + '.';
     }
+    // la F asoma t2 al otro lado del hombro: el tramo del Ø mayor debe ser más largo
+    if (u.form === 'F') {
+        var xs = shaftBounds(), xsh = xs[u.bnd];
+        var bigIdx = ucSmallLeft(u) ? u.bnd : u.bnd - 1;
+        var dBig = shaftLevels[bigIdx].d, fb = bigIdx, lb = bigIdx;
+        while (fb > 0 && Math.abs(shaftLevels[fb - 1].d - dBig) < 1e-9) fb--;
+        while (lb < shaftLevels.length - 1 && Math.abs(shaftLevels[lb + 1].d - dBig) < 1e-9) lb++;
+        var room = ucSmallLeft(u) ? xs[lb + 1] - xsh : xsh - xs[fb];
+        if (!(room > u.t2 + KTOL)) {
+            return 'La profundidad t2 (' + fmt(u.t2) + ' mm) no cabe en el tramo de Ø' + fmt(dBig) + '.';
+        }
+    }
+    var sp = ucSpan(u);
     for (var i = 0; i < shaftUcs.length; i++) {
         if (i === idx) continue;
         var o = shaftUcs[i];
         if (o.bnd === u.bnd) return 'Ya hay otra entalladura en ese hombro.';
         if (!(o.bnd >= 1) || !(o.bnd <= shaftLevels.length - 1)) continue;
-        var oz = ucZone(o);
-        if (z[0] < oz[1] + KTOL && z[1] > oz[0] - KTOL) return 'Se solapa con la entalladura ' + (i + 1) + '.';
+        var oz = ucSpan(o);
+        if (sp[0] < oz[1] + KTOL && sp[1] > oz[0] - KTOL) return 'Se solapa con la entalladura ' + (i + 1) + '.';
     }
     for (var g = 0; g < shaftGrvs.length; g++) {
         var g1 = grvX1(shaftGrvs[g]), g2 = g1 + shaftGrvs[g].e1;
-        if (isFinite(g1) && z[0] < g2 + KTOL && z[1] > g1 - KTOL) return 'Se solapa con la ranura de anillo ' + (g + 1) + '.';
+        if (isFinite(g1) && sp[0] < g2 + KTOL && sp[1] > g1 - KTOL) return 'Se solapa con la ranura de anillo ' + (g + 1) + '.';
     }
     for (var k = 0; k < shaftKeys.length; k++) {
-        var k1 = keyX1(shaftKeys[k]), k2 = k1 + shaftKeys[k].l;
-        if (isFinite(k1) && z[0] < k2 + KTOL && z[1] > k1 - KTOL) return 'Se solapa con la chaveta ' + (k + 1) + '.';
+        var k1 = keyX1(shaftKeys[k]), k2 = k1 + keySpan(shaftKeys[k]);
+        if (isFinite(k1) && sp[0] < k2 + KTOL && sp[1] > k1 - KTOL) return 'Se solapa con la chaveta ' + (k + 1) + '.';
     }
     return null;
 }
@@ -1123,7 +1216,7 @@ btnAddUc.addEventListener('click', function () {
         for (var j = 0; j < shaftUcs.length; j++) if (shaftUcs[j].bnd === sh[i].bnd) taken = true;
         if (!taken) { bnd = sh[i].bnd; break; }
     }
-    editUc = { bnd: bnd, r: 0, t1: 0, f: 0, ser: '' };
+    editUc = { bnd: bnd, form: 'E', ser: 'usual', r: 0, t1: 0, f: 0, t2: 0 };
     editUcIdx = -1;
     openUcForm(); shaftUpdate();
 });
@@ -1139,45 +1232,40 @@ btnUcDel.addEventListener('click', function () {
 uEdgeSel.addEventListener('change', function () {
     if (!editUc) return;
     editUc.bnd = parseInt(uEdgeSel.value, 10) || 0;
-    syncUcSizes(); shaftUpdate();
+    syncUcSize(); shaftUpdate();
 });
-ucSizeSel.addEventListener('change', function () {
+ucTypeSel.addEventListener('change', function () {
     if (!editUc) return;
-    applyUcSize(parseInt(ucSizeSel.value, 10));
-    shaftUpdate();
+    editUc.form = ucTypeSel.value === 'F' ? 'F' : 'E';
+    syncUcSize(); shaftUpdate();
+});
+ucSerieSel.addEventListener('change', function () {
+    if (!editUc) return;
+    editUc.ser = ucSerieSel.value === 'fatiga' ? 'fatiga' : 'usual';
+    syncUcSize(); shaftUpdate();
 });
 
-// combobox de tamaños del hombro actual; conserva la medida si sigue disponible
-function syncUcSizes() {
+// medida DIN 509 del hombro actual: única fila según Ø menor + solicitación; sin fila
+// (p. ej. fatiga con Ø ≤ 18) se anulan r/t1/f y validateUc bloquea el Aceptar
+function syncUcSize() {
     if (!editUc) return;
     var sh = shoulderInfo(editUc.bnd);
-    ucSizeOpts = sh ? din509Options(sh.dSmall) : [];
-    var opts = '', selIdx = -1;
-    for (var i = 0; i < ucSizeOpts.length; i++) {
-        var o = ucSizeOpts[i];
-        if (selIdx < 0 && Math.abs(o.r - editUc.r) < 1e-9 && Math.abs(o.t1 - editUc.t1) < 1e-9 && o.ser === editUc.ser) selIdx = i;
-        opts += '<option value="' + i + '">E ' + o.r + '×' + o.t1 + ' · f ' + o.f + ' mm · serie ' + o.ser + (o.pref ? '' : ' (alt.)') + '</option>';
-    }
-    ucSizeSel.innerHTML = opts;
-    ucSizeSel.disabled = ucSizeOpts.length === 0;
-    if (!ucSizeOpts.length) {
-        editUc.r = 0; editUc.t1 = 0; editUc.f = 0; editUc.ser = '';
+    var row = sh ? din509Row(sh.dSmall, editUc.ser) : null;
+    if (!row) {
+        editUc.r = 0; editUc.t1 = 0; editUc.f = 0; editUc.t2 = 0;
         ucNoteEl.textContent = sh
-            ? 'Sin tamaño DIN 509-E para Ø' + fmt(sh.dSmall) + ' (la norma empieza en Ø > 1,6).'
+            ? 'Sin medida DIN 509 para Ø' + fmt(sh.dSmall) + ' con ' + serLabel(editUc.ser) +
+              (editUc.ser === 'fatiga' ? ' (la serie fatiga empieza en Ø > 18).' : '.')
             : 'El eje no tiene hombros (ningún cambio de Ø).';
         ucNoteEl.className = 'note warn';
         return;
     }
-    applyUcSize(selIdx < 0 ? 0 : selIdx);
-    ucSizeSel.value = String(selIdx < 0 ? 0 : selIdx);
-}
-function applyUcSize(i) {
-    var o = ucSizeOpts[i];
-    if (!o || !editUc) return;
-    editUc.r = o.r; editUc.t1 = o.t1; editUc.f = o.f; editUc.ser = o.ser;
-    var sh = shoulderInfo(editUc.bnd);
-    ucNoteEl.textContent = 'DIN 509 – E ' + o.r + '×' + o.t1 + ' · f ' + o.f + ' mm' +
-        (sh ? ' · fondo Ø' + fmt(sh.dSmall - 2 * o.t1) : '');
+    editUc.r = row.r; editUc.t1 = row.t1; editUc.f = row.f;
+    editUc.t2 = editUc.form === 'F' ? row.t2 : 0;
+    ucNoteEl.textContent = 'DIN 509 – ' + editUc.form + ' ' + row.r + '×' + row.t1 +
+        ' · f ' + row.f + ' mm' +
+        (editUc.form === 'F' ? ' · t2 ' + row.t2 + ' mm' : '') +
+        ' · fondo Ø' + fmt(sh.dSmall - 2 * row.t1);
     ucNoteEl.className = 'note';
 }
 
@@ -1190,7 +1278,9 @@ function openUcForm() {
     uEdgeSel.innerHTML = opts;
     uEdgeSel.disabled = sh.length === 0;
     if (sh.length) uEdgeSel.value = String(editUc.bnd);
-    syncUcSizes();
+    ucTypeSel.value = editUc.form === 'F' ? 'F' : 'E';
+    ucSerieSel.value = editUc.ser === 'fatiga' ? 'fatiga' : 'usual';
+    syncUcSize();
     ucFormEl.classList.remove('hidden');
     btnAddUc.classList.add('hidden');
     btnUcDel.style.display = editUcIdx >= 0 ? '' : 'none';
@@ -1208,7 +1298,7 @@ function renderUcList() {
         var u = shaftUcs[i];
         var sh = shoulderInfo(u.bnd);
         html += '<div class="keyitem' + (i === editUcIdx ? ' editing' : '') + '" data-uc="' + i + '">' +
-            '<span>' + (i + 1) + ' · E ' + u.r + '×' + u.t1 + ' · serie ' + u.ser +
+            '<span>' + (i + 1) + ' · ' + u.form + ' ' + u.r + '×' + u.t1 + ' · ' + serLabel(u.ser) +
             (sh ? ' · hombro x ' + fmt(sh.x) + ' · Ø' + fmt(sh.dSmall) : ' · hombro ?') + '</span>' +
             '<span class="kx" data-udel="' + i + '">✕</span></div>';
     }
@@ -1249,7 +1339,7 @@ function shaftRender() {
             ? 'Paso 2 de 4 · chavetas (forma A) · elige arista, cota ±, profundidad, ángulo y nº'
             : shaftStep === 3
                 ? 'Paso 3 de 4 · ranuras de anillo (DIN 471) · elige arista, cota ±, E1 y D3'
-                : 'Paso 4 de 4 · entalladuras (DIN 509-E) · elige hombro y tamaño';
+                : 'Paso 4 de 4 · entalladuras (DIN 509) · elige hombro, tipo y solicitación';
     if (shaftStep === 2) renderKeyList();
     if (shaftStep === 3) renderGrvList();
     if (shaftStep === 4) renderUcList();
@@ -1257,6 +1347,7 @@ function shaftRender() {
 }
 
 function shaftUpdate() {
+    refreshGrvsDin();       // el Ø de un nivel pudo cambiar → E1/D3 de las ranuras DIN siguen al eje
     shaftErrEl.className = 'err'; shaftErrEl.textContent = '';
     if (shaftStep === 1) {
         var reason = shaftValidate();
@@ -1279,7 +1370,7 @@ function shaftUpdate() {
             else {
                 var x1 = keyX1(editKey);
                 shaftErrEl.className = 'err ok';
-                shaftErrEl.textContent = 'Chaveta x ' + fmt(x1) + '…' + fmt(x1 + editKey.l) +
+                shaftErrEl.textContent = 'Chaveta x ' + fmt(x1) + '…' + fmt(x1 + keySpan(editKey)) +
                     ' mm · fondo Ø' + fmt(editKey.refd - 2 * editKey.depth);
             }
             drawKeySection();
@@ -1320,9 +1411,10 @@ function shaftUpdate() {
             shaftNextBtn.disabled = true;
             if (umsg) { shaftErrEl.textContent = umsg; }
             else {
-                var uz = ucZone(editUc);
+                var uz = ucSpan(editUc);
                 shaftErrEl.className = 'err ok';
-                shaftErrEl.textContent = 'Entalladura E ' + editUc.r + '×' + editUc.t1 +
+                shaftErrEl.textContent = 'Entalladura ' + editUc.form + ' ' + editUc.r + '×' + editUc.t1 +
+                    (editUc.form === 'F' ? ' · t2 ' + editUc.t2 : '') +
                     ' · x ' + fmt(uz[0]) + '…' + fmt(uz[1]) + ' mm · fondo Ø' + fmt(uz[2] - 2 * editUc.t1);
             }
         } else {
@@ -1340,6 +1432,76 @@ function shaftUpdate() {
 
 // ---- dibujo: alzado del eje ------------------------------------------------
 
+// zoom/pan del alzado: se aplica al viewBox del SVG (la geometría no cambia; el grosor
+// de línea se mantiene en pantalla vía vector-effect: non-scaling-stroke en el CSS).
+// z = aumento (1 = encuadre completo), px/py = desplazamiento en unidades de viewBox.
+// Rueda = zoom centrado en el cursor · arrastre con la rueda pulsada = pan · ⟲ = encuadre.
+var SVBW = 460, SVBH = 320;
+var shaftView = { z: 1, px: 0, py: 0 };
+function shaftViewBox() {
+    var vw = SVBW / shaftView.z, vh = SVBH / shaftView.z;
+    return [(SVBW - vw) / 2 + shaftView.px, (SVBH - vh) / 2 + shaftView.py, vw, vh];
+}
+function shaftClampPan() {
+    shaftView.px = Math.max(-SVBW / 2, Math.min(SVBW / 2, shaftView.px));
+    shaftView.py = Math.max(-SVBH / 2, Math.min(SVBH / 2, shaftView.py));
+}
+function shaftZoomAction(a) {
+    if (a === 'reset') { shaftView.z = 1; shaftView.px = 0; shaftView.py = 0; drawShaft(); }
+}
+// zoom con la rueda, anclado al punto del dibujo bajo el cursor (mapeo del
+// preserveAspectRatio "meet" centrado: escala mínima + offsets de centrado)
+shaftCanvasEl.addEventListener('wheel', function (e) {
+    var svg = shaftCanvasEl.querySelector('svg');
+    if (!svg) return;
+    e.preventDefault();
+    var r = svg.getBoundingClientRect();
+    var vb = shaftViewBox();
+    var s = Math.min(r.width / vb[2], r.height / vb[3]);
+    var ox = (r.width - vb[2] * s) / 2, oy = (r.height - vb[3] * s) / 2;
+    var wx = vb[0] + (e.clientX - r.left - ox) / s;   // punto bajo el cursor (unid. viewBox)
+    var wy = vb[1] + (e.clientY - r.top - oy) / s;
+    var nz = Math.max(1, Math.min(8, shaftView.z * (e.deltaY < 0 ? 1.2 : 1 / 1.2)));
+    if (nz === shaftView.z) return;
+    shaftView.z = nz;
+    if (nz === 1) { shaftView.px = 0; shaftView.py = 0; }
+    else {
+        var vw = SVBW / nz, vh = SVBH / nz;
+        var s2 = Math.min(r.width / vw, r.height / vh);
+        var ox2 = (r.width - vw * s2) / 2, oy2 = (r.height - vh * s2) / 2;
+        shaftView.px = wx - (e.clientX - r.left - ox2) / s2 - (SVBW - vw) / 2;
+        shaftView.py = wy - (e.clientY - r.top - oy2) / s2 - (SVBH - vh) / 2;
+        shaftClampPan();
+    }
+    drawShaft();
+}, { passive: false });
+// pan arrastrando con la rueda (botón central) pulsada
+var shaftDrag = null;
+shaftCanvasEl.addEventListener('pointerdown', function (e) {
+    if (e.button !== 1) return;
+    var svg = shaftCanvasEl.querySelector('svg');
+    if (!svg) return;
+    e.preventDefault();
+    var r = svg.getBoundingClientRect();
+    var vb = shaftViewBox();
+    shaftDrag = {
+        x: e.clientX, y: e.clientY, px: shaftView.px, py: shaftView.py,
+        s: Math.min(r.width / vb[2], r.height / vb[3])
+    };
+    shaftCanvasEl.setPointerCapture(e.pointerId);
+});
+shaftCanvasEl.addEventListener('pointermove', function (e) {
+    if (!shaftDrag) return;
+    shaftView.px = shaftDrag.px - (e.clientX - shaftDrag.x) / shaftDrag.s;
+    shaftView.py = shaftDrag.py - (e.clientY - shaftDrag.y) / shaftDrag.s;
+    shaftClampPan();
+    drawShaft();
+});
+shaftCanvasEl.addEventListener('pointerup', function () { shaftDrag = null; });
+shaftCanvasEl.addEventListener('pointercancel', function () { shaftDrag = null; });
+// sin autoscroll del navegador con el botón central sobre el dibujo
+shaftCanvasEl.addEventListener('mousedown', function (e) { if (e.button === 1) e.preventDefault(); });
+
 function drawShaft() {
     // valores saneados solo para el dibujo (la validación real es shaftValidate)
     var lv = [];
@@ -1352,7 +1514,7 @@ function drawShaft() {
     var total = 0, dmax = 0;
     for (var i2 = 0; i2 < lv.length; i2++) { total += lv[i2].l; dmax = Math.max(dmax, lv[i2].d); }
 
-    var VBW = 460, VBH = 320, mL = 86, mR = 86, mT = 84, mB = 46;
+    var VBW = SVBW, VBH = SVBH, mL = 86, mR = 86, mT = 84, mB = 46;
     var roomW = VBW - mL - mR, roomH = VBH - mT - mB;
     var sc = Math.min(roomW / total, roomH / dmax);
     var x0 = mL + (roomW - total * sc) / 2, cy = mT + roomH / 2;
@@ -1372,14 +1534,51 @@ function drawShaft() {
         }
     }
 
-    // contorno: un rectángulo por tramo fundido (sin aristas internas)
+    // tramos [x1,x2] (mm) donde una ranura COME la silueta exterior (aceptadas y la
+    // editada; la original bajo edición se salta igual que en el dibujo de la muesca)
+    var eat = [];
+    var eatGrvs = shaftGrvs.slice();
+    if (editGrv) eatGrvs.push(editGrv);
+    for (var ge = 0; ge < eatGrvs.length; ge++) {
+        if (editGrv && ge === editGrvIdx) continue;
+        var gvE = eatGrvs[ge];
+        var ea = grvX1(gvE), eb = ea + gvE.e1;
+        if (isFinite(ea) && isFinite(eb) && gvE.e1 > 0 && grvDiam(gvE) > 0) eat.push([ea, eb]);
+    }
+
+    // contorno por tramo fundido (sin aristas internas): verticales completas y
+    // silueta superior/inferior interrumpida donde una ranura la come
     for (var s2 = 0; s2 < segs.length; s2++) {
         var sg = segs[s2];
-        out += RECT(x0 + sg.x1 * sc, cy - sg.d * sc / 2, sg.len * sc, sg.d * sc, INK, 1.5);
+        var sxA = x0 + sg.x1 * sc, sxB = sxA + sg.len * sc;
+        var syT = cy - sg.d * sc / 2, syB = cy + sg.d * sc / 2;
+        out += LINE(sxA, syT, sxA, syB, INK, 1.5) + LINE(sxB, syT, sxB, syB, INK, 1.5);
+        var runs = [[sg.x1, sg.x1 + sg.len]];
+        for (var gi = 0; gi < eat.length; gi++) {
+            var nr = [];
+            for (var ri = 0; ri < runs.length; ri++) {
+                var r0 = runs[ri][0], r1 = runs[ri][1];
+                var e0 = eat[gi][0], eF = eat[gi][1];
+                if (eF <= r0 || e0 >= r1) { nr.push([r0, r1]); continue; }
+                if (e0 > r0) nr.push([r0, e0]);
+                if (eF < r1) nr.push([eF, r1]);
+            }
+            runs = nr;
+        }
+        for (var rr = 0; rr < runs.length; rr++) {
+            var ra = x0 + runs[rr][0] * sc, rb = x0 + runs[rr][1] * sc;
+            out += LINE(ra, syT, rb, syT, INK, 1.5) + LINE(ra, syB, rb, syB, INK, 1.5);
+        }
     }
-    // líneas de división: discontinuas en rojo sobre el Ø del tramo
+    // líneas de división: discontinuas en rojo sobre el Ø del tramo; si caen dentro
+    // de una ranura, la superficie ya no existe ahí → no se dibujan
     for (var s3 = 0; s3 < splitMarks.length; s3++) {
         var sp = splitMarks[s3];
+        var spEaten = false;
+        for (var se = 0; se < eat.length; se++) {
+            if (sp.x > eat[se][0] - 1e-9 && sp.x < eat[se][1] + 1e-9) { spEaten = true; break; }
+        }
+        if (spEaten) continue;
         out += LINE(x0 + sp.x * sc, cy - sp.d * sc / 2, x0 + sp.x * sc, cy + sp.d * sc / 2, RED, 1.2, '5,4');
     }
 
@@ -1390,7 +1589,7 @@ function drawShaft() {
     for (var kk = 0; kk < allKeys.length; kk++) {
         if (editKey && kk === editIdx) continue;    // en edición se dibuja la copia roja, no la original
         var ky = allKeys[kk];
-        var x1 = keyX1(ky), x2 = x1 + ky.l;
+        var x1 = keyX1(ky), x2 = x1 + keySpan(ky);
         if (!isFinite(x1) || !isFinite(x2) || !(ky.b > 0) || !(x2 > x1)) continue;
         var isEdit = editKey && kk === allKeys.length - 1;
         var col = isEdit ? RED : INK;
@@ -1417,8 +1616,9 @@ function drawShaft() {
         out += PATH([[ga, cy + rS], [ga, cy + rB], [gb, cy + rB], [gb, cy + rS]], gcol, gw);
     }
 
-    // entalladuras aceptadas (y la editada en rojo): muesca DIN 509-E en ambas
-    // siluetas — rampa a 15° desde la superficie, fondo plano hasta la cara del hombro
+    // entalladuras aceptadas (y la editada en rojo): muesca DIN 509 en ambas siluetas —
+    // rampa a 15° desde la superficie y fondo plano; la E cierra recta en la cara del
+    // hombro, la F sigue t2 al otro lado y sale a 8° por la cara
     var allUcs = shaftUcs.slice();
     if (editUc) allUcs.push(editUc);
     for (var uu = 0; uu < allUcs.length; uu++) {
@@ -1430,12 +1630,20 @@ function drawShaft() {
         var ucol = uEdit ? RED : INK, uw = uEdit ? 1.8 : 1.2;
         var z = ucZone(uv);
         var uLeft = ucSmallLeft(uv);
+        var udir = uLeft ? 1 : -1;                      // sentido rampa → hombro
         var xsh = x0 + (uLeft ? z[1] : z[0]) * sc;      // cara del hombro
         var xfar = x0 + (uLeft ? z[0] : z[1]) * sc;     // extremo de la rampa
-        var xrmp = xfar + (uLeft ? 1 : -1) * uv.t1 * UC_RAMP * sc;  // fin de rampa (fondo)
+        var xrmp = xfar + udir * uv.t1 * UC_RAMP * sc;  // fin de rampa (fondo)
         var urs = z[2] * sc / 2, urb = urs - uv.t1 * sc;
-        out += PATH([[xfar, cy - urs], [xrmp, cy - urb], [xsh, cy - urb], [xsh, cy - urs]], ucol, uw);
-        out += PATH([[xfar, cy + urs], [xrmp, cy + urb], [xsh, cy + urb], [xsh, cy + urs]], ucol, uw);
+        if (uv.form === 'F' && uv.t2 > 0) {
+            var xd = xsh + udir * uv.t2 * sc;                    // fondo pasado el hombro
+            var uex = urb + uv.t2 * UC_RAMP8 * sc;               // salida a 8° sobre la cara
+            out += PATH([[xfar, cy - urs], [xrmp, cy - urb], [xd, cy - urb], [xsh, cy - uex]], ucol, uw);
+            out += PATH([[xfar, cy + urs], [xrmp, cy + urb], [xd, cy + urb], [xsh, cy + uex]], ucol, uw);
+        } else {
+            out += PATH([[xfar, cy - urs], [xrmp, cy - urb], [xsh, cy - urb], [xsh, cy - urs]], ucol, uw);
+            out += PATH([[xfar, cy + urs], [xrmp, cy + urb], [xsh, cy + urb], [xsh, cy + urs]], ucol, uw);
+        }
     }
 
     if (shaftStep === 1) {
@@ -1474,19 +1682,70 @@ function drawShaft() {
                 'class': 'edgehit', 'data-edge': e2
             });
         }
-        // cota de posición: arista → extremo IZQUIERDO siempre; la línea auxiliar baja
-        // hasta la pieza en edición, centrada en la línea de eje. La entalladura no
-        // lleva cota: su posición es el propio hombro.
+        // cota de posición: chaveta → extremo IZQUIERDO siempre; ranura → la pared que
+        // indica el signo (positiva = izquierda, negativa = derecha: arista + cota).
+        // La línea auxiliar baja hasta la pieza en edición, centrada en la línea de eje.
+        // En modo centro-en-arista no hay cota: se marca el centro del arco izq sobre la
+        // arista. La entalladura no lleva cota: su posición es el propio hombro.
         var cx1 = editKey ? keyX1(editKey) : editGrv ? grvX1(editGrv) : NaN;
         if (isFinite(cx1)) {
             var exSel = x0 + xs[cur.edge] * sc;
-            var target = x0 + cx1 * sc;
-            out += LINE(target, cy, target, dimY, INK, 1) + LINE(exSel, boxTop - 10, exSel, dimY, INK, 1);
-            out += hDim(exSel, target, dimY, fmt(cur.off) + ' mm');
+            if (editKey && editKey.ctr) {
+                out += CIRC(exSel, cy, 3.5, RED, 1.6);
+                out += LINE(exSel - 8, cy, exSel + 8, cy, RED, 1) + LINE(exSel, cy - 8, exSel, cy + 8, RED, 1);
+            } else {
+                var target = x0 + (editGrv ? xs[cur.edge] + cur.off : cx1) * sc;
+                // línea auxiliar: en la ranura arranca de la propia pared (superficie del
+                // nivel), no del centro del eje; la chaveta sigue en el eje (va centrada)
+                var auxY0 = cy;
+                if (editGrv) {
+                    var gdAux = grvDiam(editGrv);
+                    auxY0 = gdAux > 0 ? cy - gdAux * sc / 2 : cy;
+                }
+                out += LINE(target, auxY0, target, dimY, INK, 1) + LINE(exSel, boxTop - 10, exSel, dimY, INK, 1);
+                out += hDim(exSel, target, dimY, fmt(cur.off) + ' mm');
+            }
+            // cota de longitud de la chaveta, con las MISMAS referencias que el modelo SW:
+            // modo cota = extremo a extremo; modo centro = centro anclado → extremo opuesto
+            if (editKey && editKey.l > 0) {
+                var kSpanEnd = cx1 + keySpan(editKey);
+                var lA = editKey.ctr === 1 ? xs[cur.edge] : cx1;            // centro izq o extremo izq
+                var lB = editKey.ctr === 2 ? xs[cur.edge] : kSpanEnd;       // centro der o extremo der
+                var kx1s = x0 + lA * sc, kx2s = x0 + lB * sc;
+                var krEd = Math.min(editKey.b > 0 ? editKey.b : 0, keySpan(editKey)) * sc / 2;
+                var yLen = boxBot + 24;
+                out += LINE(kx1s, cy + krEd, kx1s, yLen, INK, 1) + LINE(kx2s, cy + krEd, kx2s, yLen, INK, 1);
+                out += hDim(kx1s, kx2s, yLen, 'L = ' + fmt(editKey.l));
+            }
+            // cotas de la ranura en edición: espesor E1 abajo y fondo Ø D3 en carril
+            // lateral (mismo estilo que las cotas de nivel del paso 1)
+            if (editGrv) {
+                var gdDim = grvDiam(editGrv);
+                if (gdDim > 0 && editGrv.e1 > 0) {
+                    var ga1 = x0 + cx1 * sc, ga2 = ga1 + editGrv.e1 * sc;
+                    var rBd = Math.max(0, Math.min(editGrv.d3 > 0 ? editGrv.d3 : gdDim, gdDim)) * sc / 2;
+                    var yE1 = boxBot + 24;
+                    out += LINE(ga1, cy + rBd, ga1, yE1, INK, 1) + LINE(ga2, cy + rBd, ga2, yE1, INK, 1);
+                    out += hDim(ga1, ga2, yE1, 'E1 = ' + fmt(editGrv.e1));
+                    if (editGrv.d3 > 0 && editGrv.d3 < gdDim) {
+                        var grvLeftHalf = (cx1 + editGrv.e1 / 2) < total / 2;
+                        var xQg = grvLeftHalf ? x0 - 40 : x0 + total * sc + 40;
+                        var gxw = grvLeftHalf ? ga1 : ga2;      // pared más cercana al carril
+                        out += LINE(gxw, cy - rBd, xQg, cy - rBd, INK, 1) + LINE(gxw, cy + rBd, xQg, cy + rBd, INK, 1);
+                        out += vDim(cy - rBd, cy + rBd, xQg, 'D3 = ' + fmt(editGrv.d3));
+                    }
+                }
+            }
         }
     }
 
-    out = mk('svg', { viewBox: '0 0 ' + VBW + ' ' + VBH, preserveAspectRatio: 'xMidYMid meet' }, out);
+    var vb = shaftViewBox();
+    out = mk('svg', {
+        viewBox: vb[0].toFixed(2) + ' ' + vb[1].toFixed(2) + ' ' + vb[2].toFixed(2) + ' ' + vb[3].toFixed(2),
+        preserveAspectRatio: 'xMidYMid meet'
+    }, out);
+    out += '<div class="zoombar"><button type="button" class="zbtn" data-z="reset" ' +
+        'title="Encuadre completo · zoom: rueda · mover: arrastrar con la rueda pulsada">⟲</button></div>';
     shaftCanvasEl.innerHTML = out;
 }
 

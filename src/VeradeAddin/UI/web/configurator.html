@@ -10,7 +10,8 @@
 
   Pantalla 3 = asistente del EJE, 4 pasos: 1) cuerpo (n niveles Ø × L; Ø iguales consecutivos se
   funden y la frontera es línea de división), 2) chavetas DIN 6885-A, 3) ranuras de anillo DIN 471,
-  4) entalladuras DIN 509-E en los hombros (tamaño de la norma según el Ø menor).
+  4) entalladuras DIN 509 en los hombros (tipo E o F + solicitación usual/fatiga; medidas de la
+  norma según el Ø menor).
 
   Estilos en configurator.css, lógica en configurator.js.
   El host inyecta la tabla DIN 471 en window.DIN471 antes de cargar el JS; abrir este .html suelto
@@ -144,13 +145,21 @@
           <div id="keyForm" class="hidden">
             <div class="krow">
               <div class="kfield"><label>Ancho b</label><div class="inp"><input id="kb" type="number" min="0" step="any" value="6"><span class="u">mm</span></div></div>
-              <div class="kfield"><label>Largo L</label><div class="inp"><input id="kl" type="number" min="0" step="any" value="20"><span class="u">mm</span></div></div>
+              <div class="kfield"><label id="klLabel">Largo L (total)</label><div class="inp"><input id="kl" type="number" min="0" step="any" value="20"><span class="u">mm</span></div></div>
             </div>
             <div class="field">
               <label>Arista de referencia (clic en el dibujo o elige)</label>
               <select id="kedge"></select>
             </div>
-            <div class="field"><label>Cota de la arista al extremo izquierdo (±, nunca 0)</label><div class="inp"><input id="koff" type="number" step="any" value="10"><span class="u">mm</span></div></div>
+            <div class="field">
+              <label>Posición respecto a la arista</label>
+              <select id="kanchor">
+                <option value="0">Cota al extremo izquierdo</option>
+                <option value="1">Centro del arco IZQUIERDO en la arista</option>
+                <option value="2">Centro del arco DERECHO en la arista</option>
+              </select>
+            </div>
+            <div class="field" id="koffWrap"><label>Cota de la arista al extremo izquierdo (±, nunca 0)</label><div class="inp"><input id="koff" type="number" step="any" value="10"><span class="u">mm</span></div></div>
             <div class="field" id="krefWrap">
               <label>Ø de referencia (la profundidad se mide desde su superficie)</label>
               <select id="krefd"></select>
@@ -192,9 +201,9 @@
           </div>
         </div>
 
-        <!-- paso 4: entalladuras DIN 509-E en los hombros -->
+        <!-- paso 4: entalladuras DIN 509 (E/F) en los hombros -->
         <div class="group shaft-undercuts hidden" id="sgrp4">
-          <h2>Paso 4 &middot; Entalladuras (DIN 509-E)</h2>
+          <h2>Paso 4 &middot; Entalladuras (DIN 509)</h2>
           <div id="ucList"></div>
           <button id="btnAddUc" class="addkey">+ Añadir entalladura</button>
           <div id="ucForm" class="hidden">
@@ -203,8 +212,18 @@
               <select id="uedge"></select>
             </div>
             <div class="field">
-              <label>Tamaño DIN 509-E (según el Ø menor del hombro)</label>
-              <select id="usize"></select>
+              <label>Tipo (DIN 509)</label>
+              <select id="utype">
+                <option value="E">E &middot; solo en el cilindro</option>
+                <option value="F">F &middot; cilindro + cara del hombro</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Solicitaci&oacute;n</label>
+              <select id="userie">
+                <option value="usual">Esfuerzo usual</option>
+                <option value="fatiga">Resistencia a la fatiga aumentada</option>
+              </select>
             </div>
             <div class="note" id="ucNote"></div>
             <div class="krow">

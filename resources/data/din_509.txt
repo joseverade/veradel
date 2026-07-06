@@ -1,0 +1,12 @@
+		E and F	E and F	E and F	F only
+	shaft diameter d1	r1	t1	f1	t2
+Con esfuerzo usual	0  <= 1.6	0.1	0.1	0.5	0.1
+Con esfuerzo usual	more than 1.6 <=  3	0.2	0.1	1	0.1
+Con esfuerzo usual	more than 3.0- 10.0	0.4	0.2	2	0.1
+Con esfuerzo usual	more than 10.0 <= 18.0	0.6	0.2	2	0.1
+Con esfuerzo usual	more than 18.0 <= 80	0.6	0.3	2.5	0.2
+Con esfuerzo usual	more than 80	1	0.4	4	0.3
+con resistencia a la fatiga	more than 18.0 <= 50	1	0.2	2.5	0.1
+con resistencia a la fatiga	more than 50 <= 80	1.6	0.3	4	0.2
+con resistencia a la fatiga	more than 80 <= 125	2.5	0.4	5	0.3
+con resistencia a la fatiga	more than 125	4	0.5	7	0.3

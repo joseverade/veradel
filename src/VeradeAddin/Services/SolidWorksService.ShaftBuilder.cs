@@ -73,17 +73,19 @@ namespace VeradeAddin.Services
                     }
                 }
 
+                // A failed feature operation does NOT abort the build: it is skipped, the rest is
+                // still cut, and every skip is reported at the end via result.Warning.
+                var skipped = new List<string>();
+
                 // Grooves BEFORE keyways: their position dims reference the boundary edge rings,
                 // which an angled keyway cut could otherwise have carved away.
                 var grooves = spec.Grooves ?? new List<ShaftGroove>();
+                int groovesOk = 0;
                 for (int g = 0; g < grooves.Count; g++)
                 {
                     err = CutShaftGroove(model, spec, grooves[g]);
-                    if (err != null)
-                    {
-                        result.Error = "Ranura " + (g + 1) + ": " + err;
-                        return result;
-                    }
+                    if (err != null) skipped.Add("Ranura " + (g + 1) + ": " + err);
+                    else groovesOk++;
                 }
 
                 // Undercuts AFTER grooves (a groove never touches a diameter-change boundary, so
@@ -91,26 +93,22 @@ namespace VeradeAddin.Services
                 // keyway cut is blocked by validation, but a straddling one could still eat the
                 // shoulder ring the undercut anchors to).
                 var undercuts = spec.Undercuts ?? new List<ShaftUndercut>();
+                int undercutsOk = 0;
                 for (int u = 0; u < undercuts.Count; u++)
                 {
                     err = CutShaftUndercut(model, spec, undercuts[u]);
-                    if (err != null)
-                    {
-                        result.Error = "Entalladura " + (u + 1) + ": " + err;
-                        return result;
-                    }
+                    if (err != null) skipped.Add("Entalladura " + (u + 1) + ": " + err);
+                    else undercutsOk++;
                 }
 
                 Feature shaftAxis = null;
                 var keyways = spec.Keyways ?? new List<ShaftKeyway>();
+                int keywaysOk = 0;
                 for (int k = 0; k < keyways.Count; k++)
                 {
                     err = CutKeyway(model, spec, keyways[k], ref shaftAxis);
-                    if (err != null)
-                    {
-                        result.Error = "Chaveta " + (k + 1) + ": " + err;
-                        return result;
-                    }
+                    if (err != null) skipped.Add("Chaveta " + (k + 1) + ": " + err);
+                    else keywaysOk++;
                 }
 
                 model.ClearSelection2(true);
@@ -121,9 +119,10 @@ namespace VeradeAddin.Services
                 result.LevelCount = spec.Levels.Count;
                 result.TotalLengthMm = spec.TotalLengthMm;
                 result.SplitLineCount = splits;
-                result.KeywayCount = keyways.Count;
-                result.GrooveCount = grooves.Count;
-                result.UndercutCount = undercuts.Count;
+                result.KeywayCount = keywaysOk;
+                result.GrooveCount = groovesOk;
+                result.UndercutCount = undercutsOk;
+                result.Warning = skipped.Count > 0 ? string.Join("\n", skipped.ToArray()) : null;
                 return result;
             }
             catch (Exception ex)
@@ -340,8 +339,18 @@ namespace VeradeAddin.Services
         /// With a start angle: FIRST an angled plane — select front plane (append) + axis with MARK 1,
         /// <c>InsertRefPlane(Angle, θ, Coincident, 0, 0, 0)</c> (the axis-first pairing fails) — then
         /// offset that by the radius. Positive θ rotates +Z toward −Y.</item>
-        /// <item>Slot sketch via <see cref="ISketchManager.CreateSketchSlot"/> (type line, FullLength,
-        /// auto-dimensioned). Sketch X maps to model X on these planes (verified by floor-face probe).</item>
+        /// <item>Slot sketch via <see cref="ISketchManager.CreateSketchSlot"/> (type line). The two
+        /// points are the ARC CENTRES regardless of the length-type flag (the old code passed the
+        /// extremes and every key came out b too long), so pass x1 + b/2 and x2 − b/2 and add the
+        /// dimensions manually (no auto-dims): width = the two slot lines, length = the two arcs with
+        /// <c>SetArcEndCondition(Max, Max)</c> → measured extreme to extreme (tangency to tangency).
+        /// Sketch X maps to model X on these planes (verified by floor-face probe).</item>
+        /// <item>Position: normally a dim from the reference edge ring to the LEFT arc with the arc
+        /// condition at its LEFT extreme (Min when the key is right of the edge, Max otherwise) —
+        /// mirrors the UI cota. With <see cref="ShaftKeyway.CenterArc"/> 1/2 the LEFT/RIGHT arc
+        /// CENTRE is made coincident with the edge ring instead (the ring projects onto the sketch
+        /// as the vertical line x = edge), no position dim, and the length dim runs anchored
+        /// centre → opposite extreme.</item>
         /// <item>Cut = <c>FeatureCut4</c> with Sd=false (BOTH directions): dir1 Blind = depth into the
         /// shaft, dir2 ThroughAll = outward, so a key straddling a bigger level also removes the
         /// material above the reference surface.</item>
@@ -356,7 +365,7 @@ namespace VeradeAddin.Services
             const double mmToM = 0.001;
             var xs = spec.BoundariesMm();
             double x1 = key.StartXMm(xs[key.EdgeIndex]) * mmToM;
-            double x2 = x1 + key.LengthMm * mmToM;
+            double x2 = x1 + key.SpanMm * mmToM;
             double refRadius = key.RefDiameterMm * mmToM / 2.0;
 
             double angleRad = key.AngleDeg * Math.PI / 180.0;
@@ -402,51 +411,142 @@ namespace VeradeAddin.Services
                 sketchMgr.AddToDB = true;
                 sketchMgr.DisplayWhenAdded = false;
 
+                // The two slot points are the ARC CENTRES (SolidWorks ignores the length-type flag
+                // for the geometry): overall extreme-to-extreme length = key.LengthMm. No auto-dims —
+                // they are anchored centre-to-centre; ours below measure what the user entered.
+                double halfB = key.WidthMm * mmToM / 2.0;
                 var slot = sketchMgr.CreateSketchSlot(
                     (int)swSketchSlotCreationType_e.swSketchSlotCreationType_line,
                     (int)swSketchSlotLengthType_e.swSketchSlotLengthType_FullLength,
                     key.WidthMm * mmToM,
-                    x1, 0, 0, x2, 0, 0, 0, 0, 0, 1, true);
+                    x1 + halfB, 0, 0, x2 - halfB, 0, 0, 0, 0, 0, 1, false);
                 if (slot == null) return "no se pudo crear la ranura de la chaveta en el croquis.";
 
-                // Fully define the slot (validated live, SlotDef 2026-07-05): the auto-dims cover
-                // width/length but the slot floats. Its CENTRE point (GetCenterPointHandle) pins both:
-                //  · Y — horizontal alignment centre ↔ sketch origin (the origin projects onto the
-                //    axis on every tangent plane, straight or angled);
-                //  · X — horizontal dim from the reference edge circle to the centre (mirrors the UI
-                //    cota); if that edge pick fails, fall back to a dim from the origin.
+                // The slot is exactly 2 lines + 2 arcs and it is alone in this sketch: enumerate the
+                // segments to reach them (ISketchSlot exposes no segment accessor).
+                SketchSegment lineA = null, lineB = null, arcLeft = null, arcRight = null;
+                SketchPoint arcLeftCenter = null, arcRightCenter = null;
+                var sketchObjs = sketchMgr.ActiveSketch == null ? null : sketchMgr.ActiveSketch.GetSketchSegments() as object[];
+                double bestLeft = double.MaxValue, bestRight = double.MinValue;
+                if (sketchObjs != null)
+                {
+                    foreach (var rawSeg in sketchObjs)
+                    {
+                        var seg = rawSeg as SketchSegment;
+                        if (seg == null) continue;
+                        if (seg.GetType() == (int)swSketchSegments_e.swSketchLINE)
+                        {
+                            if (seg.ConstructionGeometry) continue;
+                            if (lineA == null) lineA = seg; else lineB = seg;
+                        }
+                        else if (seg.GetType() == (int)swSketchSegments_e.swSketchARC)
+                        {
+                            var center = ((SketchArc)seg).GetCenterPoint2() as SketchPoint;
+                            if (center == null) continue;
+                            if (center.X < bestLeft) { bestLeft = center.X; arcLeft = seg; arcLeftCenter = center; }
+                            if (center.X > bestRight) { bestRight = center.X; arcRight = seg; arcRightCenter = center; }
+                        }
+                    }
+                }
+
+                // COTAS PRIMERO, driving en el acto (MakeDriving): only then are the in-sketch
+                // fully-defined/broken checks below meaningful, and a later relation that fights a
+                // dimension shows up as invalid instead of silently moving the geometry.
+                // Width b: distance between the two slot lines.
+                if (lineA != null && lineB != null)
+                {
+                    model.ClearSelection2(true);
+                    lineA.Select4(true, null);
+                    lineB.Select4(true, null);
+                    MakeDriving(model.AddVerticalDimension2(x1 - 0.008, 0, 0));
+                }
+                // Length l — arc conditions per anchor mode: cota mode measures the outer extremes
+                // (Max/Max, tangency to tangency); a centre-anchored mode measures from the anchored
+                // arc CENTRE to the opposite EXTREME (that is the l the user typed).
+                if (arcLeft != null && arcRight != null)
+                {
+                    model.ClearSelection2(true);
+                    arcLeft.Select4(true, null);
+                    arcRight.Select4(true, null);
+                    var lenDim = model.AddHorizontalDimension2((x1 + x2) / 2.0, -(key.WidthMm * mmToM + 0.008), 0) as DisplayDimension;
+                    var len = lenDim == null ? null : lenDim.GetDimension2(0);
+                    if (len != null)
+                    {
+                        len.SetArcEndCondition(0, key.CenterArc == 1
+                            ? (int)swArcEndCondition_e.swArcEndConditionCenter
+                            : (int)swArcEndCondition_e.swArcEndConditionMax);
+                        len.SetArcEndCondition(1, key.CenterArc == 2
+                            ? (int)swArcEndCondition_e.swArcEndConditionCenter
+                            : (int)swArcEndCondition_e.swArcEndConditionMax);
+                    }
+                    MakeDriving(lenDim);
+                }
+
+                // Fully define the slot (validated live, SlotDef 2026-07-05): with width/length
+                // dimensioned the slot still floats. Its CENTRE point (GetCenterPointHandle) pins Y —
+                // horizontal alignment centre ↔ sketch origin (the origin projects onto the axis on
+                // every tangent plane, straight or angled). X is pinned below per position mode.
                 var slotCenter = slot.GetCenterPointHandle();
-                if (slotCenter != null)
+                if (slotCenter != null && !SketchFullyDefined(sketchMgr))
                 {
                     model.ClearSelection2(true);
                     bool gotCenter = slotCenter.Select4(true, null);
                     bool gotOrigin = model.Extension.SelectByID2(
                         "", "EXTSKETCHPOINT", 0, 0, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
-                    if (gotCenter && gotOrigin) model.SketchAddConstraints("sgHORIZONTALPOINTS2D");
+                    if (gotCenter && gotOrigin) AddConstraintGuarded(model, sketchMgr, "sgHORIZONTALPOINTS2D");
+                }
 
-                    // Reference edge circle: at an internal boundary the step ring has two circles;
-                    // the SMALLER radius one always exists (also the split-line ring when Ø repeats).
-                    double dLeft = key.EdgeIndex > 0 ? spec.Levels[key.EdgeIndex - 1].DiameterMm : spec.Levels[0].DiameterMm;
-                    double dRight = key.EdgeIndex < spec.Levels.Count ? spec.Levels[key.EdgeIndex].DiameterMm : spec.Levels[spec.Levels.Count - 1].DiameterMm;
-                    double rEdge = Math.Min(dLeft, dRight) * mmToM / 2.0;
-                    double edgeX = xs[key.EdgeIndex] * mmToM;
+                // Reference edge circle: at an internal boundary the step ring has two circles;
+                // the SMALLER radius one always exists (also the split-line ring when Ø repeats).
+                double dLeft = key.EdgeIndex > 0 ? spec.Levels[key.EdgeIndex - 1].DiameterMm : spec.Levels[0].DiameterMm;
+                double dRight = key.EdgeIndex < spec.Levels.Count ? spec.Levels[key.EdgeIndex].DiameterMm : spec.Levels[spec.Levels.Count - 1].DiameterMm;
+                double rEdge = Math.Min(dLeft, dRight) * mmToM / 2.0;
+                double edgeX = xs[key.EdgeIndex] * mmToM;
 
+                bool positioned = false;
+                if (key.CenterArc != 0)
+                {
+                    // Locating key: the anchored arc CENTRE sits ON the step ring. The ring projects
+                    // onto the tangent plane as the vertical line x = edge, so a coincident relation
+                    // pins X exactly there (Y is already tied to the axis). No position dim. Guarded:
+                    // if the relation twists the slot into invalid geometry it is rolled back and the
+                    // fallback dimension below positions the slot instead.
+                    var anchor = key.CenterArc == 1 ? arcLeftCenter : arcRightCenter;
+                    positioned = CoincidentPointToEdgeGuarded(model, sketchMgr, anchor, edgeX, rEdge, 0);
+                }
+                else
+                {
+                    // Position dim edge ring → LEFT arc at its LEFT extreme (tangency), mirroring the
+                    // UI cota (edge → left extreme). Min when the key is right of the edge, Max when
+                    // it is left of (or straddles) it — both resolve to the LEFT extreme.
                     model.ClearSelection2(true);
                     bool gotEdge = model.Extension.SelectByID2(
                         "", "EDGE", edgeX, rEdge, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
-                    object posDim = null;
-                    if (gotEdge && slotCenter.Select4(true, null))
+                    if (gotEdge && arcLeft != null && arcLeft.Select4(true, null))
                     {
-                        posDim = model.AddHorizontalDimension2((x1 + x2) / 2.0, refRadius * 2.5, 0);
+                        var posDim = model.AddHorizontalDimension2((edgeX + x1) / 2.0, refRadius * 2.5, 0) as DisplayDimension;
+                        var pos = posDim == null ? null : posDim.GetDimension2(0);
+                        if (pos != null)
+                        {
+                            pos.SetArcEndCondition(0, (int)swArcEndCondition_e.swArcEndConditionCenter);
+                            pos.SetArcEndCondition(1, key.OffsetMm > 0
+                                ? (int)swArcEndCondition_e.swArcEndConditionMin
+                                : (int)swArcEndCondition_e.swArcEndConditionMax);
+                        }
+                        MakeDriving(posDim);
+                        positioned = posDim != null;
                     }
-                    if (posDim == null)
-                    {
-                        model.ClearSelection2(true);
-                        slotCenter.Select4(true, null);
-                        model.Extension.SelectByID2(
-                            "", "EXTSKETCHPOINT", 0, 0, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
-                        model.AddHorizontalDimension2((x1 + x2) / 2.0, refRadius * 3.0, 0);
-                    }
+                }
+                // Stop condition: no fallback when the sketch is already fully defined (adding more
+                // would only over-define it).
+                if (!positioned && slotCenter != null && !SketchFullyDefined(sketchMgr))
+                {
+                    // Fallback: dim origin → slot centre (value from the exact geometry).
+                    model.ClearSelection2(true);
+                    slotCenter.Select4(true, null);
+                    model.Extension.SelectByID2(
+                        "", "EXTSKETCHPOINT", 0, 0, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
+                    MakeDriving(model.AddHorizontalDimension2((x1 + x2) / 2.0, refRadius * 3.0, 0));
                 }
 
                 model.ClearSelection2(true);
@@ -461,7 +561,7 @@ namespace VeradeAddin.Services
             var sketchFeature = LastProfileFeature(model);
             if (sketchFeature == null) return "no se encontró el croquis de la chaveta.";
 
-            // CreateSketchSlot's auto-dims (width/length) are born DRIVEN while the
+            // The width/length/position dims above are born DRIVEN while the
             // swAddDrivenDimensions toggle is on, leaving the slot under-defined.
             ForceDrivingDims(sketchFeature);
 
@@ -498,9 +598,12 @@ namespace VeradeAddin.Services
         /// <summary>
         /// Cuts one retaining-ring groove: rectangular notch (level radius down to D3/2, width E1)
         /// sketched on the front plane and removed with a 360° cut-revolve — same recipe as the
-        /// bolt's <c>CutGroove</c>. Position dim = reference edge ring → the wall the offset sign
-        /// points at (mirrors the UI cota); falls back to a dim from the origin when the edge pick
-        /// fails. Returns null on success or a Spanish error.
+        /// bolt's <c>CutGroove</c>. The rectangle TOP is coincident with the level's silhouette
+        /// (outer Ø = the level Ø, no extra diameter dim), so it follows the surface if the level
+        /// Ø is edited later. Position dim = reference edge ring → the wall the offset sign points
+        /// at (positive = left wall, negative = right wall, mirroring the UI cota); falls back to
+        /// a dim from the origin when the edge pick fails. Returns null on success or a Spanish
+        /// error.
         /// </summary>
         private string CutShaftGroove(IModelDoc2 model, ShaftSpec spec, ShaftGroove groove)
         {
@@ -545,10 +648,11 @@ namespace VeradeAddin.Services
                 segCl.ConstructionGeometry = true;
                 var segLeftWall = Line(sketchMgr, x1, rSurf, x1, r3);
                 var segBottom = Line(sketchMgr, x1, r3, x2, r3);
-                Line(sketchMgr, x2, r3, x2, rSurf);                   // right wall
+                var segRightWall = Line(sketchMgr, x2, r3, x2, rSurf);
                 var segTop = Line(sketchMgr, x2, rSurf, x1, rSurf);
 
-                // In-sketch relations first, then anchor to the existing body (same as the bolt groove).
+                // In-sketch relations first, then anchor to the existing body: the rectangle TOP
+                // sits ON the level silhouette (outer Ø = level Ø), same as the bolt groove.
                 ConstrainAll(sketchMgr);
                 CoincidentToOrigin(model, StartPt(segCl));
                 CoincidentPointToEdge(model, EndPt(segCl), total, 0, 0);
@@ -559,24 +663,26 @@ namespace VeradeAddin.Services
                 double xMid = (x1 + x2) / 2.0;
 
                 // Position: reference edge ring (smaller adjacent radius always exists, also on split
-                // rings) → the LEFT wall, mirroring the UI cota.
+                // rings) → the wall the offset sign points at (positive = LEFT wall, negative =
+                // RIGHT wall), mirroring the UI cota.
                 double dLeft = groove.EdgeIndex > 0 ? spec.Levels[groove.EdgeIndex - 1].DiameterMm : spec.Levels[0].DiameterMm;
                 double dRight = groove.EdgeIndex < spec.Levels.Count ? spec.Levels[groove.EdgeIndex].DiameterMm : spec.Levels[spec.Levels.Count - 1].DiameterMm;
                 double rEdge = Math.Min(dLeft, dRight) * mmToM / 2.0;
                 double edgeX = xs[groove.EdgeIndex] * mmToM;
+                var posWall = groove.OffsetMm < 0 ? segRightWall : segLeftWall;
 
                 model.ClearSelection2(true);
                 bool gotEdge = model.Extension.SelectByID2(
                     "", "EDGE", edgeX, rEdge, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
                 object posDim = null;
-                if (gotEdge && segLeftWall.Select4(true, null))
+                if (gotEdge && posWall.Select4(true, null))
                 {
                     posDim = model.AddHorizontalDimension2((edgeX + xMid) / 2.0, rSurf + 2.0 * off, 0);
                 }
                 if (posDim == null)
                 {
                     model.ClearSelection2(true);
-                    segLeftWall.Select4(true, null);
+                    posWall.Select4(true, null);
                     model.Extension.SelectByID2("", "EXTSKETCHPOINT", 0, 0, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
                     model.AddHorizontalDimension2((edgeX + xMid) / 2.0, rSurf + 2.0 * off, 0);
                 }
@@ -610,18 +716,21 @@ namespace VeradeAddin.Services
             }
         }
 
-        // ---- 5) DIN 509-E undercuts (entalladuras) ---------------------------------------------------
+        // ---- 5) DIN 509 undercuts (entalladuras, forms E and F) --------------------------------------
 
         /// <summary>
-        /// Cuts one DIN 509 form E undercut at a diameter-change shoulder: closed profile on the
-        /// front plane removed with a 360° cut-revolve (same call as the grooves). Half-section,
-        /// with the small level LEFT of the shoulder (mirrored otherwise): 15° ramp from the surface
-        /// at f, flat bottom at depth t1, corner arc of radius r tangent to the bottom AND to the
-        /// shoulder face — the tangency lands at r − t1 ABOVE the small surface, so the profile also
-        /// eats the sharp corner (that relief is the whole point of the norm). Anchored to the model
-        /// by the shoulder corner (its ring edge is intact: grooves cannot touch diameter changes and
-        /// keyways are cut later) plus a silhouette coincidence on the free surface. Returns null on
-        /// success or a Spanish error.
+        /// Cuts one DIN 509 undercut (form E or F) at a diameter-change shoulder: STRAIGHT-LINE
+        /// closed profile on the front plane removed with a 360° cut-revolve (same call as the
+        /// grooves) — NO rounds in the sketch — then the corner radii r applied as a single FILLET
+        /// FEATURE on the resulting BOTTOM FACE (the smallest-diameter cylindrical face of the
+        /// relief), which rounds every ring edge bounding it. Half-section, with the small level
+        /// LEFT of the shoulder (mirrored otherwise). Form E: 15° ramp from the surface at f, flat
+        /// bottom at depth t1 running to the shoulder face, back up the face. Form F: the flat
+        /// bottom continues t2 PAST the shoulder face and runs out at 8° up the face (DIN 509 face
+        /// relief), exiting on the face at t2/tan 8° − t1 above the small surface. Anchored to the
+        /// model by the shoulder corner (its ring edge is intact: grooves cannot touch diameter
+        /// changes and keyways are cut later) plus a silhouette coincidence on the free surface.
+        /// Returns null on success or a Spanish error.
         /// </summary>
         private string CutShaftUndercut(IModelDoc2 model, ShaftSpec spec, ShaftUndercut undercut)
         {
@@ -639,6 +748,7 @@ namespace VeradeAddin.Services
             double r = undercut.RadiusMm * mmToM;
             double t1 = undercut.DepthMm * mmToM;
             double f = undercut.WidthMm * mmToM;
+            double t2 = undercut.IsFormF ? undercut.Depth2Mm * mmToM : 0.0;
             double ramp = t1 / Math.Tan(ShaftSpec.UndercutRunOutDeg * Math.PI / 180.0);
             double total = spec.TotalLengthMm * mmToM;
 
@@ -662,24 +772,24 @@ namespace VeradeAddin.Services
                 var segCl = sketchMgr.CreateLine(0, 0, 0, total, 0, 0);
                 segCl.ConstructionGeometry = true;
 
-                // P5 shoulder corner → P1 surface → P2 ramp end → P3 arc start → (arc) → P4 on the
-                // shoulder face → back down to P5.
+                // Straight lines only (rounds come later as a fillet feature on the bottom face):
+                // shoulder corner → P1 surface → P2 ramp end → flat bottom. Form E: bottom stops
+                // at the shoulder face and closes straight up it. Form F: bottom continues t2 past
+                // the face, runs out at 8° up the face to yExit, and closes up the face from there.
                 double x1 = xS + sign * f;                  // P1: run-out reaches the surface
                 double x2 = xS + sign * (f - ramp);         // P2: ramp meets the flat bottom
-                double x3 = xS + sign * r;                  // P3: bottom meets the corner arc
                 double yBottom = rs - t1;
-                double yTangent = rs - t1 + r;              // P4: tangency height on the face
+                bool isF = undercut.IsFormF;
+                double xD = xS - sign * t2;                 // bottom end (past the face when F)
+                double yExit = yBottom + t2 / Math.Tan(ShaftSpec.UndercutFaceRunOutDeg * Math.PI / 180.0);
 
                 var segSurf = Line(sketchMgr, xS, rs, x1, rs);
                 var segRamp = Line(sketchMgr, x1, rs, x2, yBottom);
-                var segBottom = Line(sketchMgr, x2, yBottom, x3, yBottom);
-                var arc = sketchMgr.CreateArc(
-                    x3, yTangent, 0,                        // centre (above P3 by r)
-                    x3, yBottom, 0,                         // start = P3
-                    xS, yTangent, 0,                        // end   = P4
-                    (short)(smallLeft ? 1 : -1));           // quarter bulging toward the corner
-                if (arc == null) return "no se pudo crear el arco de la entalladura.";
-                var segFace = Line(sketchMgr, xS, yTangent, xS, rs);
+                var segBottom = Line(sketchMgr, x2, yBottom, xD, yBottom);
+                var segRamp8 = isF ? Line(sketchMgr, xD, yBottom, xS, yExit) : null;
+                var segFace = isF
+                    ? Line(sketchMgr, xS, yExit, xS, rs)
+                    : Line(sketchMgr, xS, yBottom, xS, rs);
 
                 ConstrainAll(sketchMgr);
                 CoincidentToOrigin(model, StartPt(segCl));
@@ -694,7 +804,36 @@ namespace VeradeAddin.Services
                 StartPt(segSurf).Select4(true, null);
                 EndPt(segSurf).Select4(true, null);
                 model.AddHorizontalDimension2((xS + x1) / 2.0, rs + 2.0 * off, 0);
-                DiameterDim(model, segBottom, segCl, (x2 + x3) / 2.0, -yBottom);   // bottom Ø = d − 2·t1
+                DiameterDim(model, segBottom, segCl, (xS + x2) / 2.0, -yBottom);   // bottom Ø = d − 2·t1
+                // 15° run-out: angular dim ramp ↔ surface, text inside the acute wedge so
+                // SolidWorks measures the 15°, not the 165° sector. Best-effort like every dim.
+                try
+                {
+                    model.ClearSelection2(true);
+                    segRamp.Select4(true, null);
+                    segSurf.Select4(true, null);
+                    model.AddDimension2((x1 + x2) / 2.0, rs - t1 * 0.25, 0);
+                }
+                catch { }
+                finally { model.ClearSelection2(true); }
+                if (isF)
+                {
+                    // t2: bottom end ↔ face exit, and the 8° face run-out (text inside the acute
+                    // wedge between the ramp and the face line). Best-effort like every dim.
+                    try
+                    {
+                        model.ClearSelection2(true);
+                        EndPt(segBottom).Select4(true, null);
+                        StartPt(segFace).Select4(true, null);
+                        model.AddHorizontalDimension2((xS + xD) / 2.0, yBottom - 2.0 * off, 0);
+                        model.ClearSelection2(true);
+                        segRamp8.Select4(true, null);
+                        segFace.Select4(true, null);
+                        model.AddDimension2(xS - sign * t2 * 0.3, yBottom + (yExit - yBottom) * 0.5, 0);
+                    }
+                    catch { }
+                    finally { model.ClearSelection2(true); }
+                }
 
                 model.ClearSelection2(true);
                 sketchMgr.InsertSketch(true);
@@ -714,12 +853,49 @@ namespace VeradeAddin.Services
                     (int)swThinWallType_e.swThinWallOneDirection, 0.0, 0.0,
                     true, false, true);
                 if (cut == null) return "SolidWorks no pudo crear el corte de la entalladura.";
+
+                // Rounds r as ONE fillet feature on the BOTTOM FACE of the relief — the smallest-
+                // diameter cylindrical face the cut just created, picked at its front-plane
+                // midpoint. Filleting the face rounds every ring edge bounding it (ramp ↔ bottom
+                // and face-side corner) in a single feature, without hunting individual edges.
+                // The cut itself is already done, so a failure here is reported but leaves a
+                // square-cornered undercut behind.
+                double xMidBottom = (x2 + xD) / 2.0;
+                string filletErr = FilletFace(model, r, xMidBottom, yBottom);
+                if (filletErr != null) return "corte creado pero sin redondeo r: " + filletErr;
                 return null;
             }
             finally
             {
                 RestoreSketch(sketchMgr, addToDbWas, displayWas);
             }
+        }
+
+        /// <summary>
+        /// Constant-radius fillet on the FACE picked by coordinate (mark 1) — SolidWorks rounds
+        /// every edge bounding that face. Options 195 = Propagate | UniformRadius | AttachEdges |
+        /// KeepFeatures, the canonical SW help recipe; signature of <c>FeatureFillet3</c> verified
+        /// by reflection on the interop DLL. Returns null on success or a Spanish error.
+        /// </summary>
+        private static string FilletFace(IModelDoc2 model, double radius, double x, double y)
+        {
+            model.ClearSelection2(true);
+            if (!model.Extension.SelectByID2("", "FACE", x, y, 0.0, false, 1, null,
+                (int)swSelectOption_e.swSelectOptionDefault))
+            {
+                model.ClearSelection2(true);
+                return "no se pudo seleccionar la cara del fondo para el redondeo.";
+            }
+            var fillet = model.FeatureManager.FeatureFillet3(
+                (int)(swFeatureFilletOptions_e.swFeatureFilletPropagate
+                    | swFeatureFilletOptions_e.swFeatureFilletUniformRadius
+                    | swFeatureFilletOptions_e.swFeatureFilletAttachEdges
+                    | swFeatureFilletOptions_e.swFeatureFilletKeepFeatures),
+                radius, 0, 0,
+                (int)swFeatureFilletType_e.swFeatureFilletType_Simple, 0, 0,
+                null, null, null, null, null, null, null) as Feature;
+            model.ClearSelection2(true);
+            return fillet == null ? "SolidWorks no pudo crear el redondeo." : null;
         }
 
         /// <summary>
@@ -760,6 +936,113 @@ namespace VeradeAddin.Services
             double tail = segEnd - cursor;
             if (tail > bestGap) { bestX = cursor + tail / 2.0; }
             return bestX;
+        }
+
+        // ---- sketch solve status + guarded relations -----------------------------------------------
+
+        /// <summary>
+        /// Solve status of the ACTIVE sketch (<c>ISketch.GetConstrainedStatus</c>, verified by
+        /// reflection on the interop DLL), as <c>swConstrainedStatus_e</c>: 2 = under-defined,
+        /// 3 = fully defined, 4 = over-defined, 5 = no solution, 6 = invalid geometry. 5/6 mean the
+        /// last dimension/relation broke the sketch and should be rolled back.
+        /// </summary>
+        private static int SketchStatus(SketchManager sketchMgr)
+        {
+            try
+            {
+                var sketch = sketchMgr.ActiveSketch;
+                return sketch == null
+                    ? (int)swConstrainedStatus_e.swUnknownConstraint
+                    : sketch.GetConstrainedStatus();
+            }
+            catch { return (int)swConstrainedStatus_e.swUnknownConstraint; }
+        }
+
+        private static bool SketchFullyDefined(SketchManager sketchMgr)
+        {
+            return SketchStatus(sketchMgr) == (int)swConstrainedStatus_e.swFullyConstrained;
+        }
+
+        private static bool SketchBroken(SketchManager sketchMgr)
+        {
+            int status = SketchStatus(sketchMgr);
+            return status == (int)swConstrainedStatus_e.swNoSolution
+                || status == (int)swConstrainedStatus_e.swInvalidSolution;
+        }
+
+        /// <summary>
+        /// <c>SketchAddConstraints</c> with rollback: entities must already be selected. If the new
+        /// relation leaves the sketch with NO/INVALID solution, the relations added by this call are
+        /// deleted again via <c>ISketchRelationManager</c> (new relations are appended at the end of
+        /// <c>GetRelations(swAll)</c>) and false is returned so the caller can fall back to a
+        /// dimension instead.
+        /// </summary>
+        private static bool AddConstraintGuarded(IModelDoc2 model, SketchManager sketchMgr, string constraint)
+        {
+            var sketch = sketchMgr.ActiveSketch;
+            var relMgr = sketch == null ? null : sketch.RelationManager;
+            int before = -1;
+            try { if (relMgr != null) before = relMgr.GetRelationsCount(0); } catch { }
+
+            model.SketchAddConstraints(constraint);
+            if (!SketchBroken(sketchMgr)) return true;
+
+            try
+            {
+                var rels = relMgr == null ? null : relMgr.GetRelations(0) as object[];
+                if (rels != null && before >= 0)
+                {
+                    for (int i = rels.Length - 1; i >= before; i--)
+                    {
+                        relMgr.DeleteRelation(rels[i] as SketchRelation);
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        /// <summary>
+        /// Guarded variant of <c>CoincidentPointToEdge</c>: reports whether the relation stuck and
+        /// rolls it back when it produced invalid geometry, instead of silently leaving a broken
+        /// sketch behind.
+        /// </summary>
+        private static bool CoincidentPointToEdgeGuarded(
+            IModelDoc2 model, SketchManager sketchMgr, SketchPoint pt, double fx, double fy, double fz)
+        {
+            if (pt == null) return false;
+            try
+            {
+                model.ClearSelection2(true);
+                if (!pt.Select4(false, null)) return false;
+                if (!model.Extension.SelectByID2("", "EDGE", fx, fy, fz, true, 0, null,
+                    (int)swSelectOption_e.swSelectOptionDefault))
+                {
+                    return false;
+                }
+                return AddConstraintGuarded(model, sketchMgr, "sgCOINCIDENT");
+            }
+            catch { return false; }
+            finally { model.ClearSelection2(true); }
+        }
+
+        /// <summary>
+        /// Flips ONE display dimension to DRIVING right after creation (dims are born driven while
+        /// the swAddDrivenDimensions toggle is on). Dims first, driving immediately — only then do
+        /// the in-sketch fully-defined/broken checks mean anything.
+        /// </summary>
+        private static void MakeDriving(object displayDimension)
+        {
+            try
+            {
+                var dispDim = displayDimension as DisplayDimension;
+                var dim = dispDim == null ? null : dispDim.GetDimension2(0);
+                if (dim != null && dim.DrivenState == (int)swDimensionDrivenState_e.swDimensionDriven)
+                {
+                    dim.DrivenState = (int)swDimensionDrivenState_e.swDimensionDriving;
+                }
+            }
+            catch { }
         }
 
         /// <summary>
