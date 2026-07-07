@@ -29,6 +29,42 @@ var DIN509 = [
 var UC_RAMP = 1 / Math.tan(15 * Math.PI / 180);   // avance axial por mm de t1 de la salida a 15°
 var UC_RAMP8 = 1 / Math.tan(8 * Math.PI / 180);   // avance radial por mm de t2 de la salida a 8° (forma F)
 
+// Tablas DIN 332 (puntos de centrado). VALORES ESTÁNDAR APROXIMADOS — REVISAR antes de producción.
+// DIN 332-1 (formas A/B/R, sin rosca), por Ø de broca d1: d2 = Ø del avellanado 60°, d3 = Ø del
+// avellanado de protección 120° (forma B), r = radio del flanco (forma R). min/max = rango de Ø del
+// extremo del eje recomendado ("más de min, hasta max"); solo elige el tamaño por defecto.
+var DIN332_1 = [
+    { d1: 1.0, d2: 2.12, d3: 3.15, r: 0.3, min: 3, max: 6 },
+    { d1: 1.6, d2: 3.35, d3: 5.0, r: 0.4, min: 6, max: 10 },
+    { d1: 2.0, d2: 4.25, d3: 6.3, r: 0.5, min: 10, max: 18 },
+    { d1: 2.5, d2: 5.3, d3: 8.0, r: 0.6, min: 18, max: 30 },
+    { d1: 3.15, d2: 6.7, d3: 10.0, r: 0.8, min: 30, max: 50 },
+    { d1: 4.0, d2: 8.5, d3: 12.5, r: 1.0, min: 50, max: 80 },
+    { d1: 6.3, d2: 13.2, d3: 18.0, r: 1.6, min: 80, max: 120 },
+    { d1: 10.0, d2: 21.2, d3: 28.0, r: 2.5, min: 120, max: Infinity }
+];
+// DIN 332-2 (forma D, roscado), por rosca métrica m: d1 = broca del núcleo, d2 = rebaje de alivio,
+// d3 = avellanado de protección 120°. min/max = rango de Ø del extremo recomendado.
+var DIN332_2 = [
+    { m: 3, d1: 2.5, d2: 3.2, d3: 5.8, min: 6, max: 10 },
+    { m: 4, d1: 3.3, d2: 4.3, d3: 7.4, min: 10, max: 18 },
+    { m: 5, d1: 4.2, d2: 5.3, d3: 8.8, min: 18, max: 30 },
+    { m: 6, d1: 5.0, d2: 6.4, d3: 10.5, min: 30, max: 50 },
+    { m: 8, d1: 6.8, d2: 8.4, d3: 13.2, min: 50, max: 85 },
+    { m: 10, d1: 8.5, d2: 10.5, d3: 16.3, min: 85, max: 130 },
+    { m: 12, d1: 10.2, d2: 13.0, d3: 19.8, min: 130, max: 150 },
+    { m: 16, d1: 14.0, d2: 17.0, d3: 25.3, min: 150, max: 220 },
+    { m: 20, d1: 17.5, d2: 21.0, d3: 31.3, min: 220, max: 320 },
+    { m: 24, d1: 21.0, d2: 25.0, d3: 38.0, min: 320, max: Infinity }
+];
+var CH_TAN30 = Math.tan(30 * Math.PI / 180);   // flanco del avellanado 60° (semiángulo 30°)
+var CH_TAN60 = Math.tan(60 * Math.PI / 180);   // protección 120° y punta de broca 120° (semiángulo 60°)
+// Longitudes rectas por defecto (mm); el host recibe el valor final ya calculado. Espejo de los
+// defaults del builder: piloto/núcleo ≈ un diámetro, rosca útil ≈ 1.2·M, rebaje de alivio ≈ 0.4·d1.
+function chPilotLen(d1) { return Math.max(0.8, d1); }
+function chBoreLen(m) { return Math.max(1.2, 1.2 * m); }
+function chCbLen(d1) { return Math.max(0.5, 0.4 * d1); }
+
 var catalog = document.getElementById('catalog');
 var bolt = document.getElementById('bolt');
 var s = document.getElementById('canvas');
@@ -457,7 +493,8 @@ document.addEventListener('keydown', function (e) {
         if (editKey && !btnKeyOk.disabled) { btnKeyOk.click(); }
         else if (editGrv && !btnGrvOk.disabled) { btnGrvOk.click(); }
         else if (editUc && !btnUcOk.disabled) { btnUcOk.click(); }
-        else if (!editKey && !editGrv && !editUc && !shaftNextBtn.disabled) { shaftNextBtn.click(); }
+        else if (editCh && !btnChOk.disabled) { btnChOk.click(); }
+        else if (!editKey && !editGrv && !editUc && !editCh && !shaftNextBtn.disabled) { shaftNextBtn.click(); }
     }
 });
 
@@ -491,7 +528,14 @@ document.addEventListener('keydown', function (e) {
 //  posición es el hombro mismo. Se pregunta tipo (E/F) y solicitación
 //  (usual/fatiga); la medida sale de DIN509 con el Ø menor. Espejo de
 //  ShaftSpec.ValidateUndercut.
-//  Protocolo: create|shaft|n|d,l...|K|<chavetas×9>|G|<ranuras×4>|U|hombro|tipo|r|t1|f|t2|...
+//  Paso 5 · Puntos de centrado (DIN 332): uno por extremo como máximo,
+//  corte de revolución coaxial en la cara. Formas A (avellanado 60°),
+//  B (60° + protección 120°), R (flanco de radio) — DIN 332-1 — y D
+//  (roscado, DIN 332-2). Se elige extremo (izq/der), tipo y tamaño; la
+//  medida sale de DIN332_1/DIN332_2 según el Ø del extremo. Espejo de
+//  ShaftSpec.ValidateCenterHole.
+//  Protocolo: create|shaft|n|d,l...|K|<chavetas×9>|G|<ranuras×4>|
+//             U|<entalladuras×6>|C|<puntos×9: extremo,tipo,d1,d2,d3,lp,rarc,lc,rosca>
 // ================================================================
 
 var shaftSec = document.getElementById('shaft');
@@ -538,6 +582,15 @@ var uEdgeSel = document.getElementById('uedge');
 var ucTypeSel = document.getElementById('utype');
 var ucSerieSel = document.getElementById('userie');
 var ucNoteEl = document.getElementById('ucNote');
+var chListEl = document.getElementById('chList');
+var chFormEl = document.getElementById('chForm');
+var btnAddCh = document.getElementById('btnAddCh');
+var btnChOk = document.getElementById('btnChOk');
+var btnChDel = document.getElementById('btnChDel');
+var cEndSel = document.getElementById('cend');
+var cTypeSel = document.getElementById('ctype');
+var csizeSel = document.getElementById('csizeSel');
+var chNoteEl = document.getElementById('chNote');
 
 var shaftLevels = [{ d: 20, l: 30 }, { d: 30, l: 40 }, { d: 20, l: 30 }];
 var shaftFocus = 0;      // nivel con foco en el paso 1 (rojo + cotas)
@@ -551,17 +604,22 @@ var editGrvIdx = -1;     // índice en shaftGrvs si se edita una existente; -1 =
 var shaftUcs = [];       // entalladuras DIN 509 aceptadas
 var editUc = null;       // entalladura en edición (copia de trabajo) o null
 var editUcIdx = -1;      // índice en shaftUcs si se edita una existente; -1 = nueva
+var shaftChs = [];       // puntos de centrado DIN 332 aceptados
+var editCh = null;       // punto en edición (copia de trabajo) o null
+var editChIdx = -1;      // índice en shaftChs si se edita uno existente; -1 = nuevo
 
 var KTOL = 1e-6;
 
 document.getElementById('cardShaft').addEventListener('click', function () {
     catalog.classList.add('hidden'); shaftSec.classList.remove('hidden');
-    shaftStep = 1; shaftFocus = 0; closeKeyForm(); closeGrvForm(); closeUcForm(); buildLevelRows(); shaftRender();
+    shaftStep = 1; shaftFocus = 0; closeKeyForm(); closeGrvForm(); closeUcForm(); closeChForm(); buildLevelRows(); shaftRender();
 });
 shaftBackBtn.addEventListener('click', function () {
     if (editKey) { closeKeyForm(); shaftUpdate(); return; }
     if (editGrv) { closeGrvForm(); shaftUpdate(); return; }
     if (editUc) { closeUcForm(); shaftUpdate(); return; }
+    if (editCh) { closeChForm(); shaftUpdate(); return; }
+    if (shaftStep === 5) { shaftStep = 4; shaftRender(); return; }
     if (shaftStep === 4) { shaftStep = 3; shaftRender(); return; }
     if (shaftStep === 3) { shaftStep = 2; shaftRender(); return; }
     if (shaftStep === 2) { shaftStep = 1; shaftRender(); return; }
@@ -580,7 +638,11 @@ shaftNextBtn.addEventListener('click', function () {
         if (editGrv || shaftFirstBadGrv() !== null) return;
         shaftStep = 4; shaftRender(); return;
     }
-    if (editUc || shaftFirstBadUc() !== null) return;
+    if (shaftStep === 4) {
+        if (editUc || shaftFirstBadUc() !== null) return;
+        shaftStep = 5; shaftRender(); return;
+    }
+    if (editCh || shaftFirstBadCh() !== null) return;
     shaftSubmit();
 });
 shaftNEl.addEventListener('input', function () {
@@ -614,6 +676,11 @@ function shaftSubmit() {
     for (var u = 0; u < shaftUcs.length; u++) {
         var uv = shaftUcs[u];
         msg.push(uv.bnd, uv.form, uv.r, uv.t1, uv.f, uv.t2);
+    }
+    msg.push(shaftChs.length);
+    for (var c = 0; c < shaftChs.length; c++) {
+        var cv = shaftChs[c];
+        msg.push(cv.end, cv.form, cv.d1, cv.d2, cv.d3, cv.lp, cv.rarc, cv.lc, cv.thread);
     }
     post(msg.join('|'));
 }
@@ -1320,6 +1387,210 @@ function renderUcList() {
     }
 }
 
+// ---- paso 5: puntos de centrado (DIN 332) --------------------------------
+
+// Ø del extremo donde va el punto (nivel 0 = izquierdo, último = derecho)
+function chEndDiam(end) { return end === 0 ? shaftLevels[0].d : shaftLevels[shaftLevels.length - 1].d; }
+function chTable(form) { return form === 'D' ? DIN332_2 : DIN332_1; }
+function chRowKey(form, row) { return form === 'D' ? row.m : row.d1; }
+function chRecommend(form, d) {
+    var t = chTable(form);
+    for (var i = 0; i < t.length; i++) if (d > t[i].min && d <= t[i].max + 1e-9) return t[i];
+    return t[t.length - 1];
+}
+// avance axial del flanco de radio (forma R): √(r² − (r + d1/2 − d2/2)²); 0 si el radio no cierra
+function chArcFlank(c) {
+    var r1 = c.d1 / 2, r2 = c.d2 / 2, R = c.rarc, a = R + r1 - r2, disc = R * R - a * a;
+    return disc > 0 ? Math.sqrt(disc) : 0;
+}
+// profundidad total del taladro (mm), espejo de ShaftCenterHole.TotalDepthMm del host
+function chDepth(c) {
+    var r1 = c.d1 / 2, r2 = c.d2 / 2, r3 = (c.d3 || 0) / 2, tip = r1 / CH_TAN60;
+    if (c.form === 'D') { var hp = r3 > r2 ? (r3 - r2) / CH_TAN60 : 0; return hp + c.lc + c.lp + tip; }
+    if (c.form === 'R') return chArcFlank(c) + c.lp + tip;
+    var hpB = (c.form === 'B' && r3 > r2) ? (r3 - r2) / CH_TAN60 : 0;
+    var hc = (r2 - r1) / CH_TAN30;
+    return hpB + hc + c.lp + tip;
+}
+function chMouth(c) { return Math.max(c.d2, c.d3 || 0); }
+
+// rellena las medidas de c con la fila elegida según la forma
+function applyChRow(row) {
+    if (!editCh) return;
+    var f = editCh.form;
+    editCh._key = chRowKey(f, row);
+    editCh.d1 = row.d1;
+    if (f === 'D') {
+        editCh.d2 = row.d2; editCh.d3 = row.d3; editCh.thread = row.m;
+        editCh.rarc = 0; editCh.lc = chCbLen(row.d1); editCh.lp = chBoreLen(row.m);
+    } else if (f === 'R') {
+        editCh.d2 = row.d2; editCh.d3 = 0; editCh.thread = 0;
+        editCh.rarc = row.r; editCh.lc = 0; editCh.lp = chPilotLen(row.d1);
+    } else { // A o B
+        editCh.d2 = row.d2; editCh.d3 = f === 'B' ? row.d3 : 0; editCh.thread = 0;
+        editCh.rarc = 0; editCh.lc = 0; editCh.lp = chPilotLen(row.d1);
+    }
+    updateChNote();
+}
+// (re)construye el combo de tamaños; conserva la selección si sigue existiendo, si no la recomendada
+function syncChSize() {
+    if (!editCh) return;
+    var form = editCh.form, t = chTable(form), d = chEndDiam(editCh.end), opts = '';
+    for (var i = 0; i < t.length; i++) {
+        var key = chRowKey(form, t[i]);
+        var lbl = form === 'D'
+            ? ('M' + key + ' · broca Ø' + fmt(t[i].d1) + ' · protección Ø' + fmt(t[i].d3))
+            : ('d1 Ø' + fmt(t[i].d1) + ' · boca Ø' + fmt(form === 'B' ? t[i].d3 : t[i].d2));
+        opts += '<option value="' + key + '">' + lbl + '</option>';
+    }
+    csizeSel.innerHTML = opts;
+    var found = null;
+    for (var j = 0; j < t.length; j++) if (Math.abs(chRowKey(form, t[j]) - editCh._key) < 1e-9) found = t[j];
+    if (!found) found = chRecommend(form, d);
+    csizeSel.value = String(chRowKey(form, found));
+    applyChRow(found);
+}
+function updateChNote() {
+    if (!editCh) return;
+    var c = editCh;
+    var body = c.form === 'D'
+        ? ('M' + c.thread + ' · broca Ø' + fmt(c.d1) + ' · rebaje Ø' + fmt(c.d2) + ' · protección Ø' + fmt(c.d3))
+        : ('d1 Ø' + fmt(c.d1) + ' · boca Ø' + fmt(c.form === 'B' ? c.d3 : c.d2) + (c.form === 'R' ? ' · r ' + fmt(c.rarc) : ''));
+    chNoteEl.textContent = 'DIN 332-' + (c.form === 'D' ? '2' : '1') + ' ' + c.form + ' · ' + body +
+        ' · prof. ' + fmt(chDepth(c)) + ' mm';
+    chNoteEl.className = 'note';
+}
+
+// null = válido; espejo de ShaftSpec.ValidateCenterHole del host
+function validateCh(c, idx) {
+    if (!(c.end === 0 || c.end === 1)) return 'Extremo no válido.';
+    if (c.form !== 'A' && c.form !== 'B' && c.form !== 'R' && c.form !== 'D') return 'Elige el tipo (A, B, R o D).';
+    if (!(c.d1 > 0) || !(c.d2 > c.d1)) return 'No hay medida DIN 332 para ese tamaño.';
+    if (!(c.lp > 0)) return 'La profundidad del taladro debe ser > 0.';
+    if ((c.form === 'B' || c.form === 'D') && !(c.d3 > c.d2)) return 'El avellanado de protección d3 debe ser mayor que d2.';
+    if (c.form === 'R' && (!(c.rarc > 0) || !(chArcFlank(c) > 0))) return 'El radio r de la forma R es demasiado pequeño.';
+    if (c.form === 'D') {
+        if (!(c.lc > 0)) return 'La longitud del rebaje debe ser > 0.';
+        if (!(c.thread > c.d1)) return 'El Ø nominal de la rosca debe ser mayor que la broca d1.';
+    }
+    var lv = c.end === 0 ? shaftLevels[0] : shaftLevels[shaftLevels.length - 1];
+    if (!(lv.d > 0) || !(lv.l > 0)) return 'El nivel del extremo no es válido.';
+    if (!(chMouth(c) < lv.d)) return 'No cabe en la cara del extremo (Ø boca ' + fmt(chMouth(c)) + ' ≥ Ø' + fmt(lv.d) + ').';
+    var depth = chDepth(c);
+    if (!(depth < lv.l - KTOL)) return 'Es más profundo que el nivel del extremo (' + fmt(depth) + ' ≥ ' + fmt(lv.l) + ' mm).';
+    for (var i = 0; i < shaftChs.length; i++) {
+        if (i !== idx && shaftChs[i].end === c.end) return 'Ya hay otro punto de centrado en ese extremo.';
+    }
+    return null;
+}
+function shaftFirstBadCh() {
+    for (var i = 0; i < shaftChs.length; i++) {
+        var m = validateCh(shaftChs[i], i);
+        if (m !== null) return 'Punto de centrado ' + (i + 1) + ': ' + m;
+    }
+    return null;
+}
+
+btnAddCh.addEventListener('click', function () {
+    var used = {};
+    for (var i = 0; i < shaftChs.length; i++) used[shaftChs[i].end] = true;
+    var end = used[0] ? (used[1] ? 0 : 1) : 0;
+    editCh = { end: end, form: 'A', _key: 0, d1: 0, d2: 0, d3: 0, lp: 0, rarc: 0, lc: 0, thread: 0 };
+    editChIdx = -1;
+    openChForm(); shaftUpdate();
+});
+btnChOk.addEventListener('click', function () {
+    if (!editCh || validateCh(editCh, editChIdx) !== null) return;
+    if (editChIdx >= 0) shaftChs[editChIdx] = editCh; else shaftChs.push(editCh);
+    closeChForm(); shaftUpdate();
+});
+btnChDel.addEventListener('click', function () {
+    if (editChIdx >= 0) shaftChs.splice(editChIdx, 1);
+    closeChForm(); shaftUpdate();
+});
+cEndSel.addEventListener('change', function () {
+    if (!editCh) return;
+    editCh.end = parseInt(cEndSel.value, 10) || 0;
+    syncChSize(); shaftUpdate();
+});
+cTypeSel.addEventListener('change', function () {
+    if (!editCh) return;
+    editCh.form = cTypeSel.value;
+    syncChSize(); shaftUpdate();
+});
+csizeSel.addEventListener('change', function () {
+    if (!editCh) return;
+    var t = chTable(editCh.form), key = parseFloat(csizeSel.value);
+    for (var i = 0; i < t.length; i++) {
+        if (Math.abs(chRowKey(editCh.form, t[i]) - key) < 1e-9) { applyChRow(t[i]); break; }
+    }
+    shaftUpdate();
+});
+
+function openChForm() {
+    cEndSel.value = String(editCh.end);
+    cTypeSel.value = editCh.form;
+    syncChSize();
+    chFormEl.classList.remove('hidden');
+    btnAddCh.classList.add('hidden');
+    btnChDel.style.display = editChIdx >= 0 ? '' : 'none';
+    renderChList();
+}
+function closeChForm() {
+    editCh = null; editChIdx = -1;
+    chFormEl.classList.add('hidden');
+    btnAddCh.classList.remove('hidden');
+    renderChList();
+}
+function renderChList() {
+    var html = '';
+    for (var i = 0; i < shaftChs.length; i++) {
+        var c = shaftChs[i];
+        var size = c.form === 'D' ? 'M' + c.thread : 'd1 ' + fmt(c.d1);
+        html += '<div class="keyitem' + (i === editChIdx ? ' editing' : '') + '" data-ch="' + i + '">' +
+            '<span>' + (i + 1) + ' · ' + c.form + ' ' + size + ' · ' +
+            (c.end === 0 ? 'extremo izq.' : 'extremo der.') + ' · prof. ' + fmt(chDepth(c)) + '</span>' +
+            '<span class="kx" data-cdel="' + i + '">✕</span></div>';
+    }
+    chListEl.innerHTML = html;
+    var items = chListEl.querySelectorAll('.keyitem');
+    for (var j = 0; j < items.length; j++) {
+        items[j].addEventListener('click', function (e) {
+            var del = e.target.getAttribute && e.target.getAttribute('data-cdel');
+            if (del !== null && del !== undefined) {
+                shaftChs.splice(parseInt(del, 10), 1);
+                closeChForm(); shaftUpdate();
+                e.stopPropagation();
+                return;
+            }
+            editChIdx = parseInt(this.getAttribute('data-ch'), 10);
+            editCh = JSON.parse(JSON.stringify(shaftChs[editChIdx]));
+            openChForm(); shaftUpdate();
+        });
+    }
+}
+// puntos del semiperfil superior (boca → punta), x absoluto en mm — para el dibujo del alzado
+function chProfilePts(c) {
+    var total = shaftTotal(), xf = c.end === 0 ? 0 : total, sign = c.end === 0 ? 1 : -1;
+    var r1 = c.d1 / 2, r2 = c.d2 / 2, r3 = (c.d3 || 0) / 2, tip = r1 / CH_TAN60, pts = [];
+    function push(p, r) { pts.push({ x: xf + sign * p, r: r }); }
+    if (c.form === 'D') {
+        var hp = r3 > r2 ? (r3 - r2) / CH_TAN60 : 0;
+        push(0, r3); push(hp, r2); push(hp + c.lc, r2); push(hp + c.lc, r1);
+        push(hp + c.lc + c.lp, r1); push(hp + c.lc + c.lp + tip, 0);
+    } else if (c.form === 'R') {
+        var hR = chArcFlank(c), cx = hR, cy = r1 + c.rarc;
+        var a0 = Math.atan2(r2 - cy, 0 - cx), a1 = Math.atan2(r1 - cy, hR - cx), N = 8;
+        for (var i = 0; i <= N; i++) { var a = a0 + (a1 - a0) * i / N; push(cx + c.rarc * Math.cos(a), cy + c.rarc * Math.sin(a)); }
+        push(hR + c.lp, r1); push(hR + c.lp + tip, 0);
+    } else {
+        var hpB = (c.form === 'B' && r3 > r2) ? (r3 - r2) / CH_TAN60 : 0, hc = (r2 - r1) / CH_TAN30;
+        if (c.form === 'B') push(0, r3);
+        push(hpB, r2); push(hpB + hc, r1); push(hpB + hc + c.lp, r1); push(hpB + hc + c.lp + tip, 0);
+    }
+    return pts;
+}
+
 // ---- render / estado ------------------------------------------------------
 
 function shaftRender() {
@@ -1327,22 +1598,27 @@ function shaftRender() {
     document.getElementById('sgrp2').classList.toggle('hidden', shaftStep !== 2);
     document.getElementById('sgrp3').classList.toggle('hidden', shaftStep !== 3);
     document.getElementById('sgrp4').classList.toggle('hidden', shaftStep !== 4);
+    document.getElementById('sgrp5').classList.toggle('hidden', shaftStep !== 5);
     document.getElementById('sdot1').className = 'dot ' + (shaftStep === 1 ? 'active' : 'done');
     document.getElementById('sdot2').className = 'dot ' + (shaftStep === 2 ? 'active' : shaftStep > 2 ? 'done' : '');
     document.getElementById('sdot3').className = 'dot ' + (shaftStep === 3 ? 'active' : shaftStep > 3 ? 'done' : '');
-    document.getElementById('sdot4').className = 'dot ' + (shaftStep === 4 ? 'active' : '');
+    document.getElementById('sdot4').className = 'dot ' + (shaftStep === 4 ? 'active' : shaftStep > 4 ? 'done' : '');
+    document.getElementById('sdot5').className = 'dot ' + (shaftStep === 5 ? 'active' : '');
     shaftBackBtn.textContent = shaftStep === 1 ? 'Volver' : 'Atrás';
-    shaftNextBtn.textContent = shaftStep === 4 ? 'Crear' : 'Siguiente';
+    shaftNextBtn.textContent = shaftStep === 5 ? 'Crear' : 'Siguiente';
     shaftSubEl.textContent = shaftStep === 1
-        ? 'Paso 1 de 4 · niveles de izquierda a derecha · un nivel = Ø × L'
+        ? 'Paso 1 de 5 · niveles de izquierda a derecha · un nivel = Ø × L'
         : shaftStep === 2
-            ? 'Paso 2 de 4 · chavetas (forma A) · elige arista, cota ±, profundidad, ángulo y nº'
+            ? 'Paso 2 de 5 · chavetas (forma A) · elige arista, cota ±, profundidad, ángulo y nº'
             : shaftStep === 3
-                ? 'Paso 3 de 4 · ranuras de anillo (DIN 471) · elige arista, cota ±, E1 y D3'
-                : 'Paso 4 de 4 · entalladuras (DIN 509) · elige hombro, tipo y solicitación';
+                ? 'Paso 3 de 5 · ranuras de anillo (DIN 471) · elige arista, cota ±, E1 y D3'
+                : shaftStep === 4
+                    ? 'Paso 4 de 5 · entalladuras (DIN 509) · elige hombro, tipo y solicitación'
+                    : 'Paso 5 de 5 · puntos de centrado (DIN 332) · elige extremo, tipo y tamaño';
     if (shaftStep === 2) renderKeyList();
     if (shaftStep === 3) renderGrvList();
     if (shaftStep === 4) renderUcList();
+    if (shaftStep === 5) renderChList();
     shaftUpdate();
 }
 
@@ -1404,7 +1680,7 @@ function shaftUpdate() {
             }
             shaftNextBtn.disabled = gbad !== null;
         }
-    } else {
+    } else if (shaftStep === 4) {
         if (editUc) {
             var umsg = validateUc(editUc, editUcIdx);
             btnUcOk.disabled = umsg !== null;
@@ -1422,9 +1698,30 @@ function shaftUpdate() {
             if (ubad) { shaftErrEl.textContent = ubad + ' (edítala o bórrala)'; }
             else {
                 shaftErrEl.className = 'err ok';
-                shaftErrEl.textContent = shaftUcs.length + ' entalladura(s) · listo para crear';
+                shaftErrEl.textContent = shaftUcs.length + ' entalladura(s) · siguiente: puntos de centrado';
             }
             shaftNextBtn.disabled = ubad !== null;
+        }
+    } else {
+        if (editCh) {
+            var cmsg = validateCh(editCh, editChIdx);
+            btnChOk.disabled = cmsg !== null;
+            shaftNextBtn.disabled = true;
+            if (cmsg) { shaftErrEl.textContent = cmsg; }
+            else {
+                shaftErrEl.className = 'err ok';
+                shaftErrEl.textContent = 'Punto ' + editCh.form + (editCh.form === 'D' ? ' M' + editCh.thread : ' d1 ' + fmt(editCh.d1)) +
+                    ' · ' + (editCh.end === 0 ? 'extremo izq.' : 'extremo der.') +
+                    ' · boca Ø' + fmt(chMouth(editCh)) + ' · prof. ' + fmt(chDepth(editCh)) + ' mm';
+            }
+        } else {
+            var cbad = shaftFirstBadCh();
+            if (cbad) { shaftErrEl.textContent = cbad + ' (edítalo o bórralo)'; }
+            else {
+                shaftErrEl.className = 'err ok';
+                shaftErrEl.textContent = shaftChs.length + ' punto(s) de centrado · listo para crear';
+            }
+            shaftNextBtn.disabled = cbad !== null;
         }
     }
     drawShaft();
@@ -1644,6 +1941,24 @@ function drawShaft() {
             out += PATH([[xfar, cy - urs], [xrmp, cy - urb], [xsh, cy - urb], [xsh, cy - urs]], ucol, uw);
             out += PATH([[xfar, cy + urs], [xrmp, cy + urb], [xsh, cy + urb], [xsh, cy + urs]], ucol, uw);
         }
+    }
+
+    // puntos de centrado aceptados (y el editado en rojo): semiperfil taladrado en la cara del
+    // extremo, espejado arriba/abajo (boca → punta sobre el eje)
+    var allChs = shaftChs.slice();
+    if (editCh) allChs.push(editCh);
+    for (var ci = 0; ci < allChs.length; ci++) {
+        if (editCh && ci === editChIdx) continue;   // en edición se dibuja la copia roja, no el original
+        var cv = allChs[ci];
+        if (!(cv.d1 > 0) || !(cv.d2 > cv.d1) || !(cv.lp > 0)) continue;
+        var cEdit = editCh && ci === allChs.length - 1;
+        var ccol = cEdit ? RED : INK, cw = cEdit ? 1.8 : 1.2;
+        var pp = chProfilePts(cv), topArr = [], botArr = [];
+        for (var pi = 0; pi < pp.length; pi++) {
+            topArr.push([x0 + pp[pi].x * sc, cy - pp[pi].r * sc]);
+            botArr.push([x0 + pp[pi].x * sc, cy + pp[pi].r * sc]);
+        }
+        out += PATH(topArr, ccol, cw) + PATH(botArr, ccol, cw);
     }
 
     if (shaftStep === 1) {

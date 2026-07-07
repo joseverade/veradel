@@ -127,10 +127,12 @@ namespace VeradeAddin.UI
             }
         }
 
-        // create|shaft|n|d1|l1|...|dn|ln|K|b|l|edge|off|depth|refd|ang|cnt|ctr|...|G|e1|d3|edge|off|...|U|bnd|form|r|t1|f|t2|...
+        // create|shaft|n|d1|l1|...|dn|ln|K|<keyways×9>|G|<grooves×4>|U|<undercuts×6>|C|<centres×9>
         // (K keyways × 9 values — ctr: 0 = position by off, 1/2 = LEFT/RIGHT arc CENTRE on the edge
         //  (off ignored, l = centre→opposite extreme) —, G retaining-ring grooves × 4 values,
-        //  U DIN 509 undercuts × 6 values — form: "E" | "F", t2 only meaningful for F)
+        //  U DIN 509 undercuts × 6 values — form: "E" | "F", t2 only meaningful for F,
+        //  C DIN 332 centre points × 9 values: end|form|d1|d2|d3|lp|rarc|lc|thread — form:
+        //  "A"|"B"|"R"|"D"; d3 only for B/D, rarc only for R, lc/thread only for D)
         private void HandleShaft(string[] parts)
         {
             if (parts.Length < 5) return;
@@ -197,7 +199,8 @@ namespace VeradeAddin.UI
             }
 
             if (!int.TryParse(parts[ucBase], out int ucCount) || ucCount < 0) return;
-            if (parts.Length != ucBase + 1 + 6 * ucCount) return;
+            int chBase = ucBase + 1 + 6 * ucCount;
+            if (parts.Length < chBase + 1) return;
             for (int u = 0; u < ucCount; u++)
             {
                 int p = ucBase + 1 + 6 * u;
@@ -216,6 +219,36 @@ namespace VeradeAddin.UI
                     DepthMm = ut1,
                     WidthMm = uf,
                     Depth2Mm = ut2
+                });
+            }
+
+            // C center points × 9 values: end|form|d1|d2|d3|lp|rarc|lc|thread (form: "A"|"B"|"R"|"D").
+            if (!int.TryParse(parts[chBase], out int chCount) || chCount < 0) return;
+            if (parts.Length != chBase + 1 + 9 * chCount) return;
+            for (int c = 0; c < chCount; c++)
+            {
+                int p = chBase + 1 + 9 * c;
+                string form = parts[p + 1];
+                if (!int.TryParse(parts[p], out int end) || (end != 0 && end != 1) ||
+                    (form != "A" && form != "B" && form != "R" && form != "D") ||
+                    !TryParse(parts[p + 2], out double d1) || !TryParse(parts[p + 3], out double d2) ||
+                    !TryParse(parts[p + 4], out double d3) || !TryParse(parts[p + 5], out double clp) ||
+                    !TryParse(parts[p + 6], out double crArc) || !TryParse(parts[p + 7], out double clc) ||
+                    !TryParse(parts[p + 8], out double cthr))
+                {
+                    return;
+                }
+                spec.CenterHoles.Add(new ShaftCenterHole
+                {
+                    End = end,
+                    Form = form,
+                    PilotDiameterMm = d1,
+                    CountersinkDiameterMm = d2,
+                    ProtectDiameterMm = d3,
+                    PilotDepthMm = clp,
+                    ArcRadiusMm = crArc,
+                    CounterboreDepthMm = clc,
+                    ThreadDiameterMm = cthr
                 });
             }
 

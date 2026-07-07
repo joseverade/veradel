@@ -8,10 +8,11 @@
     3) Ranura (opcional): P1 (posición desde la cabeza), E1 (ancho), D3 (Ø fondo) + botón "usar DIN 471"
     4) Chaflán (opcional): ángulo (45° por defecto) y medida (cateto axial) en el extremo libre
 
-  Pantalla 3 = asistente del EJE, 4 pasos: 1) cuerpo (n niveles Ø × L; Ø iguales consecutivos se
+  Pantalla 3 = asistente del EJE, 5 pasos: 1) cuerpo (n niveles Ø × L; Ø iguales consecutivos se
   funden y la frontera es línea de división), 2) chavetas DIN 6885-A, 3) ranuras de anillo DIN 471,
   4) entalladuras DIN 509 en los hombros (tipo E o F + solicitación usual/fatiga; medidas de la
-  norma según el Ø menor).
+  norma según el Ø menor), 5) puntos de centrado DIN 332 en los extremos (formas A/B/R sin rosca y
+  D roscado; tamaño según el Ø del extremo).
 
   Estilos en configurator.css, lógica en configurator.js.
   El host inyecta la tabla DIN 471 en window.DIN471 antes de cargar el JS; abrir este .html suelto
@@ -123,7 +124,8 @@
           <div class="dot" id="sdot1">1</div><div class="bar"></div>
           <div class="dot" id="sdot2">2</div><div class="bar"></div>
           <div class="dot" id="sdot3">3</div><div class="bar"></div>
-          <div class="dot" id="sdot4">4</div>
+          <div class="dot" id="sdot4">4</div><div class="bar"></div>
+          <div class="dot" id="sdot5">5</div>
         </div>
 
         <!-- paso 1: cuerpo -->
@@ -229,6 +231,40 @@
             <div class="krow">
               <button id="btnUcOk" class="primary">Aceptar entalladura</button>
               <button id="btnUcDel" class="ghost">Eliminar</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- paso 5: puntos de centrado (DIN 332) en los extremos -->
+        <div class="group shaft-centers hidden" id="sgrp5">
+          <h2>Paso 5 &middot; Puntos de centrado (DIN 332)</h2>
+          <div id="chList"></div>
+          <button id="btnAddCh" class="addkey">+ A&ntilde;adir punto de centrado</button>
+          <div id="chForm" class="hidden">
+            <div class="field">
+              <label>Extremo</label>
+              <select id="cend">
+                <option value="0">Extremo izquierdo</option>
+                <option value="1">Extremo derecho</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Tipo (DIN 332)</label>
+              <select id="ctype">
+                <option value="A">A &middot; avellanado 60&deg;</option>
+                <option value="B">B &middot; 60&deg; + protecci&oacute;n 120&deg;</option>
+                <option value="R">R &middot; flanco de radio</option>
+                <option value="D">D &middot; roscado (DIN 332-2)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Tama&ntilde;o</label>
+              <select id="csizeSel"></select>
+            </div>
+            <div class="note" id="chNote"></div>
+            <div class="krow">
+              <button id="btnChOk" class="primary">Aceptar punto</button>
+              <button id="btnChDel" class="ghost">Eliminar</button>
             </div>
           </div>
         </div>

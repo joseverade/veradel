@@ -155,6 +155,89 @@ namespace VeradeAddin.Models
     }
 
     /// <summary>
+    /// One DIN 332 centre point (punto de centrado) machined coaxially into a shaft END FACE, for
+    /// turning/grinding between centres. Modelled as a single 360° cut-revolve of the drilled
+    /// half-section on the axis. Four forms:
+    /// <list type="bullet">
+    /// <item><b>A</b> (DIN 332-1): 60° countersink (Ø <see cref="CountersinkDiameterMm"/>) + pilot
+    /// bore (Ø <see cref="PilotDiameterMm"/>) + 120° drill tip. No protective chamfer.</item>
+    /// <item><b>B</b> (DIN 332-1): form A preceded by a 120° protective countersink at the mouth
+    /// (Ø <see cref="ProtectDiameterMm"/>), which shields the 60° cone.</item>
+    /// <item><b>R</b> (DIN 332-1): the 60° flank is replaced by a radius arc
+    /// (<see cref="ArcRadiusMm"/>) from the mouth Ø down to the pilot bore.</item>
+    /// <item><b>D</b> (DIN 332-2, threaded): 120° protective countersink + relief counterbore
+    /// (Ø <see cref="CountersinkDiameterMm"/>, length <see cref="CounterboreDepthMm"/>) + tap-drill
+    /// core bore (Ø <see cref="PilotDiameterMm"/>) for a metric thread Ø
+    /// <see cref="ThreadDiameterMm"/> + 120° drill tip.</item>
+    /// </list>
+    /// The mouth Ø must fit on the end face (leave a rim) and the total depth must stay within the
+    /// end level. At most one centre point per end. Sizes come from the DIN 332 tables in the UI;
+    /// the host revalidates the geometry.
+    /// </summary>
+    public sealed class ShaftCenterHole
+    {
+        /// <summary>0 = left face (x = 0, drills toward +X); 1 = right face (x = total, toward −X).</summary>
+        public int End { get; set; }
+        /// <summary>"A", "B", "R" (DIN 332-1) or "D" (DIN 332-2, threaded).</summary>
+        public string Form { get; set; }
+        /// <summary>d1: pilot bore Ø (A/B/R) or tap-drill core bore Ø (D).</summary>
+        public double PilotDiameterMm { get; set; }
+        /// <summary>d2: 60° countersink Ø (A/B/R) or relief counterbore Ø (D).</summary>
+        public double CountersinkDiameterMm { get; set; }
+        /// <summary>d3: 120° protective countersink Ø. 0 for forms A and R.</summary>
+        public double ProtectDiameterMm { get; set; }
+        /// <summary>Straight length of the pilot/core cylinder (below the cones, before the tip).</summary>
+        public double PilotDepthMm { get; set; }
+        /// <summary>r: form R flank arc radius. 0 for the other forms.</summary>
+        public double ArcRadiusMm { get; set; }
+        /// <summary>Form D relief counterbore length (between the protective cone and the core bore). 0 otherwise.</summary>
+        public double CounterboreDepthMm { get; set; }
+        /// <summary>Form D nominal metric thread Ø (M size). 0 otherwise.</summary>
+        public double ThreadDiameterMm { get; set; }
+
+        /// <summary>DIN 332-2 threaded form.</summary>
+        public bool IsThreaded { get { return Form == "D"; } }
+        /// <summary>Form has a 120° protective countersink at the mouth (B and D).</summary>
+        public bool HasProtect { get { return ProtectDiameterMm > 0; } }
+        /// <summary>Largest Ø at the face = what must fit on the end face with a rim.</summary>
+        public double MouthDiameterMm { get { return System.Math.Max(CountersinkDiameterMm, ProtectDiameterMm); } }
+
+        /// <summary>
+        /// Axial depth (mm) of the form R radiused flank: the arc runs from the mouth (Ø d2) to a
+        /// horizontal tangent on the pilot cylinder (Ø d1). Its centre is r above the pilot top, so
+        /// the flank length along the axis is √(r² − (r + d1/2 − d2/2)²). 0 when unsolvable.
+        /// </summary>
+        public double ArcFlankDepthMm()
+        {
+            double r1 = PilotDiameterMm / 2.0, r2 = CountersinkDiameterMm / 2.0, r = ArcRadiusMm;
+            double a = r + r1 - r2;
+            double disc = r * r - a * a;
+            return disc > 0 ? System.Math.Sqrt(disc) : 0.0;
+        }
+
+        /// <summary>Total drilled depth (mm) from the end face to the tip, per form.</summary>
+        public double TotalDepthMm()
+        {
+            double tanCs = System.Math.Tan(ShaftSpec.CenterHoleCountersinkHalfDeg * System.Math.PI / 180.0);
+            double tanTp = System.Math.Tan(ShaftSpec.CenterHoleTaperHalfDeg * System.Math.PI / 180.0);
+            double r1 = PilotDiameterMm / 2.0, r2 = CountersinkDiameterMm / 2.0, r3 = ProtectDiameterMm / 2.0;
+            double tip = r1 / tanTp;                                  // 120° drill point
+            if (Form == "D")
+            {
+                double hp = r3 > r2 ? (r3 - r2) / tanTp : 0.0;        // 120° protective
+                return hp + CounterboreDepthMm + PilotDepthMm + tip;
+            }
+            if (Form == "R")
+            {
+                return ArcFlankDepthMm() + PilotDepthMm + tip;
+            }
+            double hpB = (Form == "B" && r3 > r2) ? (r3 - r2) / tanTp : 0.0;
+            double hc = (r2 - r1) / tanCs;                           // 60° countersink
+            return hpB + hc + PilotDepthMm + tip;
+        }
+    }
+
+    /// <summary>
     /// User-entered geometry for the "Eje personalizado" configurator. All values in millimetres.
     /// The body is a stepped shaft built left → right: n levels, each a diameter × length, revolved
     /// 360° as a single profile. Consecutive levels with the SAME diameter are merged into one
@@ -175,12 +258,19 @@ namespace VeradeAddin.Models
         /// <summary>Run-out angle of the form F relief up the shoulder FACE (DIN 509).</summary>
         public const double UndercutFaceRunOutDeg = 8.0;
 
+        /// <summary>Half-angle (from the axis) of the DIN 332 60° countersink flank (included 60°).</summary>
+        public const double CenterHoleCountersinkHalfDeg = 30.0;
+
+        /// <summary>Half-angle (from the axis) of the 120° protective countersink and the 120° drill tip.</summary>
+        public const double CenterHoleTaperHalfDeg = 60.0;
+
         public ShaftSpec()
         {
             Levels = new List<ShaftLevel>();
             Keyways = new List<ShaftKeyway>();
             Grooves = new List<ShaftGroove>();
             Undercuts = new List<ShaftUndercut>();
+            CenterHoles = new List<ShaftCenterHole>();
         }
 
         /// <summary>Levels left → right, in the order the user entered them.</summary>
@@ -194,6 +284,9 @@ namespace VeradeAddin.Models
 
         /// <summary>DIN 509 undercuts (entalladuras E/F), one per shoulder at most. May be empty.</summary>
         public List<ShaftUndercut> Undercuts { get; set; }
+
+        /// <summary>DIN 332 centre points (puntos de centrado), one per end at most. May be empty.</summary>
+        public List<ShaftCenterHole> CenterHoles { get; set; }
 
         public double TotalLengthMm
         {
@@ -253,6 +346,71 @@ namespace VeradeAddin.Models
                 {
                     string err = ValidateUndercut(Undercuts[u], u);
                     if (err != null) return "Entalladura " + (u + 1) + ": " + err;
+                }
+            }
+
+            if (CenterHoles != null)
+            {
+                for (int c = 0; c < CenterHoles.Count; c++)
+                {
+                    string err = ValidateCenterHole(CenterHoles[c], c);
+                    if (err != null) return "Punto de centrado " + (c + 1) + ": " + err;
+                }
+            }
+            return null;
+        }
+
+        private string ValidateCenterHole(ShaftCenterHole hole, int index)
+        {
+            if (hole == null) return "sin datos.";
+            if (hole.End < 0 || hole.End > 1) return "extremo no válido.";
+            if (hole.Form != "A" && hole.Form != "B" && hole.Form != "R" && hole.Form != "D")
+            {
+                return "el tipo debe ser A, B, R o D (DIN 332).";
+            }
+            if (!(hole.PilotDiameterMm > 0) || !(hole.CountersinkDiameterMm > hole.PilotDiameterMm))
+            {
+                return "elige un tamaño DIN 332 (d2 debe ser mayor que d1).";
+            }
+            if (!(hole.PilotDepthMm > 0)) return "la profundidad del taladro debe ser mayor que 0.";
+            if ((hole.Form == "B" || hole.Form == "D") && !(hole.ProtectDiameterMm > hole.CountersinkDiameterMm))
+            {
+                return "el avellanado de protección d3 debe ser mayor que d2.";
+            }
+            if (hole.Form == "R")
+            {
+                if (!(hole.ArcRadiusMm > 0) || !(hole.ArcFlankDepthMm() > 0))
+                {
+                    return "el radio r de la forma R es demasiado pequeño para el perfil.";
+                }
+            }
+            if (hole.Form == "D")
+            {
+                if (!(hole.CounterboreDepthMm > 0)) return "la longitud del rebaje debe ser mayor que 0.";
+                if (!(hole.ThreadDiameterMm > hole.PilotDiameterMm))
+                {
+                    return "el Ø nominal de la rosca debe ser mayor que el Ø de la broca d1.";
+                }
+            }
+
+            var endLevel = hole.End == 0 ? Levels[0] : Levels[Levels.Count - 1];
+            if (!(hole.MouthDiameterMm < endLevel.DiameterMm))
+            {
+                return "no cabe en la cara del extremo (Ø boca " + hole.MouthDiameterMm +
+                       " ≥ Ø" + endLevel.DiameterMm + ").";
+            }
+            double depth = hole.TotalDepthMm();
+            if (!(depth < endLevel.LengthMm - PositionToleranceMm))
+            {
+                return "es más profundo que el nivel del extremo (" + System.Math.Round(depth, 2) +
+                       " ≥ " + endLevel.LengthMm + " mm).";
+            }
+
+            for (int i = 0; i < CenterHoles.Count; i++)
+            {
+                if (i != index && CenterHoles[i] != null && CenterHoles[i].End == hole.End)
+                {
+                    return "ya hay otro punto de centrado en ese extremo.";
                 }
             }
             return null;

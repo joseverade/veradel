@@ -111,6 +111,17 @@ namespace VeradeAddin.Services
                     else keywaysOk++;
                 }
 
+                // Centre points last: coaxial cut-revolves on the end faces, independent of every
+                // other feature (the faces are untouched by keyways/grooves/undercuts).
+                var centerHoles = spec.CenterHoles ?? new List<ShaftCenterHole>();
+                int centerHolesOk = 0;
+                for (int c = 0; c < centerHoles.Count; c++)
+                {
+                    err = CutShaftCenterHole(model, spec, centerHoles[c]);
+                    if (err != null) skipped.Add("Punto de centrado " + (c + 1) + ": " + err);
+                    else centerHolesOk++;
+                }
+
                 model.ClearSelection2(true);
                 model.EditRebuild3();
                 model.ViewZoomtofit2();
@@ -122,6 +133,7 @@ namespace VeradeAddin.Services
                 result.KeywayCount = keywaysOk;
                 result.GrooveCount = groovesOk;
                 result.UndercutCount = undercutsOk;
+                result.CenterHoleCount = centerHolesOk;
                 result.Warning = skipped.Count > 0 ? string.Join("\n", skipped.ToArray()) : null;
                 return result;
             }
@@ -795,8 +807,22 @@ namespace VeradeAddin.Services
                 CoincidentToOrigin(model, StartPt(segCl));
                 CoincidentPointToEdge(model, EndPt(segCl), total, 0, 0);
                 // Shoulder corner = the smaller ring of the step edge, picked at its top point.
-                CoincidentPointToEdge(model, EndPt(segFace), xS, rs, 0);
+                // This is the ONLY relation pinning the profile axially (the silhouette below fixes
+                // Y only), so pick it GUARDED: when SelectByID2 misses the ring the coincidence
+                // silently never sticks and the profile is left free to slide in X. If it did not
+                // stick, fall back to a horizontal position dimension origin → shoulder corner
+                // (value taken from the exact geometry) so X is pinned either way.
+                bool shoulderPinned = CoincidentPointToEdgeGuarded(model, sketchMgr, EndPt(segFace), xS, rs, 0);
                 CoincidentPointToSilhouetteEdge(model, EndPt(segSurf), probeX, rs, 0);
+                if (!shoulderPinned)
+                {
+                    model.ClearSelection2(true);
+                    EndPt(segFace).Select4(true, null);
+                    model.Extension.SelectByID2("", "EXTSKETCHPOINT", 0, 0, 0, true, 0, null,
+                        (int)swSelectOption_e.swSelectOptionDefault);
+                    MakeDriving(model.AddHorizontalDimension2(xS / 2.0, rs * 3.0, 0));
+                    model.ClearSelection2(true);
+                }
 
                 const double off = 0.012;
                 // f: shoulder corner ↔ run-out end, mirroring the norm's width dimension.
@@ -945,6 +971,169 @@ namespace VeradeAddin.Services
             double tail = segEnd - cursor;
             if (tail > bestGap) { bestX = cursor + tail / 2.0; }
             return bestX;
+        }
+
+        // ---- 6) DIN 332 centre points (puntos de centrado) -----------------------------------------
+
+        /// <summary>
+        /// Cuts one DIN 332 centre point into a shaft end face: a coaxial half-section (drawn on the
+        /// front plane, one edge on the revolve axis) removed with a 360° cut-revolve — same call as
+        /// the grooves. The profile goes mouth → flank → pilot/core bore → 120° drill tip → back
+        /// along the axis to the face centre. Form A: 60° countersink; B: 120° protective countersink
+        /// then the 60° cone; R: a radius arc flank instead of the 60° cone; D (threaded): 120°
+        /// protection + relief counterbore + tap-drill core bore. Left end drills toward +X, right end
+        /// toward −X. Pinned in X by the face-centre point (origin for the left end, the axis far
+        /// endpoint for the right). Returns null on success or a Spanish error.
+        /// </summary>
+        private string CutShaftCenterHole(IModelDoc2 model, ShaftSpec spec, ShaftCenterHole hole)
+        {
+            const double mmToM = 0.001;
+            double total = spec.TotalLengthMm * mmToM;
+            double xf = hole.End == 0 ? 0.0 : total;
+            double sign = hole.End == 0 ? 1.0 : -1.0;
+
+            double r1 = hole.PilotDiameterMm * mmToM / 2.0;
+            double r2 = hole.CountersinkDiameterMm * mmToM / 2.0;
+            double r3 = hole.ProtectDiameterMm * mmToM / 2.0;
+            double lp = hole.PilotDepthMm * mmToM;
+            double lc = hole.CounterboreDepthMm * mmToM;
+            double rArc = hole.ArcRadiusMm * mmToM;
+            double tanCs = Math.Tan(ShaftSpec.CenterHoleCountersinkHalfDeg * Math.PI / 180.0);
+            double tanTp = Math.Tan(ShaftSpec.CenterHoleTaperHalfDeg * Math.PI / 180.0);
+            double tip = r1 / tanTp;                                   // 120° drill point
+
+            // Inner profile vertices (mouth M → tip T) as {depth-from-face, radius}. The face segment
+            // (face centre → M) and the axis segment (T → face centre) close the loop. For form R the
+            // FIRST inner segment (M → pilot top) is a radius arc, not a straight line.
+            var pts = new List<double[]>();
+            bool firstArc = false;
+            if (hole.Form == "D")
+            {
+                double hp = r3 > r2 ? (r3 - r2) / tanTp : 0.0;
+                pts.Add(new[] { 0.0, r3 });
+                pts.Add(new[] { hp, r2 });
+                pts.Add(new[] { hp + lc, r2 });
+                pts.Add(new[] { hp + lc, r1 });
+                pts.Add(new[] { hp + lc + lp, r1 });
+                pts.Add(new[] { hp + lc + lp + tip, 0.0 });
+            }
+            else if (hole.Form == "R")
+            {
+                double hR = hole.ArcFlankDepthMm() * mmToM;
+                firstArc = true;
+                pts.Add(new[] { 0.0, r2 });
+                pts.Add(new[] { hR, r1 });
+                pts.Add(new[] { hR + lp, r1 });
+                pts.Add(new[] { hR + lp + tip, 0.0 });
+            }
+            else // A or B
+            {
+                double hp = hole.Form == "B" && r3 > r2 ? (r3 - r2) / tanTp : 0.0;
+                double hc = (r2 - r1) / tanCs;
+                if (hole.Form == "B") pts.Add(new[] { 0.0, r3 });
+                pts.Add(new[] { hp, r2 });
+                pts.Add(new[] { hp + hc, r1 });
+                pts.Add(new[] { hp + hc + lp, r1 });
+                pts.Add(new[] { hp + hc + lp + tip, 0.0 });
+            }
+
+            var sketchMgr = model.SketchManager;
+            bool addToDbWas = sketchMgr.AddToDB, displayWas = sketchMgr.DisplayWhenAdded;
+            try
+            {
+                model.ClearSelection2(true);
+                var frontPlane = FirstRefPlane(model);
+                if (frontPlane == null) return "no se encontró el plano frontal.";
+                frontPlane.Select2(false, 0);
+                sketchMgr.InsertSketch(true);
+
+                sketchMgr.AddToDB = true;
+                sketchMgr.DisplayWhenAdded = false;
+
+                var segCl = sketchMgr.CreateLine(0, 0, 0, total, 0, 0);   // revolve axis
+                segCl.ConstructionGeometry = true;
+
+                // Face segment: face centre (xf, 0) → mouth M.
+                double mx = xf + sign * pts[0][0];
+                var faceSeg = Line(sketchMgr, xf, 0, mx, pts[0][1]);
+                SketchSegment pilotSeg = null;
+                for (int i = 1; i < pts.Count; i++)
+                {
+                    double xa = xf + sign * pts[i - 1][0], ya = pts[i - 1][1];
+                    double xb = xf + sign * pts[i][0], yb = pts[i][1];
+                    SketchSegment seg;
+                    if (i == 1 && firstArc)
+                    {
+                        // Arc M → pilot top, centre r above the pilot top (horizontal tangent on the
+                        // pilot cylinder). Three-point arc through the minor-arc midpoint so the bulge
+                        // direction is unambiguous.
+                        double cx = xf + sign * pts[1][0], cy = r1 + rArc;
+                        double ux = xa - cx, uy = ya - cy, vx = xb - cx, vy = yb - cy;
+                        double un = Math.Sqrt(ux * ux + uy * uy), vn = Math.Sqrt(vx * vx + vy * vy);
+                        double sx = ux / un + vx / vn, sy = uy / un + vy / vn;
+                        double sn = Math.Sqrt(sx * sx + sy * sy);
+                        double midX = cx + rArc * sx / sn, midY = cy + rArc * sy / sn;
+                        seg = sketchMgr.Create3PointArc(xa, ya, 0, xb, yb, 0, midX, midY, 0);
+                    }
+                    else
+                    {
+                        seg = Line(sketchMgr, xa, ya, xb, yb);
+                    }
+                    if (Math.Abs(ya - r1) < 1e-9 && Math.Abs(yb - r1) < 1e-9) pilotSeg = seg;
+                }
+                // Axis segment: tip T → face centre, on the revolve axis.
+                double tx = xf + sign * pts[pts.Count - 1][0];
+                Line(sketchMgr, tx, pts[pts.Count - 1][1], xf, 0);
+
+                ConstrainAll(sketchMgr);
+                CoincidentToOrigin(model, StartPt(segCl));
+                CoincidentPointToEdge(model, EndPt(segCl), total, 0, 0);
+                // Pin the hole's face-centre point in X: the origin for the left end, the axis far
+                // endpoint (on the x = total face) for the right end.
+                if (hole.End == 0)
+                {
+                    CoincidentToOrigin(model, StartPt(faceSeg));
+                }
+                else
+                {
+                    model.ClearSelection2(true);
+                    var oPt = StartPt(faceSeg);
+                    if (oPt != null && oPt.Select4(true, null) && EndPt(segCl).Select4(true, null))
+                    {
+                        model.SketchAddConstraints("sgCOINCIDENT");
+                    }
+                    model.ClearSelection2(true);
+                }
+
+                // Driving Ø on the pilot/core bore (best-effort; the profile is exact regardless).
+                if (pilotSeg != null)
+                {
+                    DiameterDim(model, pilotSeg, segCl, xf + sign * (pts[pts.Count - 1][0] - lp / 2.0), -r1);
+                }
+
+                model.ClearSelection2(true);
+                sketchMgr.InsertSketch(true);
+
+                var sketchFeature = LastProfileFeature(model);
+                if (sketchFeature == null) return "no se pudo crear el croquis del punto de centrado.";
+                ForceDrivingDims(sketchFeature);
+
+                model.ClearSelection2(true);
+                sketchFeature.Select2(false, 0);
+
+                var cut = model.FeatureManager.FeatureRevolve2(
+                    true, true, false, true, false, true,
+                    (int)swEndConditions_e.swEndCondBlind, (int)swEndConditions_e.swEndCondBlind,
+                    2.0 * Math.PI, 0.0, false, false, 0.0, 0.0,
+                    (int)swThinWallType_e.swThinWallOneDirection, 0.0, 0.0,
+                    true, false, true);
+                if (cut == null) return "SolidWorks no pudo crear el corte del punto de centrado.";
+                return null;
+            }
+            finally
+            {
+                RestoreSketch(sketchMgr, addToDbWas, displayWas);
+            }
         }
 
         // ---- sketch solve status + guarded relations -----------------------------------------------

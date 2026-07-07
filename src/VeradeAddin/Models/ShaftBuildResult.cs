@@ -27,5 +27,8 @@ namespace VeradeAddin.Models
 
         /// <summary>DIN 509-E undercuts (entalladuras) cut at shoulders.</summary>
         public int UndercutCount { get; set; }
+
+        /// <summary>DIN 332 centre points (puntos de centrado) cut into the end faces.</summary>
+        public int CenterHoleCount { get; set; }
     }
 }
