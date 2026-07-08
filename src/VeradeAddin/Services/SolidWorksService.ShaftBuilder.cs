@@ -992,50 +992,14 @@ namespace VeradeAddin.Services
             double xf = hole.End == 0 ? 0.0 : total;
             double sign = hole.End == 0 ? 1.0 : -1.0;
 
-            double r1 = hole.PilotDiameterMm * mmToM / 2.0;
-            double r2 = hole.CountersinkDiameterMm * mmToM / 2.0;
-            double r3 = hole.ProtectDiameterMm * mmToM / 2.0;
-            double lp = hole.PilotDepthMm * mmToM;
-            double lc = hole.CounterboreDepthMm * mmToM;
-            double rArc = hole.ArcRadiusMm * mmToM;
-            double tanCs = Math.Tan(ShaftSpec.CenterHoleCountersinkHalfDeg * Math.PI / 180.0);
-            double tanTp = Math.Tan(ShaftSpec.CenterHoleTaperHalfDeg * Math.PI / 180.0);
-            double tip = r1 / tanTp;                                   // 120° drill point
-
-            // Inner profile vertices (mouth M → tip T) as {depth-from-face, radius}. The face segment
-            // (face centre → M) and the axis segment (T → face centre) close the loop. For form R the
-            // FIRST inner segment (M → pilot top) is a radius arc, not a straight line.
+            // Half-section {depth-from-face, radius} from the single source of truth, in metres. The
+            // face segment (face centre → mouth) and the axis segment (tip → face centre) close the
+            // loop. For the radius forms (R, DR) segment pts[arcSeg−1]→pts[arcSeg] is a tangent arc.
+            var profileMm = hole.ProfileMm(out int arcSeg, out double arcRadiusMm);
+            if (profileMm.Count < 3) return "el perfil del punto de centrado es incompleto.";
             var pts = new List<double[]>();
-            bool firstArc = false;
-            if (hole.Form == "D")
-            {
-                double hp = r3 > r2 ? (r3 - r2) / tanTp : 0.0;
-                pts.Add(new[] { 0.0, r3 });
-                pts.Add(new[] { hp, r2 });
-                pts.Add(new[] { hp + lc, r2 });
-                pts.Add(new[] { hp + lc, r1 });
-                pts.Add(new[] { hp + lc + lp, r1 });
-                pts.Add(new[] { hp + lc + lp + tip, 0.0 });
-            }
-            else if (hole.Form == "R")
-            {
-                double hR = hole.ArcFlankDepthMm() * mmToM;
-                firstArc = true;
-                pts.Add(new[] { 0.0, r2 });
-                pts.Add(new[] { hR, r1 });
-                pts.Add(new[] { hR + lp, r1 });
-                pts.Add(new[] { hR + lp + tip, 0.0 });
-            }
-            else // A or B
-            {
-                double hp = hole.Form == "B" && r3 > r2 ? (r3 - r2) / tanTp : 0.0;
-                double hc = (r2 - r1) / tanCs;
-                if (hole.Form == "B") pts.Add(new[] { 0.0, r3 });
-                pts.Add(new[] { hp, r2 });
-                pts.Add(new[] { hp + hc, r1 });
-                pts.Add(new[] { hp + hc + lp, r1 });
-                pts.Add(new[] { hp + hc + lp + tip, 0.0 });
-            }
+            foreach (var p in profileMm) pts.Add(new[] { p[0] * mmToM, p[1] * mmToM });
+            double arcRadius = arcRadiusMm * mmToM;
 
             var sketchMgr = model.SketchManager;
             bool addToDbWas = sketchMgr.AddToDB, displayWas = sketchMgr.DisplayWhenAdded;
@@ -1056,30 +1020,32 @@ namespace VeradeAddin.Services
                 // Face segment: face centre (xf, 0) → mouth M.
                 double mx = xf + sign * pts[0][0];
                 var faceSeg = Line(sketchMgr, xf, 0, mx, pts[0][1]);
-                SketchSegment pilotSeg = null;
+
+                // Inner segments mouth → tip. Cylinder segments (equal, non-zero radius) get a driving
+                // Ø; the arc flank (R, DR) is a 3-point arc tangent to the seat/pilot cylinder.
+                var cylinders = new List<SketchSegment>();       // horizontal bores → Ø dims
+                var cylRadius = new List<double>();
                 for (int i = 1; i < pts.Count; i++)
                 {
                     double xa = xf + sign * pts[i - 1][0], ya = pts[i - 1][1];
                     double xb = xf + sign * pts[i][0], yb = pts[i][1];
-                    SketchSegment seg;
-                    if (i == 1 && firstArc)
+                    if (i == arcSeg && arcRadius > 0)
                     {
-                        // Arc M → pilot top, centre r above the pilot top (horizontal tangent on the
-                        // pilot cylinder). Three-point arc through the minor-arc midpoint so the bulge
-                        // direction is unambiguous.
-                        double cx = xf + sign * pts[1][0], cy = r1 + rArc;
+                        // Centre r above the flank end (horizontal tangent on the seat/pilot cylinder).
+                        // Three-point arc through the minor-arc midpoint so the bulge is unambiguous.
+                        double cx = xb, cy = yb + arcRadius;
                         double ux = xa - cx, uy = ya - cy, vx = xb - cx, vy = yb - cy;
                         double un = Math.Sqrt(ux * ux + uy * uy), vn = Math.Sqrt(vx * vx + vy * vy);
                         double sx = ux / un + vx / vn, sy = uy / un + vy / vn;
                         double sn = Math.Sqrt(sx * sx + sy * sy);
-                        double midX = cx + rArc * sx / sn, midY = cy + rArc * sy / sn;
-                        seg = sketchMgr.Create3PointArc(xa, ya, 0, xb, yb, 0, midX, midY, 0);
+                        double midX = cx + arcRadius * sx / sn, midY = cy + arcRadius * sy / sn;
+                        sketchMgr.Create3PointArc(xa, ya, 0, xb, yb, 0, midX, midY, 0);
                     }
                     else
                     {
-                        seg = Line(sketchMgr, xa, ya, xb, yb);
+                        var seg = Line(sketchMgr, xa, ya, xb, yb);
+                        if (Math.Abs(ya - yb) < 1e-9 && ya > 1e-9) { cylinders.Add(seg); cylRadius.Add(ya); }
                     }
-                    if (Math.Abs(ya - r1) < 1e-9 && Math.Abs(yb - r1) < 1e-9) pilotSeg = seg;
                 }
                 // Axis segment: tip T → face centre, on the revolve axis.
                 double tx = xf + sign * pts[pts.Count - 1][0];
@@ -1105,10 +1071,15 @@ namespace VeradeAddin.Services
                     model.ClearSelection2(true);
                 }
 
-                // Driving Ø on the pilot/core bore (best-effort; the profile is exact regardless).
-                if (pilotSeg != null)
+                // Driving Ø on every straight bore (pilot/core, seat), guarded so a redundant one
+                // never breaks the profile. The cones/arc are then located by their endpoints.
+                for (int i = 0; i < cylinders.Count; i++)
                 {
-                    DiameterDim(model, pilotSeg, segCl, xf + sign * (pts[pts.Count - 1][0] - lp / 2.0), -r1);
+                    if (SketchBroken(sketchMgr)) break;
+                    var cs = StartPt(cylinders[i]); var ce = EndPt(cylinders[i]);
+                    double xMid = cs != null && ce != null ? 0.5 * (cs.X + ce.X) : xf;
+                    DiameterDim(model, cylinders[i], segCl, xMid, -cylRadius[i]);
+                    if (SketchBroken(sketchMgr)) { try { model.EditUndo2(1); } catch { } break; }
                 }
 
                 model.ClearSelection2(true);

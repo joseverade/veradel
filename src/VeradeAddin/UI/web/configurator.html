@@ -251,17 +251,23 @@
             <div class="field">
               <label>Tipo (DIN 332)</label>
               <select id="ctype">
-                <option value="A">A &middot; avellanado 60&deg;</option>
-                <option value="B">B &middot; 60&deg; + protecci&oacute;n 120&deg;</option>
+                <option value="A">A &middot; recto 60&deg;</option>
+                <option value="B">B &middot; 60&deg; + protecci&oacute;n c&oacute;nica 120&deg;</option>
+                <option value="C">C &middot; 60&deg; + protecci&oacute;n truncada 60&deg;</option>
                 <option value="R">R &middot; flanco de radio</option>
                 <option value="D">D &middot; roscado (DIN 332-2)</option>
+                <option value="DR">DR &middot; roscado, contacto esf&eacute;rico</option>
+                <option value="DS">DS &middot; roscado + protecci&oacute;n 120&deg;</option>
               </select>
             </div>
             <div class="field">
-              <label>Tama&ntilde;o</label>
+              <label>Tama&ntilde;o (recomendado por &Oslash; de eje)</label>
               <select id="csizeSel"></select>
             </div>
+            <label class="chkline"><input type="checkbox" id="chEdit"> Editar medidas (desbloquea las cotas)</label>
+            <div id="chDetail" class="chdetail"></div>
             <div class="note" id="chNote"></div>
+            <div id="chSection"></div>
             <div class="krow">
               <button id="btnChOk" class="primary">Aceptar punto</button>
               <button id="btnChDel" class="ghost">Eliminar</button>

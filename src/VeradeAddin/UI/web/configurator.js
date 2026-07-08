@@ -29,41 +29,73 @@ var DIN509 = [
 var UC_RAMP = 1 / Math.tan(15 * Math.PI / 180);   // avance axial por mm de t1 de la salida a 15°
 var UC_RAMP8 = 1 / Math.tan(8 * Math.PI / 180);   // avance radial por mm de t2 de la salida a 8° (forma F)
 
-// Tablas DIN 332 (puntos de centrado). VALORES ESTÁNDAR APROXIMADOS — REVISAR antes de producción.
-// DIN 332-1 (formas A/B/R, sin rosca), por Ø de broca d1: d2 = Ø del avellanado 60°, d3 = Ø del
-// avellanado de protección 120° (forma B), r = radio del flanco (forma R). min/max = rango de Ø del
-// extremo del eje recomendado ("más de min, hasta max"); solo elige el tamaño por defecto.
-var DIN332_1 = [
-    { d1: 1.0, d2: 2.12, d3: 3.15, r: 0.3, min: 3, max: 6 },
-    { d1: 1.6, d2: 3.35, d3: 5.0, r: 0.4, min: 6, max: 10 },
-    { d1: 2.0, d2: 4.25, d3: 6.3, r: 0.5, min: 10, max: 18 },
-    { d1: 2.5, d2: 5.3, d3: 8.0, r: 0.6, min: 18, max: 30 },
-    { d1: 3.15, d2: 6.7, d3: 10.0, r: 0.8, min: 30, max: 50 },
-    { d1: 4.0, d2: 8.5, d3: 12.5, r: 1.0, min: 50, max: 80 },
-    { d1: 6.3, d2: 13.2, d3: 18.0, r: 1.6, min: 80, max: 120 },
-    { d1: 10.0, d2: 21.2, d3: 28.0, r: 2.5, min: 120, max: Infinity }
-];
-// DIN 332-2 (forma D, roscado), por rosca métrica m: d1 = broca del núcleo, d2 = rebaje de alivio,
-// d3 = avellanado de protección 120°. min/max = rango de Ø del extremo recomendado.
-var DIN332_2 = [
-    { m: 3, d1: 2.5, d2: 3.2, d3: 5.8, min: 6, max: 10 },
-    { m: 4, d1: 3.3, d2: 4.3, d3: 7.4, min: 10, max: 18 },
-    { m: 5, d1: 4.2, d2: 5.3, d3: 8.8, min: 18, max: 30 },
-    { m: 6, d1: 5.0, d2: 6.4, d3: 10.5, min: 30, max: 50 },
-    { m: 8, d1: 6.8, d2: 8.4, d3: 13.2, min: 50, max: 85 },
-    { m: 10, d1: 8.5, d2: 10.5, d3: 16.3, min: 85, max: 130 },
-    { m: 12, d1: 10.2, d2: 13.0, d3: 19.8, min: 130, max: 150 },
-    { m: 16, d1: 14.0, d2: 17.0, d3: 25.3, min: 150, max: 220 },
-    { m: 20, d1: 17.5, d2: 21.0, d3: 31.3, min: 220, max: 320 },
-    { m: 24, d1: 21.0, d2: 25.0, d3: 38.0, min: 320, max: Infinity }
-];
 var CH_TAN30 = Math.tan(30 * Math.PI / 180);   // flanco del avellanado 60° (semiángulo 30°)
 var CH_TAN60 = Math.tan(60 * Math.PI / 180);   // protección 120° y punta de broca 120° (semiángulo 60°)
-// Longitudes rectas por defecto (mm); el host recibe el valor final ya calculado. Espejo de los
-// defaults del builder: piloto/núcleo ≈ un diámetro, rosca útil ≈ 1.2·M, rebaje de alivio ≈ 0.4·d1.
-function chPilotLen(d1) { return Math.max(0.8, d1); }
-function chBoreLen(m) { return Math.max(1.2, 1.2 * m); }
-function chCbLen(d1) { return Math.max(0.5, 0.4 * d1); }
+
+// Tablas DIN 332 (puntos de centrado). Valores autorizados — ver resources/data/din_332.txt y las
+// figuras din_332_{R,A,B,C}.png (DIN 332-1) + IS/ISO 2540 (DIN 332-2 roscadas). t = prof. funcional
+// mínima (sin rosca). Espejo del modelo host ShaftCenterHole.
+// DIN 332-1 · sin rosca, por Ø de broca d1.
+var DIN332_R = [   // flanco de radio (R derivado): d1, d2, t
+    { d1: 0.5, d2: 1.06, t: 1.4 }, { d1: 0.8, d2: 1.7, t: 1.5 }, { d1: 1.0, d2: 2.12, t: 1.9 },
+    { d1: 1.25, d2: 2.65, t: 2.3 }, { d1: 1.6, d2: 3.35, t: 2.9 }, { d1: 2.0, d2: 4.25, t: 3.7 },
+    { d1: 2.5, d2: 5.3, t: 4.6 }, { d1: 3.15, d2: 6.7, t: 5.8 }, { d1: 4.0, d2: 8.5, t: 7.4 },
+    { d1: 5.0, d2: 10.6, t: 9.2 }, { d1: 6.3, d2: 13.2, t: 11.4 }, { d1: 8.0, d2: 17.0, t: 14.7 },
+    { d1: 10.0, d2: 21.2, t: 18.3 }, { d1: 12.5, d2: 26.5, t: 23.6 }
+];
+var DIN332_A = [   // recto 60°: d1, d2, t (tmin)
+    { d1: 0.5, d2: 1.06, t: 1.0 }, { d1: 0.8, d2: 1.7, t: 1.5 }, { d1: 1.0, d2: 2.12, t: 1.9 },
+    { d1: 1.25, d2: 2.65, t: 2.3 }, { d1: 1.6, d2: 3.35, t: 2.9 }, { d1: 2.0, d2: 4.25, t: 3.7 },
+    { d1: 2.5, d2: 5.3, t: 4.6 }, { d1: 3.15, d2: 6.7, t: 5.9 }, { d1: 4.0, d2: 8.5, t: 7.4 },
+    { d1: 5.0, d2: 10.6, t: 9.2 }, { d1: 6.3, d2: 13.2, t: 11.5 }, { d1: 8.0, d2: 17.0, t: 14.8 },
+    { d1: 10.0, d2: 21.2, t: 18.4 }, { d1: 12.5, d2: 26.5, t: 23.6 }, { d1: 16.0, d2: 33.5, t: 30.0 },
+    { d1: 20.0, d2: 42.5, t: 37.5 }, { d1: 25.0, d2: 53.0, t: 47.5 }, { d1: 31.5, d2: 67.0, t: 60.0 },
+    { d1: 40.0, d2: 85.0, t: 75.0 }, { d1: 50.0, d2: 106.0, t: 95.0 }
+];
+var DIN332_B = [   // recto 60° + protección cónica 120°: d1, d2, b, d3, t (tmin)
+    { d1: 1.0, d2: 2.12, b: 0.3, d3: 3.15, t: 2.2 }, { d1: 1.25, d2: 2.65, b: 0.4, d3: 4.0, t: 2.7 },
+    { d1: 1.6, d2: 3.35, b: 0.5, d3: 5.0, t: 3.4 }, { d1: 2.0, d2: 4.25, b: 0.8, d3: 6.3, t: 4.3 },
+    { d1: 2.5, d2: 5.3, b: 0.8, d3: 8.0, t: 5.4 }, { d1: 3.15, d2: 6.7, b: 0.9, d3: 10.0, t: 6.8 },
+    { d1: 4.0, d2: 8.5, b: 1.2, d3: 12.5, t: 8.6 }, { d1: 5.0, d2: 10.6, b: 1.6, d3: 16.0, t: 10.8 },
+    { d1: 6.3, d2: 13.2, b: 1.4, d3: 18.0, t: 12.9 }, { d1: 8.0, d2: 17.0, b: 1.6, d3: 22.4, t: 16.4 },
+    { d1: 10.0, d2: 21.2, b: 2.0, d3: 28.0, t: 20.4 }, { d1: 12.5, d2: 26.5, b: 2.0, d3: 33.5, t: 25.6 },
+    { d1: 16.0, d2: 33.5, b: 2.6, d3: 42.5, t: 32.6 }, { d1: 20.0, d2: 42.5, b: 3.0, d3: 53.0, t: 40.5 },
+    { d1: 25.0, d2: 53.0, b: 2.9, d3: 63.0, t: 50.4 }, { d1: 31.5, d2: 67.0, b: 3.8, d3: 80.0, t: 63.8 },
+    { d1: 40.0, d2: 85.0, b: 4.3, d3: 100.0, t: 79.3 }, { d1: 50.0, d2: 106.0, b: 5.5, d3: 125.0, t: 100.5 }
+];
+var DIN332_C = [   // recto 60° + protección truncada 60°: d1, d2, b, d4, d5, t (tmin)
+    { d1: 1.0, d2: 2.12, b: 0.4, d4: 4.5, d5: 5.0, t: 1.9 }, { d1: 1.25, d2: 2.65, b: 0.6, d4: 5.3, d5: 6.0, t: 2.3 },
+    { d1: 1.6, d2: 3.35, b: 0.7, d4: 6.3, d5: 7.1, t: 2.9 }, { d1: 2.0, d2: 4.25, b: 0.9, d4: 7.5, d5: 8.5, t: 3.7 },
+    { d1: 2.5, d2: 5.3, b: 0.9, d4: 9.0, d5: 10.0, t: 4.6 }, { d1: 3.15, d2: 6.7, b: 1.1, d4: 11.2, d5: 12.5, t: 5.9 },
+    { d1: 4.0, d2: 8.5, b: 1.7, d4: 14.0, d5: 16.0, t: 7.4 }, { d1: 5.0, d2: 10.6, b: 1.7, d4: 18.0, d5: 20.0, t: 9.2 },
+    { d1: 6.3, d2: 13.2, b: 2.3, d4: 22.4, d5: 25.0, t: 11.5 }, { d1: 8.0, d2: 17.0, b: 3.0, d4: 28.0, d5: 31.5, t: 14.8 },
+    { d1: 10.0, d2: 21.2, b: 3.9, d4: 35.5, d5: 40.0, t: 18.4 }, { d1: 12.5, d2: 26.5, b: 4.3, d4: 45.0, d5: 50.0, t: 23.6 },
+    { d1: 16.0, d2: 33.5, b: 6.1, d4: 56.0, d5: 63.0, t: 30.0 }, { d1: 20.0, d2: 42.5, b: 7.8, d4: 71.0, d5: 80.0, t: 37.5 },
+    { d1: 25.0, d2: 53.0, b: 8.7, d4: 90.0, d5: 100.0, t: 47.5 }, { d1: 31.5, d2: 67.0, b: 11.3, d4: 112.0, d5: 125.0, t: 60.0 },
+    { d1: 40.0, d2: 85.0, b: 17.3, d4: 140.0, d5: 160.0, t: 75.0 }, { d1: 50.0, d2: 106.0, b: 17.3, d4: 180.0, d5: 200.0, t: 95.0 }
+];
+// DIN 332-2 · roscadas D/DR/DS, por rosca M (una tabla). d2 = broca núcleo, d3 = asiento, d4 = boca 60°,
+// d5 = boca protección 120° (DS), R = radio esférico (DR). min/max = rango de Ø de eje (norma).
+var DIN332_T = [
+    { m: 3, d2: 2.5, d3: 3.2, d4: 5.3, d5: 5.8, R: 4.0, t1: 9, t2: 12, t3: 2.6, t4: 1.8, t5: 0.2, min: 7, max: 10 },
+    { m: 4, d2: 3.3, d3: 4.3, d4: 6.7, d5: 7.4, R: 5.0, t1: 10, t2: 14, t3: 3.2, t4: 2.1, t5: 0.3, min: 10, max: 13 },
+    { m: 5, d2: 4.2, d3: 5.3, d4: 8.1, d5: 8.8, R: 6.3, t1: 12.5, t2: 17, t3: 4.0, t4: 2.4, t5: 0.3, min: 13, max: 16 },
+    { m: 6, d2: 5.0, d3: 6.4, d4: 9.6, d5: 10.5, R: 8.0, t1: 16, t2: 21, t3: 5.0, t4: 2.8, t5: 0.4, min: 16, max: 21 },
+    { m: 8, d2: 6.8, d3: 8.4, d4: 12.2, d5: 13.2, R: 10.0, t1: 19, t2: 25, t3: 6.0, t4: 3.3, t5: 0.4, min: 21, max: 24 },
+    { m: 10, d2: 8.5, d3: 10.5, d4: 14.9, d5: 16.3, R: 16.0, t1: 22, t2: 30, t3: 7.5, t4: 3.8, t5: 0.6, min: 24, max: 30 },
+    { m: 12, d2: 10.2, d3: 13.0, d4: 18.1, d5: 19.8, R: 20.0, t1: 28, t2: 37, t3: 9.5, t4: 4.4, t5: 0.7, min: 30, max: 38 },
+    { m: 16, d2: 14.0, d3: 17.0, d4: 23.0, d5: 25.3, R: 25.0, t1: 36, t2: 45, t3: 12, t4: 5.2, t5: 1.0, min: 38, max: 50 },
+    { m: 20, d2: 17.5, d3: 21.0, d4: 28.4, d5: 31.3, R: 31.5, t1: 42, t2: 53, t3: 15, t4: 6.4, t5: 1.3, min: 50, max: 85 },
+    { m: 24, d2: 21.0, d3: 25.0, d4: 34.2, d5: 38.0, R: 40.0, t1: 50, t2: 63, t3: 18, t4: 8, t5: 1.6, min: 85, max: 130 }
+];
+// Recomendación de tamaño sin rosca por Ø de eje (taller; NO norma). Elige d1 por el primer max ≥ Ø.
+var CH_REC_D1 = [
+    { d1: 1.0, max: 8 }, { d1: 1.6, max: 12 }, { d1: 2.0, max: 18 }, { d1: 2.5, max: 24 },
+    { d1: 3.15, max: 30 }, { d1: 4.0, max: 42 }, { d1: 5.0, max: 58 }, { d1: 6.3, max: 80 },
+    { d1: 8.0, max: 115 }, { d1: 10.0, max: 150 }, { d1: 12.5, max: Infinity }
+];
+function chIsThreaded(f) { return f === 'D' || f === 'DR' || f === 'DS'; }
+function chIsRadius(f) { return f === 'R' || f === 'DR'; }
 
 var catalog = document.getElementById('catalog');
 var bolt = document.getElementById('bolt');
@@ -529,13 +561,13 @@ document.addEventListener('keydown', function (e) {
 //  (usual/fatiga); la medida sale de DIN509 con el Ø menor. Espejo de
 //  ShaftSpec.ValidateUndercut.
 //  Paso 5 · Puntos de centrado (DIN 332): uno por extremo como máximo,
-//  corte de revolución coaxial en la cara. Formas A (avellanado 60°),
-//  B (60° + protección 120°), R (flanco de radio) — DIN 332-1 — y D
-//  (roscado, DIN 332-2). Se elige extremo (izq/der), tipo y tamaño; la
-//  medida sale de DIN332_1/DIN332_2 según el Ø del extremo. Espejo de
-//  ShaftSpec.ValidateCenterHole.
+//  corte de revolución coaxial en la cara. 7 formas: A/B/C/R (DIN 332-1,
+//  sin rosca) y D/DR/DS (DIN 332-2, roscadas). Se elige extremo (izq/der),
+//  tipo y tamaño (recomendado por Ø de eje, editable con el checkbox). La
+//  medida sale de DIN332_{R,A,B,C,T} según el Ø del extremo. Perfil único
+//  en chProfile (espejo de ShaftCenterHole.ProfileMm del host).
 //  Protocolo: create|shaft|n|d,l...|K|<chavetas×9>|G|<ranuras×4>|
-//             U|<entalladuras×6>|C|<puntos×9: extremo,tipo,d1,d2,d3,lp,rarc,lc,rosca>
+//             U|<entalladuras×6>|C|<puntos×15: extremo,tipo,d1,d2,d3,d4,d5,b,R,t,t1,t2,t3,t4,t5>
 // ================================================================
 
 var shaftSec = document.getElementById('shaft');
@@ -591,6 +623,9 @@ var cEndSel = document.getElementById('cend');
 var cTypeSel = document.getElementById('ctype');
 var csizeSel = document.getElementById('csizeSel');
 var chNoteEl = document.getElementById('chNote');
+var chDetailEl = document.getElementById('chDetail');
+var chSectionEl = document.getElementById('chSection');
+var chEditChk = document.getElementById('chEdit');
 
 var shaftLevels = [{ d: 20, l: 30 }, { d: 30, l: 40 }, { d: 20, l: 30 }];
 var shaftFocus = 0;      // nivel con foco en el paso 1 (rojo + cotas)
@@ -680,7 +715,7 @@ function shaftSubmit() {
     msg.push(shaftChs.length);
     for (var c = 0; c < shaftChs.length; c++) {
         var cv = shaftChs[c];
-        msg.push(cv.end, cv.form, cv.d1, cv.d2, cv.d3, cv.lp, cv.rarc, cv.lc, cv.thread);
+        msg.push(cv.end, cv.form, cv.d1, cv.d2, cv.d3, cv.d4, cv.d5, cv.b, cv.rr, cv.t, cv.t1, cv.t2, cv.t3, cv.t4, cv.t5);
     }
     post(msg.join('|'));
 }
@@ -705,6 +740,7 @@ function buildLevelRows() {
                 var d = parseFloat(dEl.value), l = parseFloat(lEl.value);
                 shaftLevels[k].d = isFinite(d) ? d : NaN;
                 shaftLevels[k].l = isFinite(l) ? l : NaN;
+                if (editCh) syncChSize();   // recalcula la recomendación por el nuevo Ø del extremo
                 shaftUpdate();
             }
             function focus() { shaftFocus = k; markFocusRow(); drawShaft(); }
@@ -1391,56 +1427,92 @@ function renderUcList() {
 
 // Ø del extremo donde va el punto (nivel 0 = izquierdo, último = derecho)
 function chEndDiam(end) { return end === 0 ? shaftLevels[0].d : shaftLevels[shaftLevels.length - 1].d; }
-function chTable(form) { return form === 'D' ? DIN332_2 : DIN332_1; }
-function chRowKey(form, row) { return form === 'D' ? row.m : row.d1; }
+function chTable(form) {
+    return form === 'A' ? DIN332_A : form === 'B' ? DIN332_B : form === 'C' ? DIN332_C
+        : form === 'R' ? DIN332_R : DIN332_T;   // D / DR / DS
+}
+function chRowKey(form, row) { return chIsThreaded(form) ? row.m : row.d1; }
+// Ø de boca de una fila (para la etiqueta del combo): C→d5, B→d3, roscada→d4, A/R→d2.
+function chSizeMouth(form, row) {
+    return form === 'C' ? row.d5 : form === 'B' ? row.d3 : chIsThreaded(form) ? row.d4 : row.d2;
+}
 function chRecommend(form, d) {
     var t = chTable(form);
-    for (var i = 0; i < t.length; i++) if (d > t[i].min && d <= t[i].max + 1e-9) return t[i];
-    return t[t.length - 1];
+    if (chIsThreaded(form)) {
+        for (var i = 0; i < t.length; i++) if (d > t[i].min && d <= t[i].max + 1e-9) return t[i];
+        return t[t.length - 1];
+    }
+    var recD1 = CH_REC_D1[CH_REC_D1.length - 1].d1;
+    for (var j = 0; j < CH_REC_D1.length; j++) if (d <= CH_REC_D1[j].max) { recD1 = CH_REC_D1[j].d1; break; }
+    var best = t[0];
+    for (var k = 0; k < t.length; k++) {
+        if (Math.abs(t[k].d1 - recD1) < 1e-9) return t[k];
+        if (t[k].d1 <= recD1 + 1e-9) best = t[k];
+    }
+    return best;
 }
-// avance axial del flanco de radio (forma R): √(r² − (r + d1/2 − d2/2)²); 0 si el radio no cierra
-function chArcFlank(c) {
-    var r1 = c.d1 / 2, r2 = c.d2 / 2, R = c.rarc, a = R + r1 - r2, disc = R * R - a * a;
-    return disc > 0 ? Math.sqrt(disc) : 0;
+
+// Semiperfil {profundidad-desde-la-cara, radio} boca → punta + info del arco. Espejo EXACTO de
+// ShaftCenterHole.ProfileMm del host: de aquí salen profundidad, Ø de boca, validación y dibujo.
+function chProfile(c) {
+    var v = [], arcSeg = -1, arcR = 0;
+    if (chIsThreaded(c.form)) {
+        var rc = c.d2 / 2, r3 = c.d3 / 2, r4 = c.d4 / 2, r5 = c.d5 / 2, tip = rc / CH_TAN60;
+        var s = c.form === 'DS' ? c.t5 : 0;
+        if (c.form === 'DS') v.push([0, r5]);
+        v.push([s, r4]);
+        v.push([s + c.t4, r3]);
+        if (c.form === 'DR') { arcSeg = v.length - 1; arcR = c.rr; }
+        v.push([s + c.t3, r3]);
+        v.push([s + c.t3, rc]);
+        v.push([s + c.t2 - tip, rc]);
+        v.push([s + c.t2, 0]);
+    } else {
+        var r1 = c.d1 / 2, r2 = c.d2 / 2, hc = (r2 - r1) / CH_TAN30, tipN = r1 / CH_TAN60, prot = 0;
+        if (c.form === 'B') { var b3 = c.d3 / 2; prot = (b3 - r2) / CH_TAN60; v.push([0, b3]); v.push([prot, r2]); }
+        else if (c.form === 'C') { var q4 = c.d4 / 2, q5 = c.d5 / 2; prot = (q5 - q4) / CH_TAN30; v.push([0, q5]); v.push([prot, q4]); v.push([prot, r2]); }
+        else { v.push([0, r2]); }
+        v.push([prot + hc, r1]);
+        if (c.form === 'R') { var dr = r2 - r1; if (dr > 0) { arcSeg = v.length - 1; arcR = (hc * hc + dr * dr) / (2 * dr); } }
+        v.push([c.t, r1]);
+        v.push([c.t + tipN, 0]);
+    }
+    return { v: v, arcSeg: arcSeg, arcR: arcR };
 }
-// profundidad total del taladro (mm), espejo de ShaftCenterHole.TotalDepthMm del host
-function chDepth(c) {
-    var r1 = c.d1 / 2, r2 = c.d2 / 2, r3 = (c.d3 || 0) / 2, tip = r1 / CH_TAN60;
-    if (c.form === 'D') { var hp = r3 > r2 ? (r3 - r2) / CH_TAN60 : 0; return hp + c.lc + c.lp + tip; }
-    if (c.form === 'R') return chArcFlank(c) + c.lp + tip;
-    var hpB = (c.form === 'B' && r3 > r2) ? (r3 - r2) / CH_TAN60 : 0;
-    var hc = (r2 - r1) / CH_TAN30;
-    return hpB + hc + c.lp + tip;
-}
-function chMouth(c) { return Math.max(c.d2, c.d3 || 0); }
+// profundidad total y Ø de boca, derivados del perfil (espejo del host)
+function chDepth(c) { var v = chProfile(c).v; return v.length ? v[v.length - 1][0] : 0; }
+function chMouth(c) { var v = chProfile(c).v; return v.length ? 2 * v[0][1] : 0; }
+// radio derivado del flanco (forma R) para mostrarlo en la nota
+function chArcR(c) { return chProfile(c).arcR; }
 
 // rellena las medidas de c con la fila elegida según la forma
 function applyChRow(row) {
     if (!editCh) return;
     var f = editCh.form;
     editCh._key = chRowKey(f, row);
-    editCh.d1 = row.d1;
-    if (f === 'D') {
-        editCh.d2 = row.d2; editCh.d3 = row.d3; editCh.thread = row.m;
-        editCh.rarc = 0; editCh.lc = chCbLen(row.d1); editCh.lp = chBoreLen(row.m);
-    } else if (f === 'R') {
-        editCh.d2 = row.d2; editCh.d3 = 0; editCh.thread = 0;
-        editCh.rarc = row.r; editCh.lc = 0; editCh.lp = chPilotLen(row.d1);
-    } else { // A o B
-        editCh.d2 = row.d2; editCh.d3 = f === 'B' ? row.d3 : 0; editCh.thread = 0;
-        editCh.rarc = 0; editCh.lc = 0; editCh.lp = chPilotLen(row.d1);
+    if (chIsThreaded(f)) {
+        editCh.d1 = row.m; editCh.d2 = row.d2; editCh.d3 = row.d3; editCh.d4 = row.d4;
+        editCh.d5 = f === 'DS' ? row.d5 : 0; editCh.rr = f === 'DR' ? row.R : 0; editCh.b = 0; editCh.t = 0;
+        editCh.t1 = row.t1; editCh.t2 = row.t2; editCh.t3 = row.t3; editCh.t4 = row.t4;
+        editCh.t5 = f === 'DS' ? row.t5 : 0;
+    } else {
+        editCh.d1 = row.d1; editCh.d2 = row.d2;
+        editCh.d3 = f === 'B' ? row.d3 : 0; editCh.d4 = f === 'C' ? row.d4 : 0; editCh.d5 = f === 'C' ? row.d5 : 0;
+        editCh.b = (f === 'B' || f === 'C') ? row.b : 0; editCh.rr = 0; editCh.t = row.t;
+        editCh.t1 = editCh.t2 = editCh.t3 = editCh.t4 = editCh.t5 = 0;
     }
-    updateChNote();
+    renderChDetail(); updateChNote();
 }
-// (re)construye el combo de tamaños; conserva la selección si sigue existiendo, si no la recomendada
-function syncChSize() {
+// (re)construye el combo de tamaños y recomienda por Ø. Rellena las cotas salvo que el punto esté en
+// modo "editar" (custom): entonces respeta lo que el usuario metió, salvo forceApply (cambio de forma).
+function syncChSize(forceApply) {
     if (!editCh) return;
     var form = editCh.form, t = chTable(form), d = chEndDiam(editCh.end), opts = '';
     for (var i = 0; i < t.length; i++) {
         var key = chRowKey(form, t[i]);
-        var lbl = form === 'D'
-            ? ('M' + key + ' · broca Ø' + fmt(t[i].d1) + ' · protección Ø' + fmt(t[i].d3))
-            : ('d1 Ø' + fmt(t[i].d1) + ' · boca Ø' + fmt(form === 'B' ? t[i].d3 : t[i].d2));
+        var lbl = chIsThreaded(form)
+            ? ('M' + key + ' · núcleo Ø' + fmt(t[i].d2) + ' · boca Ø' + fmt(t[i].d4))
+            : ('d1 Ø' + fmt(t[i].d1) + ' · boca Ø' + fmt(chSizeMouth(form, t[i])));
         opts += '<option value="' + key + '">' + lbl + '</option>';
     }
     csizeSel.innerHTML = opts;
@@ -1448,15 +1520,48 @@ function syncChSize() {
     for (var j = 0; j < t.length; j++) if (Math.abs(chRowKey(form, t[j]) - editCh._key) < 1e-9) found = t[j];
     if (!found) found = chRecommend(form, d);
     csizeSel.value = String(chRowKey(form, found));
-    applyChRow(found);
+    if (forceApply || !editCh.custom) applyChRow(found);
+    else { renderChDetail(); updateChNote(); }
+}
+// campos (cotas) editables por forma: [clave, etiqueta]
+function chFields(form) {
+    if (form === 'A' || form === 'R') return [['d1', 'Ø broca d1'], ['d2', 'Ø boca d2'], ['t', 'prof. t']];
+    if (form === 'B') return [['d1', 'Ø broca d1'], ['d2', 'Ø boca d2'], ['d3', 'Ø protección d3'], ['b', 'ancho protección b'], ['t', 'prof. t']];
+    if (form === 'C') return [['d1', 'Ø broca d1'], ['d2', 'Ø boca d2'], ['d4', 'Ø interior d4'], ['d5', 'Ø exterior d5'], ['b', 'ancho protección b'], ['t', 'prof. t']];
+    var f = [['d1', 'Ø rosca M'], ['d2', 'Ø núcleo d2'], ['d3', 'Ø asiento d3'], ['d4', 'Ø boca d4'],
+        ['t1', 'rosca útil t1'], ['t2', 'prof. total t2'], ['t3', 'asiento t3'], ['t4', 'contacto t4']];
+    if (form === 'DR') f.push(['rr', 'radio contacto R']);
+    if (form === 'DS') { f.push(['d5', 'Ø protección d5']); f.push(['t5', 'prof. protección t5']); }
+    return f;
+}
+// detalle con TODAS las cotas de la forma; deshabilitadas salvo que el checkbox "editar" esté marcado
+function renderChDetail() {
+    if (!chDetailEl) return;
+    if (!editCh) { chDetailEl.innerHTML = ''; return; }
+    var fields = chFields(editCh.form), html = '';
+    for (var i = 0; i < fields.length; i++) {
+        html += '<div class="cota"><label>' + fields[i][1] + '</label>' +
+            '<input type="number" step="any" min="0" data-k="' + fields[i][0] + '" value="' + fmt(editCh[fields[i][0]] || 0) + '"' +
+            (editCh.custom ? '' : ' disabled') + '></div>';
+    }
+    chDetailEl.innerHTML = html;
+    var inps = chDetailEl.querySelectorAll('input');
+    for (var j = 0; j < inps.length; j++) {
+        inps[j].addEventListener('input', function () {
+            if (!editCh) return;
+            editCh[this.getAttribute('data-k')] = parseFloat(this.value) || 0;
+            updateChNote(); shaftUpdate();
+        });
+    }
 }
 function updateChNote() {
     if (!editCh) return;
     var c = editCh;
-    var body = c.form === 'D'
-        ? ('M' + c.thread + ' · broca Ø' + fmt(c.d1) + ' · rebaje Ø' + fmt(c.d2) + ' · protección Ø' + fmt(c.d3))
-        : ('d1 Ø' + fmt(c.d1) + ' · boca Ø' + fmt(c.form === 'B' ? c.d3 : c.d2) + (c.form === 'R' ? ' · r ' + fmt(c.rarc) : ''));
-    chNoteEl.textContent = 'DIN 332-' + (c.form === 'D' ? '2' : '1') + ' ' + c.form + ' · ' + body +
+    var body = chIsThreaded(c.form)
+        ? ('M' + fmt(c.d1) + ' · núcleo Ø' + fmt(c.d2) + ' · asiento Ø' + fmt(c.d3) + ' · boca Ø' + fmt(c.d4) +
+            (c.form === 'DR' ? ' · R ' + fmt(c.rr) : '') + (c.form === 'DS' ? ' · protección Ø' + fmt(c.d5) : ''))
+        : ('d1 Ø' + fmt(c.d1) + ' · boca Ø' + fmt(chMouth(c)) + (c.form === 'R' ? ' · radio ' + fmt(chArcR(c)) : ''));
+    chNoteEl.textContent = 'DIN 332-' + (chIsThreaded(c.form) ? '2' : '1') + ' ' + c.form + ' · ' + body +
         ' · prof. ' + fmt(chDepth(c)) + ' mm';
     chNoteEl.className = 'note';
 }
@@ -1464,22 +1569,35 @@ function updateChNote() {
 // null = válido; espejo de ShaftSpec.ValidateCenterHole del host
 function validateCh(c, idx) {
     if (!(c.end === 0 || c.end === 1)) return 'Extremo no válido.';
-    if (c.form !== 'A' && c.form !== 'B' && c.form !== 'R' && c.form !== 'D') return 'Elige el tipo (A, B, R o D).';
-    if (!(c.d1 > 0) || !(c.d2 > c.d1)) return 'No hay medida DIN 332 para ese tamaño.';
-    if (!(c.lp > 0)) return 'La profundidad del taladro debe ser > 0.';
-    if ((c.form === 'B' || c.form === 'D') && !(c.d3 > c.d2)) return 'El avellanado de protección d3 debe ser mayor que d2.';
-    if (c.form === 'R' && (!(c.rarc > 0) || !(chArcFlank(c) > 0))) return 'El radio r de la forma R es demasiado pequeño.';
-    if (c.form === 'D') {
-        if (!(c.lc > 0)) return 'La longitud del rebaje debe ser > 0.';
-        if (!(c.thread > c.d1)) return 'El Ø nominal de la rosca debe ser mayor que la broca d1.';
+    if (['A', 'B', 'C', 'R', 'D', 'DR', 'DS'].indexOf(c.form) < 0) return 'Elige el tipo (A, B, C, R, D, DR o DS).';
+    if (chIsThreaded(c.form)) {
+        if (!(c.d2 > 0) || !(c.d3 > c.d2) || !(c.d4 > c.d3)) return 'Tamaño DIN 332-2 no válido (d2 < d3 < d4).';
+        if (!(c.t4 > 0) || !(c.t3 > c.t4) || !(c.t2 > c.t3)) return 'Profundidades roscadas no válidas (0 < t4 < t3 < t2).';
+        if (c.form === 'DR' && !(c.rr > 0)) return 'La forma DR necesita radio de contacto R > 0.';
+        if (c.form === 'DS' && (!(c.d5 > c.d4) || !(c.t5 > 0))) return 'La forma DS necesita d5 > d4 y t5 > 0.';
+    } else {
+        if (!(c.d1 > 0) || !(c.d2 > c.d1)) return 'Tamaño DIN 332-1 no válido (d2 debe ser mayor que d1).';
+        if (!(c.t > 0)) return 'La profundidad t debe ser > 0.';
+        if (c.form === 'B' && !(c.d3 > c.d2)) return 'La forma B necesita d3 > d2.';
+        if (c.form === 'C' && (!(c.d4 > c.d2) || !(c.d5 > c.d4))) return 'La forma C necesita d2 < d4 < d5.';
+        if ((c.form === 'B' || c.form === 'C') && !(c.b > 0)) return 'El ancho de protección b debe ser > 0.';
     }
+    var pr = chProfile(c), v = pr.v;
+    if (v.length < 3) return 'Perfil del punto de centrado incompleto.';
+    for (var i = 1; i < v.length; i++) {
+        if (v[i][0] < v[i - 1][0] - KTOL || v[i][1] > v[i - 1][1] + KTOL) return 'Las cotas dan un perfil imposible.';
+    }
+    if (!(chDepth(c) > KTOL)) return 'El perfil no tiene profundidad.';
+    if (chIsRadius(c.form) && !(pr.arcR > 0)) return 'El radio de contacto es demasiado pequeño.';
+    var hasCyl = false;
+    for (var h = 1; h < v.length; h++) if (Math.abs(v[h][1] - v[h - 1][1]) < 1e-9 && v[h][0] - v[h - 1][0] > KTOL) hasCyl = true;
+    if (!hasCyl) return 'No queda tramo recto de broca.';
     var lv = c.end === 0 ? shaftLevels[0] : shaftLevels[shaftLevels.length - 1];
     if (!(lv.d > 0) || !(lv.l > 0)) return 'El nivel del extremo no es válido.';
     if (!(chMouth(c) < lv.d)) return 'No cabe en la cara del extremo (Ø boca ' + fmt(chMouth(c)) + ' ≥ Ø' + fmt(lv.d) + ').';
-    var depth = chDepth(c);
-    if (!(depth < lv.l - KTOL)) return 'Es más profundo que el nivel del extremo (' + fmt(depth) + ' ≥ ' + fmt(lv.l) + ' mm).';
-    for (var i = 0; i < shaftChs.length; i++) {
-        if (i !== idx && shaftChs[i].end === c.end) return 'Ya hay otro punto de centrado en ese extremo.';
+    if (!(chDepth(c) < lv.l - KTOL)) return 'Es más profundo que el nivel del extremo (' + fmt(chDepth(c)) + ' ≥ ' + fmt(lv.l) + ' mm).';
+    for (var q = 0; q < shaftChs.length; q++) {
+        if (q !== idx && shaftChs[q].end === c.end) return 'Ya hay otro punto de centrado en ese extremo.';
     }
     return null;
 }
@@ -1495,7 +1613,7 @@ btnAddCh.addEventListener('click', function () {
     var used = {};
     for (var i = 0; i < shaftChs.length; i++) used[shaftChs[i].end] = true;
     var end = used[0] ? (used[1] ? 0 : 1) : 0;
-    editCh = { end: end, form: 'A', _key: 0, d1: 0, d2: 0, d3: 0, lp: 0, rarc: 0, lc: 0, thread: 0 };
+    editCh = { end: end, form: 'A', custom: false, _key: 0, d1: 0, d2: 0, d3: 0, d4: 0, d5: 0, b: 0, rr: 0, t: 0, t1: 0, t2: 0, t3: 0, t4: 0, t5: 0 };
     editChIdx = -1;
     openChForm(); shaftUpdate();
 });
@@ -1516,7 +1634,7 @@ cEndSel.addEventListener('change', function () {
 cTypeSel.addEventListener('change', function () {
     if (!editCh) return;
     editCh.form = cTypeSel.value;
-    syncChSize(); shaftUpdate();
+    syncChSize(true); shaftUpdate();   // nueva forma → rellena sus cotas aunque esté en modo editar
 });
 csizeSel.addEventListener('change', function () {
     if (!editCh) return;
@@ -1526,11 +1644,18 @@ csizeSel.addEventListener('change', function () {
     }
     shaftUpdate();
 });
+if (chEditChk) chEditChk.addEventListener('change', function () {
+    if (!editCh) return;
+    editCh.custom = chEditChk.checked;   // desbloquea/rebloquea las cotas del detalle
+    renderChDetail();
+});
 
 function openChForm() {
     cEndSel.value = String(editCh.end);
     cTypeSel.value = editCh.form;
-    syncChSize();
+    if (chEditChk) chEditChk.checked = !!editCh.custom;
+    syncChSize();               // recomienda por Ø y rellena el detalle
+    renderChDetail();
     chFormEl.classList.remove('hidden');
     btnAddCh.classList.add('hidden');
     btnChDel.style.display = editChIdx >= 0 ? '' : 'none';
@@ -1546,7 +1671,7 @@ function renderChList() {
     var html = '';
     for (var i = 0; i < shaftChs.length; i++) {
         var c = shaftChs[i];
-        var size = c.form === 'D' ? 'M' + c.thread : 'd1 ' + fmt(c.d1);
+        var size = chIsThreaded(c.form) ? 'M' + fmt(c.d1) : 'd1 ' + fmt(c.d1);
         html += '<div class="keyitem' + (i === editChIdx ? ' editing' : '') + '" data-ch="' + i + '">' +
             '<span>' + (i + 1) + ' · ' + c.form + ' ' + size + ' · ' +
             (c.end === 0 ? 'extremo izq.' : 'extremo der.') + ' · prof. ' + fmt(chDepth(c)) + '</span>' +
@@ -1569,26 +1694,22 @@ function renderChList() {
         });
     }
 }
-// puntos del semiperfil superior (boca → punta), x absoluto en mm — para el dibujo del alzado
+// puntos del semiperfil superior (boca → punta), x absoluto en mm — para el dibujo del alzado.
+// Tesela el arco (R/DR) del perfil que devuelve chProfile (fuente única, espejo del host).
 function chProfilePts(c) {
     var total = shaftTotal(), xf = c.end === 0 ? 0 : total, sign = c.end === 0 ? 1 : -1;
-    var r1 = c.d1 / 2, r2 = c.d2 / 2, r3 = (c.d3 || 0) / 2, tip = r1 / CH_TAN60, pts = [];
-    function push(p, r) { pts.push({ x: xf + sign * p, r: r }); }
-    if (c.form === 'D') {
-        var hp = r3 > r2 ? (r3 - r2) / CH_TAN60 : 0;
-        push(0, r3); push(hp, r2); push(hp + c.lc, r2); push(hp + c.lc, r1);
-        push(hp + c.lc + c.lp, r1); push(hp + c.lc + c.lp + tip, 0);
-    } else if (c.form === 'R') {
-        var hR = chArcFlank(c), cx = hR, cy = r1 + c.rarc;
-        var a0 = Math.atan2(r2 - cy, 0 - cx), a1 = Math.atan2(r1 - cy, hR - cx), N = 8;
-        for (var i = 0; i <= N; i++) { var a = a0 + (a1 - a0) * i / N; push(cx + c.rarc * Math.cos(a), cy + c.rarc * Math.sin(a)); }
-        push(hR + c.lp, r1); push(hR + c.lp + tip, 0);
-    } else {
-        var hpB = (c.form === 'B' && r3 > r2) ? (r3 - r2) / CH_TAN60 : 0, hc = (r2 - r1) / CH_TAN30;
-        if (c.form === 'B') push(0, r3);
-        push(hpB, r2); push(hpB + hc, r1); push(hpB + hc + c.lp, r1); push(hpB + hc + c.lp + tip, 0);
+    var pr = chProfile(c), v = pr.v, out = [];
+    for (var i = 0; i < v.length; i++) {
+        if (i === pr.arcSeg && pr.arcR > 0) {
+            var xa = v[i - 1][0], ya = v[i - 1][1], xb = v[i][0], yb = v[i][1];
+            var cx = xb, cy = yb + pr.arcR;
+            var a0 = Math.atan2(ya - cy, xa - cx), a1 = Math.atan2(yb - cy, xb - cx), N = 8;
+            for (var k = 1; k <= N; k++) { var a = a0 + (a1 - a0) * k / N; out.push({ x: xf + sign * (cx + pr.arcR * Math.cos(a)), r: cy + pr.arcR * Math.sin(a) }); }
+        } else {
+            out.push({ x: xf + sign * v[i][0], r: v[i][1] });
+        }
     }
-    return pts;
+    return out;
 }
 
 // ---- render / estado ------------------------------------------------------
@@ -1710,7 +1831,7 @@ function shaftUpdate() {
             if (cmsg) { shaftErrEl.textContent = cmsg; }
             else {
                 shaftErrEl.className = 'err ok';
-                shaftErrEl.textContent = 'Punto ' + editCh.form + (editCh.form === 'D' ? ' M' + editCh.thread : ' d1 ' + fmt(editCh.d1)) +
+                shaftErrEl.textContent = 'Punto ' + editCh.form + (chIsThreaded(editCh.form) ? ' M' + fmt(editCh.d1) : ' d1 ' + fmt(editCh.d1)) +
                     ' · ' + (editCh.end === 0 ? 'extremo izq.' : 'extremo der.') +
                     ' · boca Ø' + fmt(chMouth(editCh)) + ' · prof. ' + fmt(chDepth(editCh)) + ' mm';
             }
@@ -1723,6 +1844,7 @@ function shaftUpdate() {
             }
             shaftNextBtn.disabled = cbad !== null;
         }
+        drawChSection();
     }
     drawShaft();
 }
@@ -1950,7 +2072,7 @@ function drawShaft() {
     for (var ci = 0; ci < allChs.length; ci++) {
         if (editCh && ci === editChIdx) continue;   // en edición se dibuja la copia roja, no el original
         var cv = allChs[ci];
-        if (!(cv.d1 > 0) || !(cv.d2 > cv.d1) || !(cv.lp > 0)) continue;
+        if (!(chMouth(cv) > 0) || !(chDepth(cv) > 0)) continue;
         var cEdit = editCh && ci === allChs.length - 1;
         var ccol = cEdit ? RED : INK, cw = cEdit ? 1.8 : 1.2;
         var pp = chProfilePts(cv), topArr = [], botArr = [];
@@ -2052,6 +2174,23 @@ function drawShaft() {
                 }
             }
         }
+    } else if (editCh) {
+        // punto de centrado en edición: cota de profundidad (axial, cara → punta) y Ø de
+        // boca (radial en el carril del extremo), mismo estilo que las cotas del paso 1
+        var chDep = chDepth(editCh), chMth = chMouth(editCh);
+        if (chDep > 0 && chMth > 0) {
+            var chXf = editCh.end === 0 ? 0 : total, chSign = editCh.end === 0 ? 1 : -1;
+            var xFace = x0 + chXf * sc, xTip = x0 + (chXf + chSign * chDep) * sc;
+            var rMouth = chMth * sc / 2;
+            // profundidad: cota horizontal bajo la pieza (cara del extremo → punta sobre el eje)
+            var yDep = boxBot + 24;
+            out += LINE(xFace, cy + rMouth, xFace, yDep, INK, 1) + LINE(xTip, cy, xTip, yDep, INK, 1);
+            out += hDim(Math.min(xFace, xTip), Math.max(xFace, xTip), yDep, 'prof. = ' + fmt(chDep));
+            // Ø de boca: cota vertical en el carril del extremo (fuera de la pieza)
+            var xQc = editCh.end === 0 ? x0 - 40 : x0 + total * sc + 40;
+            out += LINE(xFace, cy - rMouth, xQc, cy - rMouth, INK, 1) + LINE(xFace, cy + rMouth, xQc, cy + rMouth, INK, 1);
+            out += vDim(cy - rMouth, cy + rMouth, xQc, 'Ø boca ' + fmt(chMth));
+        }
     }
 
     var vb = shaftViewBox();
@@ -2099,4 +2238,110 @@ function drawKeySection() {
     out += TEXT(cx, H - 4, 'Sección · Ø' + fmt(refd) + ' · fondo Ø' + fmt(2 * rf) + (cnt > 1 ? ' · ' + cnt + ' uds' : ''), '#5A6068', false);
 
     keySectionEl.innerHTML = mk('svg', { viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'xMidYMid meet' }, out);
+}
+
+// puntos del semiperfil del punto de centrado en coords locales (x = prof. desde la
+// cara 0..profundidad, r = radio), con el arco teselado — espejo de chProfilePts sin el
+// traslado al extremo del eje. Base del dibujo de la sección del paso 5.
+function chProfileLocalPts(c) {
+    var pr = chProfile(c), v = pr.v, out = [];
+    for (var i = 0; i < v.length; i++) {
+        if (i === pr.arcSeg && pr.arcR > 0) {
+            var xa = v[i - 1][0], ya = v[i - 1][1], xb = v[i][0], yb = v[i][1];
+            var ccx = xb, ccy = yb + pr.arcR;
+            var a0 = Math.atan2(ya - ccy, xa - ccx), a1 = Math.atan2(yb - ccy, xb - ccx), N = 8;
+            for (var k = 1; k <= N; k++) { var a = a0 + (a1 - a0) * k / N; out.push({ x: ccx + pr.arcR * Math.cos(a), r: ccy + pr.arcR * Math.sin(a) }); }
+        } else out.push({ x: v[i][0], r: v[i][1] });
+    }
+    return out;
+}
+
+// TODAS las cotas de la forma, con su geometría (mismos cálculos que chProfile). dia = Ø
+// (radio + etiqueta), de mayor a menor; len = profundidades desde una referencia axial x0.
+function chDims(c) {
+    var dia = [], len = [], note = '';
+    if (chIsThreaded(c.form)) {
+        var rc = c.d2 / 2, r3 = c.d3 / 2, r4 = c.d4 / 2, r5 = c.d5 / 2, s = c.form === 'DS' ? c.t5 : 0;
+        if (c.form === 'DS') dia.push({ r: r5, name: 'd5', val: c.d5 });
+        dia.push({ r: r4, name: 'd4', val: c.d4 });
+        dia.push({ r: r3, name: 'd3', val: c.d3 });
+        dia.push({ r: rc, name: 'd2', val: c.d2 });
+        if (c.d1 / 2 > rc) dia.push({ r: c.d1 / 2, name: 'M' + fmt(c.d1), val: null, dash: true });
+        if (c.form === 'DS') len.push({ x0: 0, x: s, name: 't5', val: c.t5 });
+        len.push({ x0: s, x: s + c.t4, name: 't4', val: c.t4 });
+        len.push({ x0: s, x: s + c.t3, name: 't3', val: c.t3 });
+        len.push({ x0: s, x: s + c.t1, name: 't1', val: c.t1 });
+        len.push({ x0: s, x: s + c.t2, name: 't2', val: c.t2 });
+        if (c.form === 'DR') note = 'R = ' + fmt(c.rr);
+    } else {
+        var r1 = c.d1 / 2, r2 = c.d2 / 2, prot = 0;
+        if (c.form === 'C') {
+            var q4 = c.d4 / 2, q5 = c.d5 / 2; prot = (q5 - q4) / CH_TAN30;
+            dia.push({ r: q5, name: 'd5', val: c.d5 }, { r: q4, name: 'd4', val: c.d4 }, { r: r2, name: 'd2', val: c.d2 }, { r: r1, name: 'd1', val: c.d1 });
+            len.push({ x0: 0, x: prot, name: 'b', val: c.b });
+        } else if (c.form === 'B') {
+            var b3 = c.d3 / 2; prot = (b3 - r2) / CH_TAN60;
+            dia.push({ r: b3, name: 'd3', val: c.d3 }, { r: r2, name: 'd2', val: c.d2 }, { r: r1, name: 'd1', val: c.d1 });
+            len.push({ x0: 0, x: prot, name: 'b', val: c.b });
+        } else {
+            dia.push({ r: r2, name: 'd2', val: c.d2 }, { r: r1, name: 'd1', val: c.d1 });
+            if (c.form === 'R') note = 'R = ' + fmt(chArcR(c));
+        }
+        len.push({ x0: 0, x: c.t, name: 't', val: c.t });
+    }
+    return { dia: dia, len: len, note: note };
+}
+
+// sección axial del punto de centrado (paso 5) con TODAS las cotas: semiperfil taladrado en
+// la cara del extremo, espejado; Ø en carriles verticales a la izquierda y profundidades en
+// filas horizontales debajo. Auto-escala a las medidas reales (como la sección de la chaveta).
+function drawChSection() {
+    if (!chSectionEl) return;
+    if (!editCh) { chSectionEl.innerHTML = ''; return; }
+    var c = editCh, D = chDepth(c), mouthR = chMouth(c) / 2;
+    if (!(D > 0) || !(mouthR > 0)) { chSectionEl.innerHTML = ''; return; }
+    var dims = chDims(c);
+    dims.dia.sort(function (a, b) { return b.r - a.r; });   // Ø mayor primero (fila superior)
+    dims.len.sort(function (a, b) { return a.x - b.x; });   // profundidad menor primero (fila superior)
+
+    var padT = 16, plotH = 104, colW = 92, x0 = colW + 12, plotW = 150, padR = 96;
+    var W = x0 + plotW + padR, padB = 24 + dims.len.length * 15, H = padT + plotH + padB;
+    var axisY = padT + plotH / 2;
+
+    // radio del bloque = radio del extremo del eje (contexto), acotado para no aplastar el taladro
+    var lvd = (c.end === 0 ? shaftLevels[0].d : shaftLevels[shaftLevels.length - 1].d) || (mouthR * 2.4);
+    var blockR = Math.max(mouthR * 1.2, Math.min(lvd / 2, mouthR * 2.2));
+    var s = Math.min(plotW / D, (plotH / 2 - 6) / blockR);
+    function PX(x) { return x0 + x * s; }
+    var bTop = axisY - blockR * s, bBot = axisY + blockR * s, xEnd = PX(D) + Math.min(16, plotW * 0.12);
+
+    var pts = chProfileLocalPts(c), top = [], bot = [];
+    for (var i = 0; i < pts.length; i++) { top.push([PX(pts[i].x), axisY - pts[i].r * s]); bot.push([PX(pts[i].x), axisY + pts[i].r * s]); }
+
+    var out = LINE(x0 - 8, axisY, xEnd + 8, axisY, INK, 0.8, '7,3,2,3');   // eje
+    // sólido: bordes del bloque + cara (interrumpida por la boca) + perfil del taladro (espejo)
+    out += LINE(x0, bTop, xEnd, bTop, INK, 1.4) + LINE(xEnd, bTop, xEnd, bBot, INK, 1.4) + LINE(x0, bBot, xEnd, bBot, INK, 1.4);
+    out += LINE(x0, bTop, x0, axisY - mouthR * s, INK, 1.4) + LINE(x0, bBot, x0, axisY + mouthR * s, INK, 1.4);
+    out += PATH(top, INK, 1.4) + PATH(bot, INK, 1.4);
+
+    // Ø: columna de llamadas a la izquierda (una fila por diámetro, mayor arriba) con directriz
+    // a la boca — evita apilar cotas verticales concéntricas ilegibles
+    for (var d = 0; d < dims.dia.length; d++) {
+        var e = dims.dia[d], rowY = padT + 6 + d * 15;
+        var lbl = e.val != null ? ('Ø' + e.name + ' = ' + fmt(e.val)) : (e.name + ' (rosca)');
+        var edash = e.dash ? '4,3' : null, ty = axisY - e.r * s, lead = 6 + lbl.length * 6 + 4;
+        out += TEXTL(6, rowY + 4, lbl, INK);
+        out += LINE(lead, rowY, x0 - 4, ty, INK, 0.7, edash) + POLY([[x0, ty], [x0 - 4, ty - 2], [x0 - 4, ty + 2]], INK);
+    }
+    // profundidades: filas de cota horizontales debajo del bloque (la más corta arriba)
+    for (var l = 0; l < dims.len.length; l++) {
+        var g = dims.len[l], rowY2 = bBot + 16 + l * 15, xa = PX(g.x0), xb = PX(g.x);
+        out += LINE(xa, bBot, xa, rowY2, INK, 0.8) + LINE(xb, bBot, xb, rowY2, INK, 0.8);
+        out += hDim(xa, xb, rowY2, g.name + ' = ' + fmt(g.val));
+    }
+    // pie: norma, forma, cotas no dibujadas (R) y profundidad total
+    out += TEXTL(6, H - 5, 'DIN 332-' + (chIsThreaded(c.form) ? '2' : '1') + ' ' + c.form +
+        (dims.note ? ' · ' + dims.note : '') + ' · prof. ' + fmt(D) + ' · boca Ø' + fmt(chMouth(c)), '#5A6068');
+
+    chSectionEl.innerHTML = mk('svg', { viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'xMidYMid meet' }, out);
 }

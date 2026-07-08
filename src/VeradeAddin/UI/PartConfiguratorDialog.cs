@@ -222,19 +222,24 @@ namespace VeradeAddin.UI
                 });
             }
 
-            // C center points × 9 values: end|form|d1|d2|d3|lp|rarc|lc|thread (form: "A"|"B"|"R"|"D").
+            // C center points × 15 values:
+            //   end|form|d1|d2|d3|d4|d5|b|R|t|t1|t2|t3|t4|t5   (form: A|B|C|R|D|DR|DS).
             if (!int.TryParse(parts[chBase], out int chCount) || chCount < 0) return;
-            if (parts.Length != chBase + 1 + 9 * chCount) return;
+            if (parts.Length != chBase + 1 + 15 * chCount) return;
             for (int c = 0; c < chCount; c++)
             {
-                int p = chBase + 1 + 9 * c;
+                int p = chBase + 1 + 15 * c;
                 string form = parts[p + 1];
                 if (!int.TryParse(parts[p], out int end) || (end != 0 && end != 1) ||
-                    (form != "A" && form != "B" && form != "R" && form != "D") ||
-                    !TryParse(parts[p + 2], out double d1) || !TryParse(parts[p + 3], out double d2) ||
-                    !TryParse(parts[p + 4], out double d3) || !TryParse(parts[p + 5], out double clp) ||
-                    !TryParse(parts[p + 6], out double crArc) || !TryParse(parts[p + 7], out double clc) ||
-                    !TryParse(parts[p + 8], out double cthr))
+                    (form != "A" && form != "B" && form != "C" && form != "R" &&
+                     form != "D" && form != "DR" && form != "DS") ||
+                    !TryParse(parts[p + 2], out double cd1) || !TryParse(parts[p + 3], out double cd2) ||
+                    !TryParse(parts[p + 4], out double cd3) || !TryParse(parts[p + 5], out double cd4) ||
+                    !TryParse(parts[p + 6], out double cd5) || !TryParse(parts[p + 7], out double cb) ||
+                    !TryParse(parts[p + 8], out double crr) || !TryParse(parts[p + 9], out double ct) ||
+                    !TryParse(parts[p + 10], out double ct1) || !TryParse(parts[p + 11], out double ct2) ||
+                    !TryParse(parts[p + 12], out double ct3) || !TryParse(parts[p + 13], out double ct4) ||
+                    !TryParse(parts[p + 14], out double ct5))
                 {
                     return;
                 }
@@ -242,13 +247,19 @@ namespace VeradeAddin.UI
                 {
                     End = end,
                     Form = form,
-                    PilotDiameterMm = d1,
-                    CountersinkDiameterMm = d2,
-                    ProtectDiameterMm = d3,
-                    PilotDepthMm = clp,
-                    ArcRadiusMm = crArc,
-                    CounterboreDepthMm = clc,
-                    ThreadDiameterMm = cthr
+                    D1Mm = cd1,
+                    D2Mm = cd2,
+                    D3Mm = cd3,
+                    D4Mm = cd4,
+                    D5Mm = cd5,
+                    BMm = cb,
+                    RadiusMm = crr,
+                    TMm = ct,
+                    T1Mm = ct1,
+                    T2Mm = ct2,
+                    T3Mm = ct3,
+                    T4Mm = ct4,
+                    T5Mm = ct5
                 });
             }
 
