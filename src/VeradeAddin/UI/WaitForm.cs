@@ -41,9 +41,12 @@ namespace VeradeAddin.UI
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing)
+            // NOTE: do NOT call Close() here. For a modeless form shown with Show(), Close() disposes the
+            // form, which re-enters Dispose() -> Close() -> ... causing an InvalidOperationException that
+            // takes down SolidWorks. Just hide it and let base.Dispose release the window handle.
+            if (disposing && !IsDisposed && IsHandleCreated)
             {
-                try { Close(); } catch { /* best-effort close */ }
+                try { Hide(); } catch { /* best-effort hide */ }
             }
             base.Dispose(disposing);
         }

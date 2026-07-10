@@ -28,6 +28,7 @@ namespace VeradeAddin.Services
         private const double EdgeGridCellSize = 0.01;        // metres
         private const double PerpendicularTolerance = 0.002;
         private const double OnFaceTolerance = 1e-6;
+        private const double BoxTolerance = 1e-5;            // face-box inflation for the on-face pre-check
 
         // Session-scoped memory of which edges this command coloured, per drawing view (by name). Each
         // edge is keyed by its model-space midpoint so "Líneas a negro" can restore ONLY those edges.
@@ -162,6 +163,7 @@ namespace VeradeAddin.Services
             var partModel = view.ReferencedDocument as IModelDoc2;
             object[] rms = null;
             List<object> silhouettes = null;
+            List<EdgeProbe> probes = null; // synthetic path: visible edges + class + midpoint, ONCE
 
             try
             {
@@ -191,12 +193,17 @@ namespace VeradeAddin.Services
                     ClearActiveSelectionFilters();
                     _sw.SetApplySelectionFilter(false);
 
+                    // Synthetic views classify every visible edge against the grids. Enumerating the edges
+                    // and computing class + midpoint is ~7 COM calls per edge — doing it per colour mapping
+                    // multiplied the cost by the number of colours. Probe them ONCE here.
+                    if (!realView) probes = CollectEdgeProbes(view, viewNormal);
+
                     foreach (var map in request.Mappings)
                     {
                         try
                         {
                             ColorMappingInView(drawing, model, selMgr, selData, view, partModel, partPath,
-                                map, result, painted, viewNormal, realView, isoView, rms, silhouettes);
+                                map, result, painted, viewNormal, realView, isoView, rms, silhouettes, probes);
                         }
                         catch (Exception ex)
                         {
@@ -222,6 +229,7 @@ namespace VeradeAddin.Services
                 if (oldFilters != null) _sw.SetSelectionFilters(oldFilters, true);
                 _sw.SetApplySelectionFilter(oldApply);
                 if (suspended) selMgr.ResumeSelectionList2(false);
+                if (probes != null) foreach (var p in probes) ComRelease.Release(p.Edge);
                 if (silhouettes != null) foreach (var os in silhouettes) ComRelease.Release(os);
                 if (rms != null) foreach (var o in rms) ComRelease.Release(o);
                 ComRelease.Release(partModel);
@@ -425,7 +433,8 @@ namespace VeradeAddin.Services
         private void ColorMappingInView(IDrawingDoc drawing, IModelDoc2 drawingModel, ISelectionMgr selMgr,
             SelectData selData, IView view, IModelDoc2 partModel, string partPath, EdgeColorMapping map,
             EdgeColoringResult result, HashSet<(long, long, long)> painted,
-            Vec3 viewNormal, bool realView, bool isoView, object[] rms, List<object> silhouettes)
+            Vec3 viewNormal, bool realView, bool isoView, object[] rms, List<object> silhouettes,
+            List<EdgeProbe> probes)
         {
             int targetSw = RgbToSwInt(map.TargetR, map.TargetG, map.TargetB);
 
@@ -449,7 +458,7 @@ namespace VeradeAddin.Services
 
                 ColorOneView(drawing, drawingModel, selMgr, selData, view,
                     planar, cylinder, cone, planarGrid, cylinderGrid, coneGrid, targetSw, result, painted,
-                    viewNormal, realView, isoView);
+                    viewNormal, realView, isoView, probes);
 
                 // Silhouette edges (cylinder/cone outlines) have no model edge — match them by midpoint
                 // against the once-collected silhouette list, scoped to THIS view.
@@ -473,7 +482,7 @@ namespace VeradeAddin.Services
             Dictionary<(int, int, int), List<FaceData>> cylinderGrid,
             Dictionary<(int, int, int), List<FaceData>> coneGrid,
             int targetSw, EdgeColoringResult result, HashSet<(long, long, long)> painted,
-            Vec3 viewNormal, bool real, bool iso)
+            Vec3 viewNormal, bool real, bool iso, List<EdgeProbe> probes)
         {
             // Selecting an entity inside a drawing view needs the view context, otherwise
             // AddSelectionListObject can't resolve a raw model edge to the view and fails.
@@ -506,21 +515,16 @@ namespace VeradeAddin.Services
             }
             else
             {
-                foreach (var oedge in VisibleEdges(view))
+                // Probes (edge + class + midpoint) were collected ONCE by the caller; per colour this is
+                // now only the grid test. Probe edges are owned/released by ApplyEdgeColoring.
+                foreach (var p in probes)
                 {
-                    int kind = EdgeColorClass(oedge, viewNormal);
-                    if (kind < 0) { ComRelease.Release(oedge); continue; }
-
-                    double mx, my, mz;
-                    if (!EdgeMidpoint(oedge, out mx, out my, out mz)) { ComRelease.Release(oedge); continue; }
-
-                    var grid = kind == 0 ? planarGrid : (kind == 1 ? cylinderGrid : coneGrid);
-                    if (PointLiesOnGridFace(mx, my, mz, grid))
+                    var grid = p.Kind == 0 ? planarGrid : (p.Kind == 1 ? cylinderGrid : coneGrid);
+                    if (PointLiesOnGridFace(p.X, p.Y, p.Z, grid))
                     {
-                        selMgr.AddSelectionListObject(oedge, selData);
-                        painted.Add(MidpointKey(mx, my, mz));
+                        selMgr.AddSelectionListObject(p.Edge, selData);
+                        painted.Add(MidpointKey(p.X, p.Y, p.Z));
                     }
-                    ComRelease.Release(oedge);
                 }
             }
 
@@ -906,6 +910,34 @@ namespace VeradeAddin.Services
             public double[] Box;
         }
 
+        // One visible edge of the view, pre-classified: colour class + model-space midpoint. Collected
+        // once per run (both are several COM calls per edge) and reused by every colour mapping.
+        private sealed class EdgeProbe
+        {
+            public object Edge;
+            public int Kind;        // 0 planar, 1 cylinder, 2 cone
+            public double X, Y, Z;  // model-space midpoint
+        }
+
+        // Visible edges of the view with class + midpoint, skipping edges that can never be coloured
+        // (class -1 or no midpoint). Caller releases every probe's Edge.
+        private static List<EdgeProbe> CollectEdgeProbes(IView view, Vec3 viewNormal)
+        {
+            var probes = new List<EdgeProbe>();
+            foreach (var oedge in VisibleEdges(view))
+            {
+                int kind = EdgeColorClass(oedge, viewNormal);
+                double mx, my, mz;
+                if (kind < 0 || !EdgeMidpoint(oedge, out mx, out my, out mz))
+                {
+                    ComRelease.Release(oedge);
+                    continue;
+                }
+                probes.Add(new EdgeProbe { Edge = oedge, Kind = kind, X = mx, Y = my, Z = mz });
+            }
+            return probes;
+        }
+
         private struct Vec3
         {
             public double X;
@@ -985,12 +1017,27 @@ namespace VeradeAddin.Services
 
             foreach (var f in faces)
             {
+                // Bounding-box reject FIRST. GetClosestPointOn evaluates the UNDERLYING surface (untrimmed
+                // plane/cylinder), so a coplanar/coaxial edge up to a grid cell away from the real face
+                // reported distance 0 and was falsely coloured. A point on the actual face always lies
+                // inside its box; outside the box it can only be on the untrimmed extension. Also skips
+                // the COM call for every rejected face.
+                if (!PointInBox(x, y, z, f.Box)) continue;
+
                 var cp = f.Face.GetClosestPointOn(x, y, z) as double[];
                 if (cp == null || cp.Length < 3) continue;
                 double dx = cp[0] - x, dy = cp[1] - y, dz = cp[2] - z;
                 if (dx * dx + dy * dy + dz * dz < OnFaceTolerance * OnFaceTolerance) return true;
             }
             return false;
+        }
+
+        private static bool PointInBox(double x, double y, double z, double[] box)
+        {
+            if (box == null || box.Length < 6) return false;
+            return x >= box[0] - BoxTolerance && x <= box[3] + BoxTolerance &&
+                   y >= box[1] - BoxTolerance && y <= box[4] + BoxTolerance &&
+                   z >= box[2] - BoxTolerance && z <= box[5] + BoxTolerance;
         }
 
         private static IEnumerable<object> FaceEdges(Face2 face)

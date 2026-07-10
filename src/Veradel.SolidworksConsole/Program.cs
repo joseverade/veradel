@@ -9,19 +9,32 @@ namespace Veradel.SolidworksConsole
     {
         public static void Main(string[] args)
         {
-
             SldWorks swApp = GetSolidWorksApplication();
+
+            // Default action: debug "Colorear aristas". Select the offending edge(s) in the drawing view
+            // first, then run this. Pass "chomp" as an argument to run the old part-creation demo instead.
+            if (args != null && args.Length > 0 &&
+                string.Equals(args[0], "chomp", System.StringComparison.OrdinalIgnoreCase))
+            {
+                RunChompDemo(swApp);
+                return;
+            }
+
+            new EdgeColoringDebug(swApp).Run();
+        }
+
+        private static void RunChompDemo(SldWorks swApp)
+        {
             #region BoltCreation
             /*
              BoltCreation create = new BoltCreation(swApp,30,5,20,30);
-            
+
             create.SetGroove(22, 1, 18);
             create.SetChamfer(20, 1);
             create.CreateBolt();
              */
             #endregion
 
-            
             ChompCreator chomp = new ChompCreator(swApp);
             chomp.SetBody(440, 70);
 
@@ -32,7 +45,6 @@ namespace Veradel.SolidworksConsole
             chomp.SetSecondBodyCut(5, 410);
             chomp.SetChamferBodyCut(9.9, 10.13, 9.84, 5.85);
             chomp.Create();
-             
         }
 
 

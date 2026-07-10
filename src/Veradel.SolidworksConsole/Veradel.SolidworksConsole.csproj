@@ -32,13 +32,21 @@
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
+  <!-- SolidWorks interop folder differs per machine ("SOLIDWORKS Corp 2021" vs "SOLIDWORKS Corp").
+       Auto-detect whichever exists (same logic as VeradeAddin.csproj) so the console builds on every PC. -->
+  <PropertyGroup>
+    <SwBase>..\..\..\..\..\..\Program Files</SwBase>
+    <SwDir Condition="'$(SwDir)' == '' And Exists('$(SwBase)\SOLIDWORKS Corp 2021\SOLIDWORKS\SolidWorks.Interop.sldworks.dll')">$(SwBase)\SOLIDWORKS Corp 2021\SOLIDWORKS</SwDir>
+    <SwDir Condition="'$(SwDir)' == '' And Exists('$(SwBase)\SOLIDWORKS Corp\SOLIDWORKS\SolidWorks.Interop.sldworks.dll')">$(SwBase)\SOLIDWORKS Corp\SOLIDWORKS</SwDir>
+    <SwDir Condition="'$(SwDir)' == ''">$(SwBase)\SOLIDWORKS Corp\SOLIDWORKS</SwDir>
+  </PropertyGroup>
   <ItemGroup>
     <Reference Include="SolidWorks.Interop.sldworks">
-      <HintPath>..\..\..\..\..\..\Program Files\SOLIDWORKS Corp\SOLIDWORKS\SolidWorks.Interop.sldworks.dll</HintPath>
+      <HintPath>$(SwDir)\SolidWorks.Interop.sldworks.dll</HintPath>
       <EmbedInteropTypes>True</EmbedInteropTypes>
     </Reference>
     <Reference Include="SolidWorks.Interop.swconst">
-      <HintPath>..\..\..\..\..\..\Program Files\SOLIDWORKS Corp\SOLIDWORKS\SolidWorks.Interop.swconst.dll</HintPath>
+      <HintPath>$(SwDir)\SolidWorks.Interop.swconst.dll</HintPath>
       <EmbedInteropTypes>True</EmbedInteropTypes>
     </Reference>
     <Reference Include="System" />
@@ -51,6 +59,7 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="EdgeColoringDebug.cs" />
     <Compile Include="PartCreation\BoltCreation.cs" />
     <Compile Include="PartCreation\ChompCreator.cs" />
     <Compile Include="Program.cs" />
