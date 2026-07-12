@@ -87,9 +87,9 @@ namespace VeradeAddin.UI
             }
         }
 
-        public PartConfiguratorSelection ShowPartConfigurator()
+        public PartConfiguratorSelection ShowPartConfigurator(string preloadMessage = null)
         {
-            using (var dialog = new PartConfiguratorDialog())
+            using (var dialog = new PartConfiguratorDialog(preloadMessage))
             {
                 return dialog.ShowDialog() == DialogResult.OK ? dialog.Selection : null;
             }

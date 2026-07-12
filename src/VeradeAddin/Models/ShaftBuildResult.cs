@@ -30,5 +30,14 @@ namespace VeradeAddin.Models
 
         /// <summary>DIN 332 centre points (puntos de centrado) cut into the end faces.</summary>
         public int CenterHoleCount { get; set; }
+
+        /// <summary>Cosmetic metric threads (roscas cosméticas) applied to level cylinders.</summary>
+        public int ThreadCount { get; set; }
+
+        /// <summary>Fillet groups (redondeos) applied to corner rings.</summary>
+        public int FilletCount { get; set; }
+
+        /// <summary>45° chamfer groups (chaflanes) applied to corner rings.</summary>
+        public int ChamferCount { get; set; }
     }
 }

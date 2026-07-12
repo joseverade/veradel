@@ -1,10 +1,14 @@
 // Lógica del configurador de pieza (Bulón + Eje). Cargado por configurator.html.
+// Las DOS piezas usan el MISMO asistente (el motor del eje); la tarjeta del
+// catálogo solo fija wizMode: 'S' = eje (8 pasos) o 'B' = bulón (pasos 1, 3 y 8
+// con el cuerpo fijo en 2 niveles cabeza + vástago). Ver el bloque ASISTENTE.
 //
 // La tabla DIN 471 la inyecta el host en window.DIN471 antes de este script
 // (ver PartConfiguratorDialog.AddScriptToExecuteOnDocumentCreatedAsync). Si abres el .html
-// suelto en el navegador, window.DIN471 no existe y se usa una tabla vacía.
+// suelto en el navegador, window.DIN471 no existe y se usa una tabla vacía. Para re-editar
+// una pieza registrada, el host inyecta además window.PRELOAD (ver loadPreload al final).
 //
-// La vista previa de la izquierda es un <svg> que construye draw(): TODO atributo se entrecomilla
+// La vista previa de la izquierda es un <svg> que construye drawShaft(): TODO atributo se entrecomilla
 // vía mk(); un valor sin comillas antes de '/>' rompe el autocierre de la etiqueta y esta se traga
 // a sus hermanos (ese era el bug del render). Nunca escribas etiquetas SVG a mano: usa mk()/LINE/RECT/PATH/POLY/TEXT.
 
@@ -95,166 +99,47 @@ var CH_REC_D1 = [
     { d1: 8.0, max: 115 }, { d1: 10.0, max: 150 }, { d1: 12.5, max: Infinity }
 ];
 function chIsThreaded(f) { return f === 'D' || f === 'DR' || f === 'DS'; }
+
+// Pasos métricos ISO por Ø nominal (get-it-made.co.uk/resources/metric-thread-chart,
+// consultada 2026-07-12): el PRIMERO de cada lista es el paso grueso (preseleccionado);
+// el resto, finos. Ø sin entrada = métrica no estándar → paso solo a mano (paso 6).
+var METRIC_PITCHES = {
+    1: [0.25], 1.1: [0.25], 1.2: [0.25], 1.4: [0.3, 0.2], 1.6: [0.35, 0.2], 1.8: [0.35, 0.2],
+    2: [0.4, 0.25], 2.2: [0.45, 0.25], 2.5: [0.45, 0.35], 3: [0.5, 0.35], 3.5: [0.6, 0.35],
+    4: [0.7, 0.5], 4.5: [0.75, 0.5], 5: [0.8, 0.5], 5.5: [0.5], 6: [1, 0.75], 7: [1, 0.75],
+    8: [1.25, 1, 0.75], 9: [1.25, 1, 0.75], 10: [1.5, 1.25, 1, 0.75], 11: [1.5, 1, 0.75],
+    12: [1.75, 1.5, 1.25, 1], 14: [2, 1.5, 1.25, 1], 15: [1.5, 1], 16: [2, 1.5, 1], 17: [1.5, 1],
+    18: [2.5, 2, 1.5, 1], 20: [2.5, 2, 1.5, 1], 22: [2.5, 2, 1.5, 1], 24: [3, 2, 1.5, 1],
+    25: [2, 1.5, 1], 27: [3, 2, 1.5, 1], 28: [2, 1.5, 1], 30: [3.5, 3, 2, 1.5, 1],
+    32: [2, 1.5], 33: [3.5, 3, 2, 1.5], 35: [2, 1.5], 36: [4, 3, 2, 1.5], 39: [4, 3, 2, 1.5],
+    40: [3, 2, 1.5], 42: [4.5, 4, 3, 2, 1.5], 45: [4, 3, 2, 1.5], 48: [5, 4, 3, 2, 1.5],
+    50: [3, 2, 1.5], 52: [5, 4, 3, 2, 1.5], 55: [4, 3, 2, 1.5], 56: [5.5, 4, 3, 2, 1.5],
+    58: [4, 3, 2, 1.5], 60: [5.5, 4, 3, 2, 1.5], 62: [4, 3, 2, 1.5], 64: [6, 4, 3, 2, 1.5], 68: [6]
+};
+// pasos estándar del Ø (clave exacta de la tabla) o [] si el Ø no es métrica estándar
+function thPitches(d) {
+    for (var k in METRIC_PITCHES) { if (Math.abs(parseFloat(k) - d) < 1e-9) return METRIC_PITCHES[k]; }
+    return [];
+}
+// Ø de núcleo (menor) de la rosca métrica exterior: d3 ≈ d − 1.226869·P (ISO 965)
+function thMinor(d, p) { return d - 1.226869 * p; }
 function chIsRadius(f) { return f === 'R' || f === 'DR'; }
 
 var catalog = document.getElementById('catalog');
-var bolt = document.getElementById('bolt');
-var s = document.getElementById('canvas');
-var step = 1;
-var STEPS = 4;
 
-var ids = ['d1', 'l1', 'd2', 'l2', 'p1', 'e1', 'd3', 'cang', 'csize'];
-var el = {};
-ids.forEach(function (k) { el[k] = document.getElementById(k); });
-var gOn = document.getElementById('gOn'), dinOn = document.getElementById('dinOn');
-var cOn = document.getElementById('cOn');
-var dinNote = document.getElementById('dinNote');
-var err = document.getElementById('err');
-var btnNext = document.getElementById('btnNext');
-var btnBack = document.getElementById('btnBack');
-var stepSub = document.getElementById('stepSub');
-
-function val(k) { var v = parseFloat(el[k].value); return isFinite(v) ? v : NaN; }
 function fmt(v) { return Math.round(v * 100) / 100; }
-function grooveOn() { return gOn.checked; }
-function chamferOn() { return cOn.checked; }
-
-document.getElementById('cardBolt').addEventListener('click', function () {
-    catalog.classList.add('hidden'); bolt.classList.remove('hidden'); step = 1; render();
-});
-
-btnBack.addEventListener('click', function () {
-    if (step > 1) {
-        // retroceder desactiva la pieza opcional del paso que se abandona
-        if (step === 3 && gOn.checked) { gOn.checked = false; document.getElementById('gFields').classList.add('off'); }
-        if (step === 4 && cOn.checked) { cOn.checked = false; document.getElementById('cFields').classList.add('off'); }
-        step--; render();
-    }
-    else { bolt.classList.add('hidden'); catalog.classList.remove('hidden'); }
-});
-
-btnNext.addEventListener('click', function () {
-    if (!stepValid()) return;
-    if (step < STEPS) { step++; render(); }
-    else { submit(); }
-});
 
 function post(msg) {
     if (window.chrome && window.chrome.webview) window.chrome.webview.postMessage(msg);
 }
 
-function submit() {
-    var g = grooveOn() ? 1 : 0, c = chamferOn() ? 1 : 0;
-    var msg = ['create', 'bolt',
-        val('d1'), val('l1'), val('d2'), val('l2'),
-        g, val('p1') || 0, val('e1') || 0, val('d3') || 0,
-        c, val('cang') || 0, val('csize') || 0].join('|');
-    post(msg);
-}
-
-// ---- búsqueda DIN 471 (fila donde d == Ø2) ----
+// ---- búsqueda DIN 471 (fila donde d == Ø del nivel) ----
 function dinLookup(d) {
     var rows = (DIN471 && DIN471.rows) ? DIN471.rows : [];
     for (var i = 0; i < rows.length; i++) {
         if (Math.abs(rows[i].d - d) < 1e-9) return rows[i];
     }
     return null;
-}
-function applyDin() {
-    var on = dinOn.checked;
-    el.d3.disabled = on; el.e1.disabled = on;
-    if (!on) { dinNote.textContent = ''; dinNote.className = 'note'; return; }
-    var d2 = val('d2'); var row = dinLookup(d2);
-    if (row) {
-        el.d3.value = row.d3; el.e1.value = row.m;
-        dinNote.textContent = 'D3=' + fmt(row.d3) + ' · E1=' + fmt(row.m);
-        dinNote.className = 'note';
-    } else {
-        el.d3.disabled = false; el.e1.disabled = false;
-        dinNote.textContent = 'Sin dato DIN 471 para Ø' + (isFinite(d2) ? fmt(d2) : '?') + ' — introduce D3 manual.';
-        dinNote.className = 'note warn';
-    }
-}
-dinOn.addEventListener('change', function () { applyDin(); update(); });
-gOn.addEventListener('change', function () {
-    document.getElementById('gFields').classList.toggle('off', !gOn.checked);
-    if (gOn.checked) applyDin();
-    update();
-});
-cOn.addEventListener('change', function () {
-    document.getElementById('cFields').classList.toggle('off', !cOn.checked);
-    update();
-});
-
-function stepValid() {
-    var d1 = val('d1'), l1 = val('l1'), d2 = val('d2'), l2 = val('l2');
-    err.className = 'err'; err.textContent = '';
-
-    if (step === 1) {
-        var ok = d1 > 0 && l1 > 0;
-        if (!ok) { err.textContent = 'Introduce Ø1 y L1 mayores que 0.'; return false; }
-        err.className = 'err ok'; err.textContent = 'Cabeza Ø' + fmt(d1) + ' × ' + fmt(l1) + ' mm';
-        return true;
-    }
-    if (step === 2) {
-        var posOk = d2 > 0 && l2 > 0;
-        var bad = d1 > 0 && d2 > 0 && d2 >= d1;
-        el.d2.classList.toggle('bad', bad);
-        if (!posOk) { err.textContent = 'Introduce Ø2 y L2 mayores que 0.'; return false; }
-        if (bad) { err.textContent = 'Ø2 debe ser menor que Ø1 (= ' + fmt(d1) + ').'; return false; }
-        err.className = 'err ok'; err.textContent = 'Vástago Ø' + fmt(d2) + ' × ' + fmt(l2) + ' mm';
-        return true;
-    }
-    if (step === 3) {
-        if (!grooveOn()) { err.className = 'err ok'; err.textContent = 'Sin ranura'; return true; }
-        var p1 = val('p1'), e1 = val('e1'), d3 = val('d3');
-        if (!(p1 > 0 && e1 > 0 && d3 > 0)) { err.textContent = 'P1, E1 y D3 deben ser mayores que 0.'; return false; }
-        if (!(d3 < d2)) { el.d3.classList.add('bad'); err.textContent = 'D3 debe ser menor que Ø2 (= ' + fmt(d2) + ').'; return false; }
-        el.d3.classList.remove('bad');
-        if (!(p1 + e1 <= l2)) { err.textContent = 'La ranura se sale del vástago (P1 + E1 ≤ L2 = ' + fmt(l2) + ').'; return false; }
-        err.className = 'err ok'; err.textContent = 'Ranura D3 ' + fmt(d3) + ' · ' + fmt(p1) + '…' + fmt(p1 + e1) + ' mm';
-        return true;
-    }
-    // paso 4
-    if (!chamferOn()) { err.className = 'err ok'; err.textContent = 'Sin chaflán · listo'; return true; }
-    var ca = val('cang'), cs = val('csize');
-    if (!(ca > 0 && ca < 90)) { err.textContent = 'El ángulo debe estar entre 0° y 90°.'; return false; }
-    if (!(cs > 0)) { err.textContent = 'La medida del chaflán debe ser mayor que 0.'; return false; }
-    var drop = cs * Math.tan(ca * Math.PI / 180);
-    if (!(drop < d2 / 2)) { err.textContent = 'El chaflán es demasiado grande para el vástago.'; return false; }
-    var limit = grooveOn() ? (val('p1') + val('e1')) : 0;
-    if (!(l2 - cs >= limit)) {
-        err.textContent = grooveOn() ? 'El chaflán se come la ranura (reduce la medida).' : 'El chaflán es más largo que el vástago.';
-        return false;
-    }
-    err.className = 'err ok'; err.textContent = 'Chaflán ' + fmt(cs) + ' × ' + fmt(ca) + '° · listo';
-    return true;
-}
-
-function render() {
-    for (var i = 1; i <= STEPS; i++) {
-        document.getElementById('grp' + i).classList.toggle('hidden', step !== i);
-        var dot = document.getElementById('dot' + i);
-        dot.className = 'dot ' + (step === i ? 'active' : (step > i ? 'done' : ''));
-    }
-    btnBack.textContent = step === 1 ? 'Volver' : 'Atrás';
-    btnNext.textContent = step === STEPS ? 'Crear' : 'Siguiente';
-    var subs = [
-        '',
-        'Paso 1 de 4 · define la cabeza (revolución completa)',
-        'Paso 2 de 4 · define el vástago · Ø2 debe ser menor que Ø1',
-        'Paso 3 de 4 · ranura opcional para anillo de retención',
-        'Paso 4 de 4 · chaflán opcional en el extremo libre'];
-    stepSub.textContent = subs[step];
-    update();
-    var focusEl = step === 1 ? el.d1 : step === 2 ? el.d2 : null;
-    if (focusEl) focusEl.focus();
-}
-
-function update() {
-    var ok = stepValid();
-    btnNext.disabled = !ok;
-    draw();
 }
 
 // --- SVG acotado (cotas): dibujo técnico negro-sobre-blanco; pieza activa en ROJO ---
@@ -309,6 +194,16 @@ function POLY(pts, col) {
 function CIRC(cx, cy, r, col, w, dash) {
     return mk('circle', { cx: n1(cx), cy: n1(cy), r: n1(r), fill: 'none', stroke: col, 'stroke-width': w, 'stroke-dasharray': dash });
 }
+// arco circular (barrido corto) de A a B con centro C conocido: el radio y el sentido
+// salen de la geometría (producto vectorial en coords de pantalla) — para los redondeos
+function ARCC(ax, ay, bx, by, ccx, ccy, col, w) {
+    var r = Math.sqrt((ax - ccx) * (ax - ccx) + (ay - ccy) * (ay - ccy));
+    var sweep = ((ax - ccx) * (by - ccy) - (ay - ccy) * (bx - ccx)) > 0 ? 1 : 0;
+    return mk('path', {
+        d: 'M ' + n1(ax) + ' ' + n1(ay) + ' A ' + n1(r) + ' ' + n1(r) + ' 0 0 ' + sweep + ' ' + n1(bx) + ' ' + n1(by),
+        fill: 'none', stroke: col, 'stroke-width': w
+    });
+}
 function TEXT(x, y, t, col, rot) {
     return mk('text', {
         x: n1(x), y: n1(y), fill: col, 'text-anchor': 'middle',
@@ -360,178 +255,24 @@ function vDim(y1, y2, x, text) {
     return LINE(x, yt - DIM_EXT, x, yb + DIM_EXT, INK, 1) + arrow(x, yt, 'd') + arrow(x, yb, 'u') + lbl;
 }
 
-function draw() {
-
-    // Se obtienen los valores
-    var d1 = val('d1'), lenght1 = val('l1'), d2 = val('d2'), length2 = val('l2');
-
-    // Valores por defecto si d1, l1, d2 y l2 < 0
-    if (!(d1 > 0)) d1 = 30; if (!(lenght1 > 0)) lenght1 = 5;
-    if (!(d2 > 0)) d2 = Math.min(20, d1 * 0.6); if (!(length2 > 0)) length2 = 25;
-
-    // grove: position 1, espesor 1, diameter
-    var p1 = val('p1'), e1 = val('e1'), d3 = val('d3');
-
-    var hasGrove = grooveOn() && p1 > 0 && e1 > 0 && d3 > 0 && d3 < d2 && (p1 + e1) <= length2;
-    var chanflerAngle = val('cang'), chanflerHorizontalLength = val('csize');
-    var cdrop = (chanflerHorizontalLength > 0 && chanflerAngle > 0 && chanflerAngle < 90) ? chanflerHorizontalLength * Math.tan(chanflerAngle * Math.PI / 180) : 0;
-    var hasChamfer = chamferOn() && chanflerHorizontalLength > 0 && chanflerAngle > 0 && chanflerAngle < 90 && cdrop < d2 / 2 && (length2 - chanflerHorizontalLength) >= (hasGrove ? (p1 + e1) : 0);
-
-    // viewbox witdth and height
-    var VBW = 460, VBH = 320, marginLeft = 86, marginRight = 86, marginTop = 84, marginBottom = 46;
-    var roomWidth = VBW - marginLeft - marginRight, roomHeight = VBH - marginTop - marginBottom;
-
-    // Total lenght of the bolt and total height (max diameter)
-    var totalBoltLength = lenght1 + length2, maxBoltDiameter = Math.max(d1, d2);
-
-    // Scale min
-    var scale = Math.min(roomWidth / totalBoltLength, roomHeight / maxBoltDiameter);
-
-    // Midpoint of the top left line
-    var boltWidth = totalBoltLength * scale
-    var originX = marginLeft + (roomWidth - boltWidth) / 2
-    var centerY = marginTop + roomHeight / 2;
-
-    // Longitudes
-    var widthHead1 = lenght1 * scale
-    var widthBody2 = length2 * scale
-    var h1 = d1 * scale
-    var h2 = d2 * scale;
-
-    // Points
-    var headL = originX
-    var headR = originX + widthHead1
-    var tip = originX + widthHead1 + widthBody2;
-
-    // 0,0 is the top left corner
-    var headTop = centerY - h1 / 2
-    var headBot = centerY + h1 / 2
-    var shankTop = centerY - h2 / 2
-    var shankBot = centerY + h2 / 2;
-
-    // geometría de la ranura (pantalla)  (0,0 is the top left corner)
-    var xgroove1 = headR + p1 * scale           // Posicion izquierda
-    var xgroove2 = headR + (p1 + e1) * scale
-    var h3 = d3 * scale
-    var grooveTop = centerY - h3 / 2
-    var grooveBot = centerY + h3 / 2;
-
-    // geometría del chaflán (pantalla)
-    var aS = chanflerHorizontalLength * scale
-    var bS = cdrop * scale
-    var xc = tip - aS
-    var tipTop = shankTop + bS
-    var tipBot = shankBot - bS;
-
-    // bounding box del bulón completo: referencia ÚNICA para acotar (no se dibuja).
-    // Así L1/L2/P1 comparten la misma Y de cota y no quedan a distinta altura.
-    var boxTop = centerY - maxBoltDiameter * scale / 2;
-    var boxBot = centerY + maxBoltDiameter * scale / 2;
-    var boxLeft = headL, boxRight = tip;
-    var dimY = boxTop - 34;          // línea de cota horizontal común
-    var dimY2 = dimY - 18;           // segunda fila (cotas apiladas, p.ej. E1)
-
-    // contorno superior del vástago (izq -> der), luego se espeja para el inferior
-    var topPts = [[headR, shankTop]];
-    if (hasGrove) { topPts.push([xgroove1, shankTop], [xgroove1, grooveTop], [xgroove2, grooveTop], [xgroove2, shankTop]); }
-    if (hasChamfer) { topPts.push([xc, shankTop], [tip, tipTop]); }
-    else { topPts.push([tip, shankTop]); }
-
-    var out = '';
-    out += LINE(headL - 30, centerY, tip + 30, centerY, INK, 0.8, '7,3,2,3');   // línea de eje
-    out += RECT(headL, headTop, widthHead1, h1, INK, 1.5);               // cabeza
-
-    // contorno del vástago: contorno superior, cara derecha, contorno inferior (espejo)
-    var full = topPts.slice();
-    full.push([tip, hasChamfer ? tipBot : shankBot]);
-    for (var i = topPts.length - 1; i >= 0; i--) { full.push([topPts[i][0], 2 * centerY - topPts[i][1]]); }
-    out += PATH(full, INK, 1.5);
-
-    // aristas de revolución (caras vistas por el eje): SIEMPRE en negro para que la conexión
-    // arriba-abajo se mantenga en todos los pasos; el paso activo las repinta en rojo encima.
-    if (hasGrove) {
-        out += LINE(xgroove1, shankTop, xgroove1, shankBot, INK, 1.5);
-        out += LINE(xgroove2, shankTop, xgroove2, shankBot, INK, 1.5);
-    }
-    if (hasChamfer) {
-        out += LINE(xc, shankTop, xc, shankBot, INK, 1.5);
-    }
-
-    // ----- pieza activa resaltada en ROJO -----
-    if (step === 1) {
-        out += RECT(headL, headTop, widthHead1, h1, RED, 1.8);
-    } else if (step === 2) {
-        out += RECT(headR, shankTop, widthBody2, h2, RED, 1.8);
-    } else if (step === 3 && hasGrove) {
-        out += PATH([[xgroove1, shankTop], [xgroove1, grooveTop], [xgroove2, grooveTop], [xgroove2, shankTop]], RED, 1.8);
-        out += PATH([[xgroove1, shankBot], [xgroove1, grooveBot], [xgroove2, grooveBot], [xgroove2, shankBot]], RED, 1.8);
-        // paredes de la ranura completas: cada punto superior se une con su simétrico inferior
-        // de un solo trazo (shankTop→shankBot), cruzando fondo y eje (revolución 360°).
-        out += LINE(xgroove1, shankTop, xgroove1, shankBot, RED, 1.8);
-        out += LINE(xgroove2, shankTop, xgroove2, shankBot, RED, 1.8);
-    } else if (step === 4 && hasChamfer) {
-        out += LINE(xc, shankTop, tip, tipTop, RED, 1.8) + LINE(tip, tipTop, tip, tipBot, RED, 1.8) + LINE(xc, shankBot, tip, tipBot, RED, 1.8);
-        // arista donde arranca el chaflán, completa por el eje (revolución 360°)
-        out += LINE(xc, shankTop, xc, shankBot, RED, 1.8);
-    }
-
-    // ----- cotas del paso activo -----
-    var xQL = boxLeft - 40, xQR = boxRight + 40;   // columnas de cotas Ø: izquierda / derecha
-    if (step === 1) {
-        // L1 sobre la línea de cota común; Ø1 a la izquierda del box
-        out += LINE(headL, headTop, headL, dimY, INK, 1) + LINE(headR, headTop, headR, dimY, INK, 1);
-        out += hDim(headL, headR, dimY, 'L1 = ' + fmt(lenght1));
-        out += LINE(headL, headTop, xQL, headTop, INK, 1) + LINE(headL, headBot, xQL, headBot, INK, 1);
-        out += vDim(headTop, headBot, xQL, 'Ø1 = ' + fmt(d1));
-    } else if (step === 2) {
-        // L2 sobre la misma línea de cota que L1; Ø2 a la derecha del box
-        out += LINE(headR, shankTop, headR, dimY, INK, 1) + LINE(tip, shankTop, tip, dimY, INK, 1);
-        out += hDim(headR, tip, dimY, 'L2 = ' + fmt(length2));
-        out += LINE(tip, shankTop, xQR, shankTop, INK, 1) + LINE(tip, shankBot, xQR, shankBot, INK, 1);
-        out += vDim(shankTop, shankBot, xQR, 'Ø2 = ' + fmt(d2));
-    } else if (step === 3 && hasGrove) {
-        // P1 en la línea común, E1 apilada encima; Ø3 a la derecha del box
-        // xgroove1 sube hasta dimY2 para servir de apoyo a P1 (dimY) y a E1 (dimY2)
-        out += LINE(headR, shankTop, headR, dimY, INK, 1) + LINE(xgroove1, shankTop, xgroove1, dimY2, INK, 1) + LINE(xgroove2, shankTop, xgroove2, dimY2, INK, 1);
-        out += hDim(headR, xgroove1, dimY, 'P1 = ' + fmt(p1));
-        out += hDim(xgroove1, xgroove2, dimY2, 'E1 = ' + fmt(e1));
-        out += LINE(xgroove2, grooveTop, xQR, grooveTop, INK, 1) + LINE(xgroove2, grooveBot, xQR, grooveBot, INK, 1);
-        out += vDim(grooveTop, grooveBot, xQR, 'Ø3 = ' + fmt(d3));
-    } else if (step === 4 && hasChamfer) {
-        // directriz DIAGONAL arriba-derecha desde la cara del chaflán; texto ENCIMA del tramo
-        var mx = (xc + tip) / 2, myF = (shankTop + tipTop) / 2;
-        var label = 'C' + fmt(chanflerHorizontalLength) + ' × ' + fmt(chanflerAngle) + '°';
-        var dgn = 24, ex = mx + dgn, ey = myF - dgn;        // diagonal a 45°
-        var tail = Math.max(40, label.length * 6);          // tramo horizontal bajo el texto
-        out += LINE(mx, myF, ex, ey, INK, 1) + LINE(ex, ey, ex + tail, ey, INK, 1);
-        out += POLY([[mx, myF], [mx + 7, myF - 3], [mx + 3, myF - 7]], INK);   // flecha tocando la cara
-        out += TEXT(ex + tail / 2, ey - 5, label, INK, false);                 // texto encima del tramo
-    }
-
-    out = mk('svg', { viewBox: '0 0 ' + VBW + ' ' + VBH, preserveAspectRatio: 'xMidYMid meet' }, out);
-    canvas.innerHTML = out;
-}
-
-ids.forEach(function (k) {
-    el[k].addEventListener('input', function () {
-        if (k === 'd2' && dinOn.checked) applyDin();
-        update();
-    });
-});
 document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') { post('cancel'); }
-    if (e.key === 'Enter' && !bolt.classList.contains('hidden') && !btnNext.disabled) { btnNext.click(); }
     if (e.key === 'Enter' && !shaftSec.classList.contains('hidden')) {
         if (editKey && !btnKeyOk.disabled) { btnKeyOk.click(); }
         else if (editGrv && !btnGrvOk.disabled) { btnGrvOk.click(); }
         else if (editUc && !btnUcOk.disabled) { btnUcOk.click(); }
         else if (editCh && !btnChOk.disabled) { btnChOk.click(); }
-        else if (!editKey && !editGrv && !editUc && !editCh && !shaftNextBtn.disabled) { shaftNextBtn.click(); }
+        else if (editTh && !btnThOk.disabled) { btnThOk.click(); }
+        else if (!editKey && !editGrv && !editUc && !editCh && !editTh && !shaftNextBtn.disabled) { shaftNextBtn.click(); }
     }
 });
 
 // ================================================================
-// EJE — asistente de 3 pasos.
+// ASISTENTE (motor del eje). Dos modos, elegidos por la tarjeta del catálogo:
+//  - modo S (EJE): los 8 pasos completos descritos abajo.
+//  - modo B (BULON): el MISMO motor reducido: paso 1 cuerpo FIJO en 2 niveles
+//    (cabeza Ø1 × L1 y vástago Ø2 × L2, con Ø2 < Ø1), paso 2 ranuras de anillo
+//    y paso 3 chaflanes a 45° (internamente los pasos 1, 3 y 8 del eje).
 //  Paso 1 · Cuerpo: n niveles Ø × L de izquierda a derecha. Niveles
 //  consecutivos con el mismo Ø se funden en un tramo (la revolución no
 //  admite un escalón de altura cero) y la frontera se materializa en
@@ -566,8 +307,35 @@ document.addEventListener('keydown', function (e) {
 //  tipo y tamaño (recomendado por Ø de eje, editable con el checkbox). La
 //  medida sale de DIN332_{R,A,B,C,T} según el Ø del extremo. Perfil único
 //  en chProfile (espejo de ShaftCenterHole.ProfileMm del host).
-//  Protocolo: create|shaft|n|d,l...|K|<chavetas×9>|G|<ranuras×4>|
-//             U|<entalladuras×6>|C|<puntos×15: extremo,tipo,d1,d2,d3,d4,d5,b,R,t,t1,t2,t3,t4,t5>
+//  Paso 6 · Roscas cosméticas: una por nivel como máximo, sobre el
+//  cilindro del nivel. M = Ø del nivel (auto); paso del combo ISO
+//  (METRIC_PITCHES, grueso primero) o a mano si el Ø no es estándar o
+//  el usuario elige "Otro". Arranca en el borde izq/der del nivel y
+//  cubre todo el nivel (depth 0) o una profundidad ≤ L del nivel.
+//  Espejo de ShaftSpec.ValidateThread.
+//  Paso 7 · Redondeos: un GRUPO = un radio r + varios VÉRTICES
+//  elegidos con CLIC sobre los puntos rojos del dibujo (sin lista de
+//  niveles). Cada nivel expone sus 4 vértices; el simétrico bajo el
+//  eje es el MISMO anillo 3D, así que al marcar uno el otro queda
+//  marcado y no puede volver a elegirse. Id de vértice =
+//  2·nivel + lado (0 izq / 1 der). Elegibles: extremos y hombros
+//  reales (una división de Ø iguales no tiene esquina). En un hombro
+//  los DOS vértices (cóncavo del Ø menor y convexo del Ø mayor) son
+//  independientes y pueden operarse a la vez si caben en la altura
+//  (s + s' < h). Otro radio = otro grupo (otra operación fillet).
+//  Espejo de ShaftSpec.ValidateFillet.
+//  Paso 8 · Chaflanes: ángulo FIJO a 45°; un GRUPO = una longitud c
+//  (cateto) + varios vértices, misma selección. En SolidWorks la
+//  operación va con propagación tangente para que cada anillo salga
+//  CONECTADO entero. Espejo de ShaftSpec.ValidateChamfer.
+//  Protocolo: create|shaft|wiz|n|d,l...|K|<chavetas×9>|G|<ranuras×4>|
+//             U|<entalladuras×6>|C|<puntos×15: extremo,tipo,d1,d2,d3,d4,d5,b,R,t,t1,t2,t3,t4,t5>|
+//             T|<roscas×4: nivel(0-based),lado(0 izq/1 der),paso,profundidad(0 = todo el nivel)>|
+//             F|<redondeos, VARIABLE: radio,m,vértice1..vérticem>|
+//             H|<chaflanes, VARIABLE: longitud,m,vértice1..vérticem>
+//  (wiz = modo del asistente: 'S' eje, 'B' bulón. La geometría es la misma;
+//  el host guarda el mensaje entero en el registro y lo reinyecta en
+//  window.PRELOAD para re-editar la pieza con el mismo modo.)
 // ================================================================
 
 var shaftSec = document.getElementById('shaft');
@@ -626,10 +394,40 @@ var chNoteEl = document.getElementById('chNote');
 var chDetailEl = document.getElementById('chDetail');
 var chSectionEl = document.getElementById('chSection');
 var chEditChk = document.getElementById('chEdit');
+var thListEl = document.getElementById('thList');
+var thFormEl = document.getElementById('thForm');
+var btnAddTh = document.getElementById('btnAddTh');
+var btnThOk = document.getElementById('btnThOk');
+var btnThDel = document.getElementById('btnThDel');
+var tLvlSel = document.getElementById('tlvl');
+var tSideSel = document.getElementById('tside');
+var tmEl = document.getElementById('tm');
+var tPitchSel = document.getElementById('tpitch');
+var tPitchCustomWrap = document.getElementById('tpitchCustomWrap');
+var tPitchCustomEl = document.getElementById('tpitchCustom');
+var tModeSel = document.getElementById('tmode');
+var tDepthWrap = document.getElementById('tdepthWrap');
+var tDepthEl = document.getElementById('tdepth');
+var thNoteEl = document.getElementById('thNote');
+var filListEl = document.getElementById('filList');
+var filFormEl = document.getElementById('filForm');
+var btnAddFil = document.getElementById('btnAddFil');
+var btnFilOk = document.getElementById('btnFilOk');
+var btnFilDel = document.getElementById('btnFilDel');
+var fradEl = document.getElementById('frad');
+var filNoteEl = document.getElementById('filNote');
+var chmListEl = document.getElementById('chmList');
+var chmFormEl = document.getElementById('chmForm');
+var btnAddChm = document.getElementById('btnAddChm');
+var btnChmOk = document.getElementById('btnChmOk');
+var btnChmDel = document.getElementById('btnChmDel');
+var clenEl = document.getElementById('clen');
+var chmNoteEl = document.getElementById('chmNote');
 
+var wizMode = 'S';       // 'S' = eje (8 pasos) · 'B' = bulón (pasos 1, 3 y 8 con 2 niveles fijos)
 var shaftLevels = [{ d: 20, l: 30 }, { d: 30, l: 40 }, { d: 20, l: 30 }];
 var shaftFocus = 0;      // nivel con foco en el paso 1 (rojo + cotas)
-var shaftStep = 1;       // 1 = cuerpo, 2 = chavetas, 3 = ranuras de anillo
+var shaftStep = 1;       // paso INTERNO del motor (numeración del eje, también en modo bulón)
 var shaftKeys = [];      // chavetas aceptadas
 var editKey = null;      // chaveta en edición (copia de trabajo) o null
 var editIdx = -1;        // índice en shaftKeys si se edita una existente; -1 = nueva
@@ -642,45 +440,73 @@ var editUcIdx = -1;      // índice en shaftUcs si se edita una existente; -1 = 
 var shaftChs = [];       // puntos de centrado DIN 332 aceptados
 var editCh = null;       // punto en edición (copia de trabajo) o null
 var editChIdx = -1;      // índice en shaftChs si se edita uno existente; -1 = nuevo
+var shaftThs = [];       // roscas cosméticas aceptadas
+var editTh = null;       // rosca en edición (copia de trabajo) o null
+var editThIdx = -1;      // índice en shaftThs si se edita una existente; -1 = nueva
+var shaftFils = [];      // grupos de redondeo aceptados: { r, edges: [vértice = 2·nivel + lado...] }
+var editFil = null;      // redondeo en edición (copia de trabajo) o null
+var editFilIdx = -1;     // índice en shaftFils si se edita uno existente; -1 = nuevo
+var shaftChms = [];      // grupos de chaflán 45° aceptados: { c, edges: [vértice...] }
+var editChm = null;      // chaflán en edición (copia de trabajo) o null
+var editChmIdx = -1;     // índice en shaftChms si se edita uno existente; -1 = nuevo
 
 var KTOL = 1e-6;
 
-document.getElementById('cardShaft').addEventListener('click', function () {
+// secuencia de pasos INTERNOS visibles según el modo (los ids sgrpN no cambian)
+function wizSteps() { return wizMode === 'B' ? [1, 3, 8] : [1, 2, 3, 4, 5, 6, 7, 8]; }
+
+// entra al asistente desde una tarjeta del catálogo. Cambiar de modo resetea el
+// estado (los valores de un eje no tienen sentido en un bulón y viceversa);
+// reabrir la misma pieza conserva lo tecleado, como siempre.
+function startWizard(mode) {
+    if (mode !== wizMode) {
+        wizMode = mode;
+        shaftLevels = mode === 'B'
+            ? [{ d: 30, l: 5 }, { d: 20, l: 25 }]
+            : [{ d: 20, l: 30 }, { d: 30, l: 40 }, { d: 20, l: 30 }];
+        shaftKeys = []; shaftGrvs = []; shaftUcs = []; shaftChs = []; shaftThs = [];
+        shaftFils = []; shaftChms = [];
+        shaftNEl.value = shaftLevels.length;
+    }
     catalog.classList.add('hidden'); shaftSec.classList.remove('hidden');
-    shaftStep = 1; shaftFocus = 0; closeKeyForm(); closeGrvForm(); closeUcForm(); closeChForm(); buildLevelRows(); shaftRender();
-});
+    shaftStep = 1; shaftFocus = 0;
+    closeKeyForm(); closeGrvForm(); closeUcForm(); closeChForm(); closeThForm(); closeFilForm(); closeChmForm();
+    buildLevelRows(); shaftRender();
+}
+document.getElementById('cardShaft').addEventListener('click', function () { startWizard('S'); });
+document.getElementById('cardBolt').addEventListener('click', function () { startWizard('B'); });
+
 shaftBackBtn.addEventListener('click', function () {
     if (editKey) { closeKeyForm(); shaftUpdate(); return; }
     if (editGrv) { closeGrvForm(); shaftUpdate(); return; }
     if (editUc) { closeUcForm(); shaftUpdate(); return; }
     if (editCh) { closeChForm(); shaftUpdate(); return; }
-    if (shaftStep === 5) { shaftStep = 4; shaftRender(); return; }
-    if (shaftStep === 4) { shaftStep = 3; shaftRender(); return; }
-    if (shaftStep === 3) { shaftStep = 2; shaftRender(); return; }
-    if (shaftStep === 2) { shaftStep = 1; shaftRender(); return; }
+    if (editTh) { closeThForm(); shaftUpdate(); return; }
+    if (editFil) { closeFilForm(); shaftUpdate(); return; }
+    if (editChm) { closeChmForm(); shaftUpdate(); return; }
+    var seq = wizSteps(), pos = seq.indexOf(shaftStep);
+    if (pos > 0) { shaftStep = seq[pos - 1]; shaftRender(); return; }
     shaftSec.classList.add('hidden'); catalog.classList.remove('hidden');
 });
+// bloqueo de avance por paso interno: en edición o con un elemento inválido no se sale
+function stepBlocked(step) {
+    if (step === 1) return shaftValidate() !== null;
+    if (step === 2) return editKey !== null || shaftFirstBadKey() !== null;
+    if (step === 3) return editGrv !== null || shaftFirstBadGrv() !== null;
+    if (step === 4) return editUc !== null || shaftFirstBadUc() !== null;
+    if (step === 5) return editCh !== null || shaftFirstBadCh() !== null;
+    if (step === 6) return editTh !== null || shaftFirstBadTh() !== null;
+    if (step === 7) return editFil !== null || shaftFirstBadFil() !== null;
+    return editChm !== null || shaftFirstBadChm() !== null;
+}
 shaftNextBtn.addEventListener('click', function () {
-    if (shaftStep === 1) {
-        if (shaftValidate() !== null) return;
-        shaftStep = 2; shaftRender(); return;
-    }
-    if (shaftStep === 2) {
-        if (editKey || shaftFirstBadKey() !== null) return;
-        shaftStep = 3; shaftRender(); return;
-    }
-    if (shaftStep === 3) {
-        if (editGrv || shaftFirstBadGrv() !== null) return;
-        shaftStep = 4; shaftRender(); return;
-    }
-    if (shaftStep === 4) {
-        if (editUc || shaftFirstBadUc() !== null) return;
-        shaftStep = 5; shaftRender(); return;
-    }
-    if (editCh || shaftFirstBadCh() !== null) return;
+    if (stepBlocked(shaftStep)) return;
+    var seq = wizSteps(), pos = seq.indexOf(shaftStep);
+    if (pos < seq.length - 1) { shaftStep = seq[pos + 1]; shaftRender(); return; }
     shaftSubmit();
 });
 shaftNEl.addEventListener('input', function () {
+    if (wizMode === 'B') { shaftNEl.value = 2; return; }   // el bulón SIEMPRE tiene 2 niveles
     var n = parseInt(shaftNEl.value, 10);
     if (!isFinite(n)) return;
     n = Math.max(1, Math.min(20, n));
@@ -695,7 +521,7 @@ shaftNEl.addEventListener('input', function () {
 });
 
 function shaftSubmit() {
-    var msg = ['create', 'shaft', shaftLevels.length];
+    var msg = ['create', 'shaft', wizMode, shaftLevels.length];
     for (var i = 0; i < shaftLevels.length; i++) { msg.push(shaftLevels[i].d, shaftLevels[i].l); }
     msg.push(shaftKeys.length);
     for (var k = 0; k < shaftKeys.length; k++) {
@@ -717,6 +543,23 @@ function shaftSubmit() {
         var cv = shaftChs[c];
         msg.push(cv.end, cv.form, cv.d1, cv.d2, cv.d3, cv.d4, cv.d5, cv.b, cv.rr, cv.t, cv.t1, cv.t2, cv.t3, cv.t4, cv.t5);
     }
+    msg.push(shaftThs.length);
+    for (var t = 0; t < shaftThs.length; t++) {
+        var tv = shaftThs[t];
+        msg.push(tv.lvl, tv.side, tv.pitch, tv.depth);   // depth 0 = todo el nivel
+    }
+    msg.push(shaftFils.length);
+    for (var f = 0; f < shaftFils.length; f++) {
+        var fv = shaftFils[f];
+        msg.push(fv.r, fv.edges.length);
+        for (var fe = 0; fe < fv.edges.length; fe++) msg.push(fv.edges[fe]);
+    }
+    msg.push(shaftChms.length);
+    for (var h = 0; h < shaftChms.length; h++) {
+        var hv = shaftChms[h];
+        msg.push(hv.c, hv.edges.length);
+        for (var he = 0; he < hv.edges.length; he++) msg.push(hv.edges[he]);
+    }
     post(msg.join('|'));
 }
 
@@ -726,10 +569,15 @@ function shaftSubmit() {
 function buildLevelRows() {
     var html = '';
     for (var i = 0; i < shaftLevels.length; i++) {
+        // longitud primero y diámetro después (sólo orden visual; el protocolo sigue d,l)
+        // en modo bulón los 2 niveles se llaman por su nombre, no por número
+        var idxLabel = wizMode === 'B'
+            ? '<span class="idx lbl">' + (i === 0 ? 'Cabeza' : 'Vástago') + '</span>'
+            : '<span class="idx">' + (i + 1) + '</span>';
         html += '<div class="lvlrow" id="lvlrow' + i + '">' +
-            '<span class="idx">' + (i + 1) + '</span>' +
-            '<div class="inp"><input id="lvld' + i + '" type="number" min="0" step="any" value="' + shaftLevels[i].d + '"><span class="u">Ø</span></div>' +
+            idxLabel +
             '<div class="inp"><input id="lvll' + i + '" type="number" min="0" step="any" value="' + shaftLevels[i].l + '"><span class="u">L</span></div>' +
+            '<div class="inp"><input id="lvld' + i + '" type="number" min="0" step="any" value="' + shaftLevels[i].d + '"><span class="u">Ø</span></div>' +
             '</div>';
     }
     levelListEl.innerHTML = html;
@@ -762,7 +610,14 @@ function shaftValidate() {
     if (shaftLevels.length < 1) return 'El eje necesita al menos un nivel.';
     for (var i = 0; i < shaftLevels.length; i++) {
         if (!(shaftLevels[i].d > 0) || !(shaftLevels[i].l > 0)) {
-            return 'Nivel ' + (i + 1) + ': Ø y L deben ser mayores que 0.';
+            return (wizMode === 'B' ? (i === 0 ? 'Cabeza' : 'Vástago') : 'Nivel ' + (i + 1)) +
+                ': Ø y L deben ser mayores que 0.';
+        }
+    }
+    if (wizMode === 'B') {
+        if (shaftLevels.length !== 2) return 'El bulón tiene exactamente 2 niveles (cabeza y vástago).';
+        if (!(shaftLevels[1].d < shaftLevels[0].d)) {
+            return 'El Ø del vástago (Ø2) debe ser menor que el de la cabeza (Ø1 = ' + fmt(shaftLevels[0].d) + ').';
         }
     }
     return null;
@@ -919,6 +774,29 @@ shaftCanvasEl.addEventListener('click', function (e) {
     if (!t || !t.getAttribute) return;
     var zAct = t.getAttribute('data-z');
     if (zAct) { shaftZoomAction(zAct); return; }
+    if (editTh) {
+        // clic en el área de un nivel = elegirlo para la rosca (paso 6)
+        var lvlIdx = t.getAttribute('data-lvl');
+        if (lvlIdx === null) return;
+        editTh.lvl = parseInt(lvlIdx, 10) || 0;
+        tLvlSel.value = String(editTh.lvl);
+        editTh.side = thDefaultSide(editTh.lvl);    // arranque en el borde exterior del nivel
+        tSideSel.value = String(editTh.side);
+        syncThPitch(true);              // nuevo Ø → recomienda su paso grueso
+        shaftUpdate();
+        return;
+    }
+    if (editFil || editChm) {
+        // multiselección: clic en un vértice rojo = añadirlo/quitarlo del grupo; el vértice
+        // simétrico es el mismo anillo (mismo id) y un vértice ocupado por otro grupo se ignora
+        var cidT = t.getAttribute('data-corner');
+        if (cidT === null) return;
+        var cid = parseInt(cidT, 10);
+        if (!cornerExists(cid) || cornerTaken(cid)) return;
+        toggleCornerEdge(editFil || editChm, cid);
+        shaftUpdate();
+        return;
+    }
     if (!editKey && !editGrv && !editUc) return;
     var idx = t.getAttribute('data-edge');
     if (idx === null) return;
@@ -1457,16 +1335,17 @@ function chRecommend(form, d) {
 function chProfile(c) {
     var v = [], arcSeg = -1, arcR = 0;
     if (chIsThreaded(c.form)) {
+        // IS 2540:2008 / DIN 332-2: TODAS las profundidades desde la CARA (t5 no desplaza a
+        // t4/t3/t2 en DS) y t2 = fondo del cilindro de broca; la punta 120° queda MÁS ALLÁ de t2.
         var rc = c.d2 / 2, r3 = c.d3 / 2, r4 = c.d4 / 2, r5 = c.d5 / 2, tip = rc / CH_TAN60;
-        var s = c.form === 'DS' ? c.t5 : 0;
         if (c.form === 'DS') v.push([0, r5]);
-        v.push([s, r4]);
-        v.push([s + c.t4, r3]);
+        v.push([c.form === 'DS' ? c.t5 : 0, r4]);
+        v.push([c.t4, r3]);
         if (c.form === 'DR') { arcSeg = v.length - 1; arcR = c.rr; }
-        v.push([s + c.t3, r3]);
-        v.push([s + c.t3, rc]);
-        v.push([s + c.t2 - tip, rc]);
-        v.push([s + c.t2, 0]);
+        v.push([c.t3, r3]);
+        v.push([c.t3, rc]);
+        v.push([c.t2, rc]);
+        v.push([c.t2 + tip, 0]);
     } else {
         var r1 = c.d1 / 2, r2 = c.d2 / 2, hc = (r2 - r1) / CH_TAN30, tipN = r1 / CH_TAN60, prot = 0;
         if (c.form === 'B') { var b3 = c.d3 / 2; prot = (b3 - r2) / CH_TAN60; v.push([0, b3]); v.push([prot, r2]); }
@@ -1712,34 +1591,627 @@ function chProfilePts(c) {
     return out;
 }
 
+// ---- paso 6: roscas cosméticas --------------------------------------------
+
+// tramo axial [x1, x2] que cubre la rosca (mm desde la cara izquierda):
+// arranca en el borde elegido del nivel y corre hacia dentro (depth 0 = todo el nivel)
+function thSpan(t) {
+    var xs = shaftBounds(), lv2 = shaftLevels[t.lvl];
+    var len = t.depth > 0 ? t.depth : lv2.l;
+    return t.side === 1 ? [xs[t.lvl + 1] - len, xs[t.lvl + 1]] : [xs[t.lvl], xs[t.lvl] + len];
+}
+// borde de arranque por defecto: el más EXTERIOR del nivel, de modo que la rosca corre
+// hacia el CENTRO del eje (mitad izquierda → borde izq., mitad derecha → borde der.)
+function thDefaultSide(lvl) {
+    var xs = shaftBounds();
+    if (!(lvl >= 0) || lvl >= shaftLevels.length) return 0;
+    return (xs[lvl] + xs[lvl + 1]) / 2 > xs[xs.length - 1] / 2 ? 1 : 0;
+}
+// null = válida; espejo de ShaftSpec.ValidateThread del host
+function validateTh(t, idx) {
+    if (!(t.lvl >= 0 && t.lvl < shaftLevels.length)) return 'Nivel no válido (¿cambiaste los niveles?).';
+    var lv2 = shaftLevels[t.lvl];
+    if (!(lv2.d > 0) || !(lv2.l > 0)) return 'El nivel elegido no es válido.';
+    if (!(t.side === 0 || t.side === 1)) return 'Elige el borde de arranque.';
+    if (!(t.pitch > 0)) return 'El paso debe ser mayor que 0.';
+    if (!(thMinor(lv2.d, t.pitch) > 0)) return 'El paso es demasiado grande para M' + fmt(lv2.d) + '.';
+    if (t.depth < 0) return 'La profundidad no puede ser negativa.';
+    if (t.depth > 0 && t.depth > lv2.l + KTOL) {
+        return 'La profundidad (' + fmt(t.depth) + ') no puede ser mayor que la longitud del nivel (' + fmt(lv2.l) + ' mm).';
+    }
+    for (var i = 0; i < shaftThs.length; i++) {
+        if (i !== idx && shaftThs[i].lvl === t.lvl) return 'Ya hay otra rosca en ese nivel.';
+    }
+    // Un redondeo/chaflán en el anillo de arranque no bloquea (el host re-ancla s hacia
+    // dentro), salvo que se coma la rosca entera.
+    var eaten = cornerOpSizeAt(t.side === 1 ? t.lvl + 1 : t.lvl, lv2.d);
+    var usable = t.depth > 0 ? t.depth : lv2.l;
+    if (eaten > 0 && !(eaten < usable - KTOL)) {
+        return 'El chaflán/redondeo del vértice de arranque cubre toda la rosca.';
+    }
+    return null;
+}
+function shaftFirstBadTh() {
+    for (var i = 0; i < shaftThs.length; i++) {
+        var m = validateTh(shaftThs[i], i);
+        if (m !== null) return 'Rosca ' + (i + 1) + ': ' + m;
+    }
+    return null;
+}
+// combo de niveles (se reconstruye al abrir: los niveles pueden haber cambiado)
+function buildThLvlOptions() {
+    var opts = '';
+    for (var i = 0; i < shaftLevels.length; i++) {
+        opts += '<option value="' + i + '">Nivel ' + (i + 1) + ' · Ø' + fmt(shaftLevels[i].d) +
+            ' × ' + fmt(shaftLevels[i].l) + '</option>';
+    }
+    tLvlSel.innerHTML = opts;
+}
+// métrica (M = Ø del nivel, solo lectura) + combo de pasos ISO del Ø, con "Otro…" para
+// meterlo a mano. reset = true recoloca el paso recomendado (grueso) aunque hubiera uno.
+function syncThPitch(reset) {
+    if (!editTh) return;
+    var d = shaftLevels[editTh.lvl] ? shaftLevels[editTh.lvl].d : 0;
+    tmEl.value = 'M' + fmt(d);
+    var ps = thPitches(d), opts = '';
+    for (var i = 0; i < ps.length; i++) opts += '<option value="' + ps[i] + '">' + fmt(ps[i]) + '</option>';
+    opts += '<option value="x">Otro…</option>';
+    tPitchSel.innerHTML = opts;
+    var inList = false;
+    for (var j = 0; j < ps.length; j++) if (Math.abs(ps[j] - editTh.pitch) < 1e-9) inList = true;
+    if (reset || (!inList && !editTh.customPitch)) {
+        editTh.pitch = ps.length ? ps[0] : 0;   // grueso primero; sin tabla → a mano
+        editTh.customPitch = ps.length === 0;
+        inList = ps.length > 0;
+    }
+    tPitchSel.value = editTh.customPitch || !inList ? 'x' : String(editTh.pitch);
+    tPitchCustomWrap.classList.toggle('hidden', tPitchSel.value !== 'x');
+    if (tPitchSel.value === 'x') tPitchCustomEl.value = editTh.pitch > 0 ? fmt(editTh.pitch) : '';
+    updateThNote();
+}
+function updateThNote() {
+    if (!editTh) return;
+    var lv2 = shaftLevels[editTh.lvl];
+    if (!lv2) { thNoteEl.textContent = ''; return; }
+    var std = thPitches(lv2.d).length > 0;
+    thNoteEl.textContent = (std ? '' : 'Ø' + fmt(lv2.d) + ' no es métrica estándar: paso a mano. ') +
+        'M' + fmt(lv2.d) + (editTh.pitch > 0 ? '×' + fmt(editTh.pitch) + ' · núcleo Ø' + fmt(thMinor(lv2.d, editTh.pitch)) : '') +
+        ' · ' + (editTh.depth > 0 ? 'prof. ' + fmt(editTh.depth) + ' mm' : 'todo el nivel (' + fmt(lv2.l) + ' mm)');
+    thNoteEl.className = 'note';
+}
+
+btnAddTh.addEventListener('click', function () {
+    var used = {};
+    for (var i = 0; i < shaftThs.length; i++) used[shaftThs[i].lvl] = true;
+    var lvl = 0;
+    for (var j = 0; j < shaftLevels.length; j++) { if (!used[j]) { lvl = j; break; } }
+    editTh = { lvl: lvl, side: thDefaultSide(lvl), pitch: 0, depth: 0, mode: 0, customPitch: false };
+    editThIdx = -1;
+    openThForm(true); shaftUpdate();
+});
+btnThOk.addEventListener('click', function () {
+    if (!editTh || validateTh(editTh, editThIdx) !== null) return;
+    if (editThIdx >= 0) shaftThs[editThIdx] = editTh; else shaftThs.push(editTh);
+    closeThForm(); shaftUpdate();
+});
+btnThDel.addEventListener('click', function () {
+    if (editThIdx >= 0) shaftThs.splice(editThIdx, 1);
+    closeThForm(); shaftUpdate();
+});
+tLvlSel.addEventListener('change', function () {
+    if (!editTh) return;
+    editTh.lvl = parseInt(tLvlSel.value, 10) || 0;
+    editTh.side = thDefaultSide(editTh.lvl);    // nuevo nivel → arranque en su borde exterior
+    tSideSel.value = String(editTh.side);
+    syncThPitch(true); shaftUpdate();   // nuevo Ø → recomienda su paso grueso
+});
+tSideSel.addEventListener('change', function () {
+    if (!editTh) return;
+    editTh.side = parseInt(tSideSel.value, 10) || 0;
+    shaftUpdate();
+});
+tPitchSel.addEventListener('change', function () {
+    if (!editTh) return;
+    if (tPitchSel.value === 'x') {
+        editTh.customPitch = true;
+        editTh.pitch = parseFloat(tPitchCustomEl.value) || 0;
+    } else {
+        editTh.customPitch = false;
+        editTh.pitch = parseFloat(tPitchSel.value) || 0;
+    }
+    tPitchCustomWrap.classList.toggle('hidden', tPitchSel.value !== 'x');
+    updateThNote(); shaftUpdate();
+});
+tPitchCustomEl.addEventListener('input', function () {
+    if (!editTh) return;
+    editTh.pitch = parseFloat(tPitchCustomEl.value) || 0;
+    updateThNote(); shaftUpdate();
+});
+tModeSel.addEventListener('change', function () {
+    if (!editTh) return;
+    editTh.mode = parseInt(tModeSel.value, 10) || 0;
+    tDepthWrap.classList.toggle('hidden', editTh.mode !== 1);
+    editTh.depth = editTh.mode === 1 ? (parseFloat(tDepthEl.value) || 0) : 0;
+    updateThNote(); shaftUpdate();
+});
+tDepthEl.addEventListener('input', function () {
+    if (!editTh) return;
+    if (editTh.mode === 1) editTh.depth = parseFloat(tDepthEl.value) || 0;
+    updateThNote(); shaftUpdate();
+});
+
+function openThForm(recommend) {
+    buildThLvlOptions();
+    tLvlSel.value = String(editTh.lvl);
+    tSideSel.value = String(editTh.side);
+    editTh.mode = editTh.depth > 0 ? 1 : 0;
+    tModeSel.value = String(editTh.mode);
+    tDepthWrap.classList.toggle('hidden', editTh.mode !== 1);
+    tDepthEl.value = editTh.depth > 0 ? fmt(editTh.depth) : '';
+    syncThPitch(!!recommend);
+    thFormEl.classList.remove('hidden');
+    btnAddTh.classList.add('hidden');
+    btnThDel.style.display = editThIdx >= 0 ? '' : 'none';
+    renderThList();
+}
+function closeThForm() {
+    editTh = null; editThIdx = -1;
+    thFormEl.classList.add('hidden');
+    btnAddTh.classList.remove('hidden');
+    renderThList();
+}
+function renderThList() {
+    var html = '';
+    for (var i = 0; i < shaftThs.length; i++) {
+        var t = shaftThs[i], lv2 = shaftLevels[t.lvl];
+        html += '<div class="keyitem' + (i === editThIdx ? ' editing' : '') + '" data-th="' + i + '">' +
+            '<span>' + (i + 1) + ' · M' + (lv2 ? fmt(lv2.d) : '?') + '×' + fmt(t.pitch) +
+            ' · nivel ' + (t.lvl + 1) + ' · ' + (t.side === 1 ? 'borde der.' : 'borde izq.') +
+            ' · ' + (t.depth > 0 ? 'prof. ' + fmt(t.depth) : 'todo el nivel') + '</span>' +
+            '<span class="kx" data-tdel="' + i + '">✕</span></div>';
+    }
+    thListEl.innerHTML = html;
+    var items = thListEl.querySelectorAll('.keyitem');
+    for (var j = 0; j < items.length; j++) {
+        items[j].addEventListener('click', function (e) {
+            var del = e.target.getAttribute && e.target.getAttribute('data-tdel');
+            if (del !== null && del !== undefined) {
+                shaftThs.splice(parseInt(del, 10), 1);
+                closeThForm(); shaftUpdate();
+                e.stopPropagation();
+                return;
+            }
+            editThIdx = parseInt(this.getAttribute('data-th'), 10);
+            editTh = JSON.parse(JSON.stringify(shaftThs[editThIdx]));
+            openThForm(false); shaftUpdate();
+        });
+    }
+}
+
+// ---- pasos 7 y 8: redondeos y chaflanes 45° en VÉRTICES de esquina ---------
+//
+// Un GRUPO = una medida (radio r o longitud c a 45°) + varios vértices elegidos con clic
+// sobre los puntos rojos del dibujo. Id de vértice = 2·nivel + lado (0 izq / 1 der); el
+// vértice simétrico bajo el eje es el MISMO anillo 3D (mismo id). Elegibles: extremos y
+// hombros reales (una división de Ø iguales no tiene esquina). Los dos vértices de un
+// hombro son independientes (cóncavo Ø menor / convexo Ø mayor) y caben juntos si
+// s + s' < h. Un vértice admite UNA operación entre todos los grupos. Espejo de
+// ShaftSpec.ValidateFillet / ValidateChamfer del host.
+
+function cornerLvl(cid) { return cid >> 1; }
+function cornerSide(cid) { return cid & 1; }
+// frontera (0 … n) sobre la que cae el vértice
+function cornerBnd(cid) { return (cid >> 1) + (cid & 1); }
+// el vértice existe: su frontera es extremo del eje o un hombro real
+function cornerExists(cid) {
+    var lvl = cornerLvl(cid), side = cornerSide(cid), n = shaftLevels.length;
+    if (!(cid >= 0) || lvl < 0 || lvl >= n) return false;
+    if (side === 0) return lvl === 0 || Math.abs(shaftLevels[lvl - 1].d - shaftLevels[lvl].d) >= 1e-9;
+    return lvl === n - 1 || Math.abs(shaftLevels[lvl + 1].d - shaftLevels[lvl].d) >= 1e-9;
+}
+// el vértice está en una cara de EXTREMO (no en un hombro)
+function cornerIsEnd(cid) {
+    var lvl = cornerLvl(cid), side = cornerSide(cid);
+    return (side === 0 && lvl === 0) || (side === 1 && lvl === shaftLevels.length - 1);
+}
+// Ø del ANILLO que consume la operación = Ø del propio nivel del vértice
+function cornerRingD(cid) { return shaftLevels[cornerLvl(cid)].d; }
+// zona axial [z1, z2] que come la operación: s hacia dentro del nivel desde su borde
+// (espejo de CornerZoneMm del host)
+function cornerZone(cid, s) {
+    var xs = shaftBounds(), lvl = cornerLvl(cid);
+    return cornerSide(cid) === 0 ? [xs[lvl], xs[lvl] + s] : [xs[lvl + 1] - s, xs[lvl + 1]];
+}
+// altura del hombro del vértice (0 en un extremo)
+function cornerH(cid) {
+    if (cornerIsEnd(cid)) return 0;
+    var lvl = cornerLvl(cid);
+    var nb = cornerSide(cid) === 0 ? lvl - 1 : lvl + 1;
+    return Math.abs(shaftLevels[nb].d - shaftLevels[lvl].d) / 2;
+}
+// tramo continuo [ini, fin] de igual Ø que contiene el nivel (las divisiones no son paredes)
+function contRunAt(idx) {
+    var xs = shaftBounds(), d = shaftLevels[idx].d, first = idx, last = idx;
+    while (first > 0 && Math.abs(shaftLevels[first - 1].d - d) < 1e-9) first--;
+    while (last < shaftLevels.length - 1 && Math.abs(shaftLevels[last + 1].d - d) < 1e-9) last++;
+    return [xs[first], xs[last + 1]];
+}
+// leg s (r o c) del grupo cuyo vértice consume el anillo (frontera bnd, Ø d); 0 = anillo
+// intacto (espejo de ShaftSpec.CornerOperationSizeAtRingMm del host)
+function cornerOpSizeAt(bnd, d) {
+    function scan(groups, key) {
+        for (var i = 0; i < groups.length; i++) {
+            var g = groups[i], s = g[key];
+            if (!g.edges || !(s > 0)) continue;
+            for (var e = 0; e < g.edges.length; e++) {
+                var cid = g.edges[e], lvl = cornerLvl(cid);
+                if (!(cid >= 0) || lvl < 0 || lvl >= shaftLevels.length) continue;
+                if (cornerBnd(cid) === bnd && Math.abs(shaftLevels[lvl].d - d) < 1e-9) return s;
+            }
+        }
+        return 0;
+    }
+    return scan(shaftFils, 'r') || scan(shaftChms, 'c');
+}
+// el vértice ya lo usa OTRO grupo (excluye la copia en edición): bloquea el clic
+function cornerTaken(cid) {
+    for (var i = 0; i < shaftFils.length; i++) {
+        if (editFil && i === editFilIdx) continue;
+        if (shaftFils[i].edges.indexOf(cid) >= 0) return true;
+    }
+    for (var j = 0; j < shaftChms.length; j++) {
+        if (editChm && j === editChmIdx) continue;
+        if (shaftChms[j].edges.indexOf(cid) >= 0) return true;
+    }
+    return false;
+}
+// vértices de TODOS los grupos, con el grupo en edición sustituyendo a su original
+// (own = pertenece al grupo que se está validando)
+function cornerOpsFor(cand, candIdx, candCh) {
+    var ops = [];
+    function pushG(g, ch, name, own) {
+        if (!g || !g.edges) return;
+        var s = ch ? g.c : g.r;
+        for (var e = 0; e < g.edges.length; e++) ops.push({ cid: g.edges[e], s: s, ch: ch, name: name, own: own });
+    }
+    for (var i = 0; i < shaftFils.length; i++) {
+        var selfF = cand && !candCh && i === candIdx;
+        pushG(selfF ? cand : shaftFils[i], false, 'el redondeo ' + (i + 1), selfF);
+    }
+    if (cand && !candCh && candIdx === -1) pushG(cand, false, 'el redondeo nuevo', true);
+    for (var j = 0; j < shaftChms.length; j++) {
+        var selfC = cand && candCh && j === candIdx;
+        pushG(selfC ? cand : shaftChms[j], true, 'el chaflán ' + (j + 1), selfC);
+    }
+    if (cand && candCh && candIdx === -1) pushG(cand, true, 'el chaflán nuevo', true);
+    return ops;
+}
+// null = válida; comprobación completa de UN vértice del grupo (espejo de
+// ShaftSpec.ValidateCornerEdge del host)
+function cornerErr(cid, s, ops) {
+    var n = shaftLevels.length, xs = shaftBounds();
+    if (!(cid >= 0 && cid <= 2 * n - 1)) return 'Vértice no válido (¿cambiaste los niveles?).';
+    var lvl = cornerLvl(cid), bnd = cornerBnd(cid);
+    if (!cornerExists(cid)) return 'El vértice en x = ' + fmt(xs[bnd]) + ' ya no es una esquina (Ø iguales).';
+    var isEnd = cornerIsEnd(cid), dLvl = shaftLevels[lvl].d;
+    if (!(dLvl > 0)) return 'El nivel del vértice no es válido.';
+    // encaje radial: en el extremo el cateto baja por la cara (s < r); en un hombro
+    // recorre la pared del escalón, cóncavo hacia arriba / convexo hacia abajo (s < h)
+    var h = cornerH(cid);
+    if (isEnd) {
+        if (!(s < dLvl / 2 - KTOL)) return 'La medida (' + fmt(s) + ') no cabe en el radio del extremo (Ø' + fmt(dLvl) + ').';
+    } else {
+        if (!(s < h - KTOL)) return 'La medida (' + fmt(s) + ') no cabe en la altura del hombro (' + fmt(h) + ' mm).';
+    }
+    var z = cornerZone(cid, s), ownDup = 0;
+    // una operación por vértice; los dos vértices del MISMO hombro comparten pared
+    // (s + s' < h); y sin solape INTERIOR de zonas con los demás vértices (dos zonas
+    // pueden tocarse — superficies distintas se encuentran justo en la frontera)
+    for (var i = 0; i < ops.length; i++) {
+        var o = ops[i];
+        if (o.own && o.cid === cid) { ownDup++; continue; }
+        if (o.cid === cid) return 'Ese vértice ya lo usa ' + o.name + '.';
+        if (!(o.cid >= 0 && o.cid <= 2 * n - 1) || !(o.s > 0) || !cornerExists(o.cid)) continue;
+        if (h > 0 && cornerBnd(o.cid) === bnd && cornerLvl(o.cid) !== lvl) {
+            // vértice opuesto del mismo hombro: ambos recorren la misma pared
+            if (!(s + o.s < h - KTOL)) return 'No cabe junto a ' + o.name + ' en la altura del hombro (' + fmt(h) + ' mm).';
+            continue;
+        }
+        var oz = cornerZone(o.cid, o.s);
+        if (z[0] < oz[1] - KTOL && z[1] > oz[0] + KTOL) return 'Se solapa con ' + o.name + '.';
+    }
+    if (ownDup > 1) return 'El vértice en x = ' + fmt(xs[bnd]) + ' está repetido en el grupo.';
+    // una entalladura SUSTITUYE la esquina CÓNCAVA (nivel menor) del hombro: solo ese
+    // vértice queda bloqueado; el convexo (nivel mayor) sigue libre para chaflán/redondeo
+    if (!isEnd) {
+        for (var u = 0; u < shaftUcs.length; u++) {
+            var us = shaftUcs[u];
+            if (us.bnd === bnd && (ucSmallLeft(us) ? us.bnd - 1 : us.bnd) === lvl) {
+                return 'Ya hay una entalladura en ese hombro.';
+            }
+        }
+    }
+    // encaje axial: el extremo lejano de la zona debe quedar estrictamente dentro del
+    // tramo continuo de la superficie del nivel
+    var run = contRunAt(lvl);
+    var fits = cornerSide(cid) === 0 ? z[1] < run[1] - KTOL : z[0] > run[0] + KTOL;
+    if (!fits) return 'La medida (' + fmt(s) + ' mm) no cabe en el tramo de Ø' + fmt(dLvl) + '.';
+    // sin solape (ni toque) con entalladuras SOLO en la misma superficie (mismo Ø): la del
+    // vértice convexo toca la zona de la entalladura justo en la frontera pero vive en el
+    // cilindro mayor — no interfieren
+    for (var u2 = 0; u2 < shaftUcs.length; u2++) {
+        var uv = shaftUcs[u2];
+        if (!(uv.bnd >= 1 && uv.bnd <= n - 1)) continue;
+        var sp = ucSpan(uv);
+        if (Math.abs(sp[2] - dLvl) >= 1e-9) continue;
+        if (z[0] < sp[1] + KTOL && z[1] > sp[0] - KTOL) return 'Se solapa con la entalladura ' + (u2 + 1) + '.';
+    }
+    for (var g = 0; g < shaftGrvs.length; g++) {
+        var g1 = grvX1(shaftGrvs[g]), g2 = g1 + shaftGrvs[g].e1;
+        if (isFinite(g1) && z[0] < g2 + KTOL && z[1] > g1 - KTOL) return 'Se solapa con la ranura de anillo ' + (g + 1) + '.';
+    }
+    // las chavetas NO bloquean: el chaflán/redondeo se aplica ANTES del corte de chaveta
+    // y pueden solaparse (la chaveta atraviesa el chaflán, resultado válido en taller)
+    // en un extremo debe quedar cara plana alrededor de la boca del punto de centrado
+    if (isEnd) {
+        var endNo = cornerSide(cid) === 0 ? 0 : 1;
+        for (var c2 = 0; c2 < shaftChs.length; c2++) {
+            if (shaftChs[c2].end !== endNo) continue;
+            if (!(chMouth(shaftChs[c2]) / 2 < dLvl / 2 - s - KTOL)) {
+                return 'No deja cara plana para el punto de centrado ' + (c2 + 1) + '.';
+            }
+        }
+    }
+    // Las roscas cosméticas NO bloquean el vértice (un extremo roscado casi siempre lleva
+    // chaflán): el host re-ancla la rosca al anillo nuevo de la operación, s hacia dentro.
+    // Único límite: la operación no puede comerse la rosca ENTERA (s < profundidad útil).
+    for (var t = 0; t < shaftThs.length; t++) {
+        var tv = shaftThs[t];
+        if (!(tv.lvl >= 0 && tv.lvl < n)) continue;
+        var ab = tv.side === 1 ? tv.lvl + 1 : tv.lvl;
+        if (ab === bnd && Math.abs(shaftLevels[tv.lvl].d - dLvl) < 1e-9) {
+            var tLen = tv.depth > 0 ? tv.depth : shaftLevels[tv.lvl].l;
+            if (!(s < tLen - KTOL)) return 'La medida (' + fmt(s) + ' mm) cubre toda la rosca ' + (t + 1) + '.';
+        }
+    }
+    return null;
+}
+// null = válido; espejo de ShaftSpec.ValidateFillet del host
+function validateFil(f, idx) {
+    if (!(f.r > 0)) return 'El radio debe ser mayor que 0.';
+    if (!f.edges.length) return 'Haz clic en al menos un vértice rojo del dibujo.';
+    var ops = cornerOpsFor(f, idx, false);
+    for (var e = 0; e < f.edges.length; e++) {
+        var msg = cornerErr(f.edges[e], f.r, ops);
+        if (msg !== null) return msg;
+    }
+    return null;
+}
+// null = válido; espejo de ShaftSpec.ValidateChamfer del host
+function validateChm(c, idx) {
+    if (!(c.c > 0)) return 'La longitud debe ser mayor que 0.';
+    if (!c.edges.length) return 'Haz clic en al menos un vértice rojo del dibujo.';
+    var ops = cornerOpsFor(c, idx, true);
+    for (var e = 0; e < c.edges.length; e++) {
+        var msg = cornerErr(c.edges[e], c.c, ops);
+        if (msg !== null) return msg;
+    }
+    return null;
+}
+// primer grupo aceptado que dejó de ser válido; null = todos bien
+function shaftFirstBadFil() {
+    for (var i = 0; i < shaftFils.length; i++) {
+        var m = validateFil(shaftFils[i], i);
+        if (m !== null) return 'Redondeo ' + (i + 1) + ': ' + m;
+    }
+    return null;
+}
+function shaftFirstBadChm() {
+    for (var i = 0; i < shaftChms.length; i++) {
+        var m = validateChm(shaftChms[i], i);
+        if (m !== null) return 'Chaflán ' + (i + 1) + ': ' + m;
+    }
+    return null;
+}
+
+// añade/quita un vértice del grupo (clic en el dibujo); el simétrico es el mismo id
+function toggleCornerEdge(g, cid) {
+    var at = g.edges.indexOf(cid);
+    if (at < 0) g.edges.push(cid); else g.edges.splice(at, 1);
+    g.edges.sort(function (a, b) { return a - b; });
+}
+function updateCornerNote() {
+    if (editFil) {
+        filNoteEl.textContent = editFil.edges.length
+            ? 'Radio ' + fmt(editFil.r || 0) + ' mm en ' + editFil.edges.length + ' vértice(s). Vuelve a hacer clic para quitarlo.'
+            : 'Haz clic en los vértices rojos del dibujo (el simétrico es el mismo anillo). Un grupo comparte el radio; para otro radio crea otro redondeo.';
+        filNoteEl.className = 'note';
+    } else if (editChm) {
+        chmNoteEl.textContent = editChm.edges.length
+            ? 'Chaflán ' + fmt(editChm.c || 0) + ' × 45° en ' + editChm.edges.length + ' vértice(s). Vuelve a hacer clic para quitarlo.'
+            : 'Haz clic en los vértices rojos del dibujo (el simétrico es el mismo anillo). Un grupo comparte la longitud; para otra longitud crea otro chaflán.';
+        chmNoteEl.className = 'note';
+    }
+}
+
+btnAddFil.addEventListener('click', function () {
+    editFil = { r: 1, edges: [] };
+    editFilIdx = -1;
+    openFilForm(); shaftUpdate();
+});
+btnFilOk.addEventListener('click', function () {
+    if (!editFil || validateFil(editFil, editFilIdx) !== null) return;
+    if (editFilIdx >= 0) shaftFils[editFilIdx] = editFil; else shaftFils.push(editFil);
+    closeFilForm(); shaftUpdate();
+});
+btnFilDel.addEventListener('click', function () {
+    if (editFilIdx >= 0) shaftFils.splice(editFilIdx, 1);
+    closeFilForm(); shaftUpdate();
+});
+fradEl.addEventListener('input', function () {
+    if (!editFil) return;
+    editFil.r = parseFloat(fradEl.value);
+    shaftUpdate();
+});
+btnAddChm.addEventListener('click', function () {
+    editChm = { c: 1, edges: [] };
+    editChmIdx = -1;
+    openChmForm(); shaftUpdate();
+});
+btnChmOk.addEventListener('click', function () {
+    if (!editChm || validateChm(editChm, editChmIdx) !== null) return;
+    if (editChmIdx >= 0) shaftChms[editChmIdx] = editChm; else shaftChms.push(editChm);
+    closeChmForm(); shaftUpdate();
+});
+btnChmDel.addEventListener('click', function () {
+    if (editChmIdx >= 0) shaftChms.splice(editChmIdx, 1);
+    closeChmForm(); shaftUpdate();
+});
+clenEl.addEventListener('input', function () {
+    if (!editChm) return;
+    editChm.c = parseFloat(clenEl.value);
+    shaftUpdate();
+});
+
+function openFilForm() {
+    fradEl.value = editFil.r;
+    updateCornerNote();
+    filFormEl.classList.remove('hidden');
+    btnAddFil.classList.add('hidden');
+    btnFilDel.style.display = editFilIdx >= 0 ? '' : 'none';
+    renderFilList();
+}
+function closeFilForm() {
+    editFil = null; editFilIdx = -1;
+    filFormEl.classList.add('hidden');
+    btnAddFil.classList.remove('hidden');
+    renderFilList();
+}
+function openChmForm() {
+    clenEl.value = editChm.c;
+    updateCornerNote();
+    chmFormEl.classList.remove('hidden');
+    btnAddChm.classList.add('hidden');
+    btnChmDel.style.display = editChmIdx >= 0 ? '' : 'none';
+    renderChmList();
+}
+function closeChmForm() {
+    editChm = null; editChmIdx = -1;
+    chmFormEl.classList.add('hidden');
+    btnAddChm.classList.remove('hidden');
+    renderChmList();
+}
+function cornerEdgesLabel(edges) {
+    var xs = shaftBounds(), pos = [];
+    for (var e = 0; e < edges.length; e++) {
+        var cid = edges[e], lvl = Math.max(0, Math.min(cornerLvl(cid), shaftLevels.length - 1));
+        var b = Math.max(0, Math.min(cornerBnd(cid), xs.length - 1));
+        pos.push(fmt(xs[b]) + '·Ø' + fmt(shaftLevels[lvl].d));
+    }
+    return pos.join(', ');
+}
+function renderFilList() {
+    var html = '';
+    for (var i = 0; i < shaftFils.length; i++) {
+        var f = shaftFils[i];
+        html += '<div class="keyitem' + (i === editFilIdx ? ' editing' : '') + '" data-fil="' + i + '">' +
+            '<span>' + (i + 1) + ' · r ' + fmt(f.r) + ' · ' + f.edges.length + ' vértice(s) · x ' + cornerEdgesLabel(f.edges) + '</span>' +
+            '<span class="kx" data-fdel="' + i + '">✕</span></div>';
+    }
+    filListEl.innerHTML = html;
+    var items = filListEl.querySelectorAll('.keyitem');
+    for (var j = 0; j < items.length; j++) {
+        items[j].addEventListener('click', function (e) {
+            var del = e.target.getAttribute && e.target.getAttribute('data-fdel');
+            if (del !== null && del !== undefined) {
+                shaftFils.splice(parseInt(del, 10), 1);
+                closeFilForm(); shaftUpdate();
+                e.stopPropagation();
+                return;
+            }
+            editFilIdx = parseInt(this.getAttribute('data-fil'), 10);
+            editFil = JSON.parse(JSON.stringify(shaftFils[editFilIdx]));
+            openFilForm(); shaftUpdate();
+        });
+    }
+}
+function renderChmList() {
+    var html = '';
+    for (var i = 0; i < shaftChms.length; i++) {
+        var c = shaftChms[i];
+        html += '<div class="keyitem' + (i === editChmIdx ? ' editing' : '') + '" data-chm="' + i + '">' +
+            '<span>' + (i + 1) + ' · c ' + fmt(c.c) + ' × 45° · ' + c.edges.length + ' vértice(s) · x ' + cornerEdgesLabel(c.edges) + '</span>' +
+            '<span class="kx" data-hdel="' + i + '">✕</span></div>';
+    }
+    chmListEl.innerHTML = html;
+    var items = chmListEl.querySelectorAll('.keyitem');
+    for (var j = 0; j < items.length; j++) {
+        items[j].addEventListener('click', function (e) {
+            var del = e.target.getAttribute && e.target.getAttribute('data-hdel');
+            if (del !== null && del !== undefined) {
+                shaftChms.splice(parseInt(del, 10), 1);
+                closeChmForm(); shaftUpdate();
+                e.stopPropagation();
+                return;
+            }
+            editChmIdx = parseInt(this.getAttribute('data-chm'), 10);
+            editChm = JSON.parse(JSON.stringify(shaftChms[editChmIdx]));
+            openChmForm(); shaftUpdate();
+        });
+    }
+}
+
 // ---- render / estado ------------------------------------------------------
 
+// coletilla de cada paso interno para la línea sub (el "Paso X de N" se antepone según el modo)
+var STEP_SUBS = {
+    1: 'niveles de izquierda a derecha · un nivel = Ø × L',
+    2: 'chavetas (forma A) · elige arista, cota ±, profundidad, ángulo y nº',
+    3: 'ranuras de anillo (DIN 471) · elige arista, cota ±, E1 y D3',
+    4: 'entalladuras (DIN 509) · elige hombro, tipo y solicitación',
+    5: 'puntos de centrado (DIN 332) · elige extremo, tipo y tamaño',
+    6: 'roscas cosméticas · elige nivel, paso y alcance',
+    7: 'redondeos · un radio por grupo · marca hombros o extremos',
+    8: 'chaflanes a 45° · una longitud por grupo · marca hombros o extremos'
+};
+
 function shaftRender() {
-    document.getElementById('sgrp1').classList.toggle('hidden', shaftStep !== 1);
-    document.getElementById('sgrp2').classList.toggle('hidden', shaftStep !== 2);
-    document.getElementById('sgrp3').classList.toggle('hidden', shaftStep !== 3);
-    document.getElementById('sgrp4').classList.toggle('hidden', shaftStep !== 4);
-    document.getElementById('sgrp5').classList.toggle('hidden', shaftStep !== 5);
-    document.getElementById('sdot1').className = 'dot ' + (shaftStep === 1 ? 'active' : 'done');
-    document.getElementById('sdot2').className = 'dot ' + (shaftStep === 2 ? 'active' : shaftStep > 2 ? 'done' : '');
-    document.getElementById('sdot3').className = 'dot ' + (shaftStep === 3 ? 'active' : shaftStep > 3 ? 'done' : '');
-    document.getElementById('sdot4').className = 'dot ' + (shaftStep === 4 ? 'active' : shaftStep > 4 ? 'done' : '');
-    document.getElementById('sdot5').className = 'dot ' + (shaftStep === 5 ? 'active' : '');
-    shaftBackBtn.textContent = shaftStep === 1 ? 'Volver' : 'Atrás';
-    shaftNextBtn.textContent = shaftStep === 5 ? 'Crear' : 'Siguiente';
-    shaftSubEl.textContent = shaftStep === 1
-        ? 'Paso 1 de 5 · niveles de izquierda a derecha · un nivel = Ø × L'
-        : shaftStep === 2
-            ? 'Paso 2 de 5 · chavetas (forma A) · elige arista, cota ±, profundidad, ángulo y nº'
-            : shaftStep === 3
-                ? 'Paso 3 de 5 · ranuras de anillo (DIN 471) · elige arista, cota ±, E1 y D3'
-                : shaftStep === 4
-                    ? 'Paso 4 de 5 · entalladuras (DIN 509) · elige hombro, tipo y solicitación'
-                    : 'Paso 5 de 5 · puntos de centrado (DIN 332) · elige extremo, tipo y tamaño';
+    var seq = wizSteps(), pos = seq.indexOf(shaftStep);
+    var isBolt = wizMode === 'B';
+
+    document.getElementById('shaftTitle').textContent = isBolt ? 'BULON' : 'EJE';
+    for (var g = 1; g <= 8; g++) {
+        document.getElementById('sgrp' + g).classList.toggle('hidden', shaftStep !== g);
+    }
+    // puntos de progreso: los seq.length primeros representan los pasos visibles; el resto se oculta
+    // (con sus barras) via la clase short del contenedor (CSS: .steps.short esconde n+... hijos)
+    document.getElementById('shaftSteps').className = 'steps' + (isBolt ? ' short' : '');
+    for (var d = 1; d <= 8; d++) {
+        var dot = document.getElementById('sdot' + d), i = d - 1;
+        dot.className = 'dot ' + (i === pos ? 'active' : i < pos ? 'done' : '');
+    }
+    // los pasos del cuerpo, ranuras y chaflanes se renumeran según el modo
+    document.getElementById('sgrp1Title').textContent = isBolt
+        ? 'Paso 1 · Cabeza y vástago' : 'Paso 1 · Cuerpo (niveles)';
+    document.getElementById('sgrp3Title').textContent =
+        'Paso ' + (seq.indexOf(3) + 1) + ' · Ranuras';
+    document.getElementById('sgrp8Title').textContent =
+        'Paso ' + (seq.indexOf(8) + 1) + ' · Chaflanes (45°)';
+    // en modo bulón el nº de niveles es fijo (2): el campo no se muestra
+    document.getElementById('shaftNWrap').classList.toggle('hidden', isBolt);
+
+    shaftBackBtn.textContent = pos === 0 ? 'Volver' : 'Atrás';
+    shaftNextBtn.textContent = pos === seq.length - 1 ? 'Crear' : 'Siguiente';
+    shaftSubEl.textContent = 'Paso ' + (pos + 1) + ' de ' + seq.length + ' · ' +
+        (isBolt && shaftStep === 1 ? 'cabeza Ø1 × L1 y vástago Ø2 × L2 · Ø2 debe ser menor que Ø1'
+            : STEP_SUBS[shaftStep]);
     if (shaftStep === 2) renderKeyList();
     if (shaftStep === 3) renderGrvList();
     if (shaftStep === 4) renderUcList();
     if (shaftStep === 5) renderChList();
+    if (shaftStep === 6) renderThList();
+    if (shaftStep === 7) renderFilList();
+    if (shaftStep === 8) renderChmList();
     shaftUpdate();
 }
 
@@ -1797,7 +2269,8 @@ function shaftUpdate() {
             if (gbad) { shaftErrEl.textContent = gbad + ' (edítala o bórrala)'; }
             else {
                 shaftErrEl.className = 'err ok';
-                shaftErrEl.textContent = shaftGrvs.length + ' ranura(s) · siguiente: entalladuras';
+                shaftErrEl.textContent = shaftGrvs.length + ' ranura(s) · siguiente: ' +
+                    (wizMode === 'B' ? 'chaflanes' : 'entalladuras');
             }
             shaftNextBtn.disabled = gbad !== null;
         }
@@ -1823,7 +2296,7 @@ function shaftUpdate() {
             }
             shaftNextBtn.disabled = ubad !== null;
         }
-    } else {
+    } else if (shaftStep === 5) {
         if (editCh) {
             var cmsg = validateCh(editCh, editChIdx);
             btnChOk.disabled = cmsg !== null;
@@ -1840,11 +2313,73 @@ function shaftUpdate() {
             if (cbad) { shaftErrEl.textContent = cbad + ' (edítalo o bórralo)'; }
             else {
                 shaftErrEl.className = 'err ok';
-                shaftErrEl.textContent = shaftChs.length + ' punto(s) de centrado · listo para crear';
+                shaftErrEl.textContent = shaftChs.length + ' punto(s) de centrado · siguiente: roscas cosméticas';
             }
             shaftNextBtn.disabled = cbad !== null;
         }
         drawChSection();
+    } else if (shaftStep === 6) {
+        if (editTh) {
+            var tmsg = validateTh(editTh, editThIdx);
+            btnThOk.disabled = tmsg !== null;
+            shaftNextBtn.disabled = true;
+            if (tmsg) { shaftErrEl.textContent = tmsg; }
+            else {
+                var tz = thSpan(editTh);
+                shaftErrEl.className = 'err ok';
+                shaftErrEl.textContent = 'Rosca M' + fmt(shaftLevels[editTh.lvl].d) + '×' + fmt(editTh.pitch) +
+                    ' · x ' + fmt(tz[0]) + '…' + fmt(tz[1]) + ' mm · núcleo Ø' +
+                    fmt(thMinor(shaftLevels[editTh.lvl].d, editTh.pitch));
+            }
+        } else {
+            var tbad = shaftFirstBadTh();
+            if (tbad) { shaftErrEl.textContent = tbad + ' (edítala o bórrala)'; }
+            else {
+                shaftErrEl.className = 'err ok';
+                shaftErrEl.textContent = shaftThs.length + ' rosca(s) cosmética(s) · siguiente: redondeos';
+            }
+            shaftNextBtn.disabled = tbad !== null;
+        }
+    } else if (shaftStep === 7) {
+        if (editFil) {
+            var fmsg = validateFil(editFil, editFilIdx);
+            btnFilOk.disabled = fmsg !== null;
+            shaftNextBtn.disabled = true;
+            updateCornerNote();
+            if (fmsg) { shaftErrEl.textContent = fmsg; }
+            else {
+                shaftErrEl.className = 'err ok';
+                shaftErrEl.textContent = 'Redondeo r ' + fmt(editFil.r) + ' mm · ' + editFil.edges.length + ' vértice(s)';
+            }
+        } else {
+            var fbad = shaftFirstBadFil();
+            if (fbad) { shaftErrEl.textContent = fbad + ' (edítalo o bórralo)'; }
+            else {
+                shaftErrEl.className = 'err ok';
+                shaftErrEl.textContent = shaftFils.length + ' redondeo(s) · siguiente: chaflanes';
+            }
+            shaftNextBtn.disabled = fbad !== null;
+        }
+    } else {
+        if (editChm) {
+            var hmsg = validateChm(editChm, editChmIdx);
+            btnChmOk.disabled = hmsg !== null;
+            shaftNextBtn.disabled = true;
+            updateCornerNote();
+            if (hmsg) { shaftErrEl.textContent = hmsg; }
+            else {
+                shaftErrEl.className = 'err ok';
+                shaftErrEl.textContent = 'Chaflán c ' + fmt(editChm.c) + ' mm × 45° · ' + editChm.edges.length + ' vértice(s)';
+            }
+        } else {
+            var hbad = shaftFirstBadChm();
+            if (hbad) { shaftErrEl.textContent = hbad + ' (edítalo o bórralo)'; }
+            else {
+                shaftErrEl.className = 'err ok';
+                shaftErrEl.textContent = shaftChms.length + ' chaflán(es) · listo para crear';
+            }
+            shaftNextBtn.disabled = hbad !== null;
+        }
     }
     drawShaft();
 }
@@ -1948,8 +2483,9 @@ function drawShaft() {
         if (last && Math.abs(last.d - lv[i3].d) < 1e-9) {
             splitMarks.push({ x: last.x1 + last.len, d: last.d });
             last.len += lv[i3].l;
+            last.b2 = i3 + 1;
         } else {
-            segs.push({ x1: (last ? last.x1 + last.len : 0), len: lv[i3].l, d: lv[i3].d });
+            segs.push({ x1: (last ? last.x1 + last.len : 0), len: lv[i3].l, d: lv[i3].d, b1: i3, b2: i3 + 1 });
         }
     }
 
@@ -1964,6 +2500,99 @@ function drawShaft() {
         var ea = grvX1(gvE), eb = ea + gvE.e1;
         if (isFinite(ea) && isFinite(eb) && gvE.e1 > 0 && grvDiam(gvE) > 0) eat.push([ea, eb]);
     }
+    // las entalladuras también COMEN la silueta de la superficie menor (su muesca DIN 509
+    // ya dibuja el contorno real): solo el tramo sobre el cilindro menor, NO la extensión
+    // t2 de la forma F (esa vive en la cara del hombro, bajo la silueta mayor)
+    var eatUcs = shaftUcs.slice();
+    if (editUc) eatUcs.push(editUc);
+    for (var ue = 0; ue < eatUcs.length; ue++) {
+        if (editUc && ue === editUcIdx) continue;
+        var uvE = eatUcs[ue];
+        if (!(uvE.bnd >= 1 && uvE.bnd <= lv.length - 1) || !(uvE.f > 0) || !(uvE.t1 > 0)) continue;
+        if (Math.abs(lv[uvE.bnd - 1].d - lv[uvE.bnd].d) < 1e-9) continue;
+        var uz = ucZone(uvE);
+        eat.push([uz[0], uz[1]]);
+    }
+
+    // vértices con redondeo/chaflán (aceptados y el grupo en edición): su zona axial
+    // también COME la silueta, para que la diagonal o el arco sustituyan a la esquina
+    // y las aristas nuevas queden CONECTADAS al contorno. Id de vértice = 2·nivel + lado.
+    var bxs = [0];
+    for (var bx2 = 0; bx2 < lv.length; bx2++) bxs.push(bxs[bx2] + lv[bx2].l);
+    // elegibilidad sobre la geometría saneada del dibujo
+    function cornerOkDraw(cid) {
+        var lvl2 = cid >> 1, side2 = cid & 1;
+        if (cid < 0 || lvl2 >= lv.length) return false;
+        if (side2 === 0) return lvl2 === 0 || Math.abs(lv[lvl2 - 1].d - lv[lvl2].d) >= 1e-9;
+        return lvl2 === lv.length - 1 || Math.abs(lv[lvl2 + 1].d - lv[lvl2].d) >= 1e-9;
+    }
+    var cornerOps = [];
+    function pushCornerG(g, ch, isEdit) {
+        if (!g || !g.edges) return;
+        var sG = ch ? g.c : g.r;
+        if (!(sG > 0)) return;
+        for (var ce = 0; ce < g.edges.length; ce++) {
+            var cG = g.edges[ce];
+            if (!cornerOkDraw(cG)) continue;
+            cornerOps.push({ cid: cG, lvl: cG >> 1, side: cG & 1, s: sG, ch: ch, edit: isEdit });
+        }
+    }
+    for (var fg = 0; fg < shaftFils.length; fg++) { if (editFil && fg === editFilIdx) continue; pushCornerG(shaftFils[fg], false, false); }
+    if (editFil) pushCornerG(editFil, false, true);
+    for (var cg = 0; cg < shaftChms.length; cg++) { if (editChm && cg === editChmIdx) continue; pushCornerG(shaftChms[cg], true, false); }
+    if (editChm) pushCornerG(editChm, true, true);
+    // por frontera puede haber DOS operaciones (vértice cóncavo + convexo del hombro)
+    var opsByBnd = {};
+    for (var ob = 0; ob < cornerOps.length; ob++) {
+        var opB = cornerOps[ob];
+        var bndB = opB.lvl + opB.side;
+        (opsByBnd[bndB] = opsByBnd[bndB] || []).push(opB);
+        // zona axial: s hacia dentro del nivel desde su borde → interrumpe la silueta
+        eat.push(opB.side === 0
+            ? [bxs[opB.lvl], bxs[opB.lvl] + opB.s]
+            : [bxs[opB.lvl + 1] - opB.s, bxs[opB.lvl + 1]]);
+    }
+
+    // vertical de frontera de un tramo, recortada donde las esquinas la consumen: en un
+    // extremo la cara pierde s arriba y abajo; en un hombro, la op del vértice CONVEXO
+    // (Ø mayor) quita la banda exterior [rB−s, rB] de la pared, y la del CÓNCAVO
+    // (Ø menor) quita toda la banda central hasta rS+s (su anillo desaparece: la
+    // arista nueva se dibuja aparte)
+    function cornerVert(bnd, dSeg, xpx) {
+        var rSeg = dSeg * sc / 2;
+        var ops2 = opsByBnd[bnd], runsV = [[-rSeg, rSeg]];
+        if (ops2) {
+            var isEndB = bnd === 0 || bnd === lv.length;
+            var cut = [];   // bandas [y1, y2] (px de radio, con signo) a eliminar
+            for (var oi = 0; oi < ops2.length; oi++) {
+                var op = ops2[oi], rl = lv[op.lvl].d * sc / 2, spy = op.s * sc;
+                if (isEndB) {
+                    cut.push([rl - spy, rl], [-rl, -(rl - spy)]);
+                } else {
+                    var dS2 = Math.min(lv[bnd - 1].d, lv[bnd].d) * sc / 2;
+                    var dB2 = Math.max(lv[bnd - 1].d, lv[bnd].d) * sc / 2;
+                    if (Math.abs(rl - dB2) < 1e-6) cut.push([dB2 - spy, dB2], [-dB2, -(dB2 - spy)]);   // convexo
+                    else cut.push([-(dS2 + spy), dS2 + spy]);                                          // cóncavo
+                }
+            }
+            for (var ci2 = 0; ci2 < cut.length; ci2++) {
+                var nr2 = [];
+                for (var ri2 = 0; ri2 < runsV.length; ri2++) {
+                    var a2 = runsV[ri2][0], b2 = runsV[ri2][1], c0 = cut[ci2][0], c1 = cut[ci2][1];
+                    if (c1 <= a2 || c0 >= b2) { nr2.push([a2, b2]); continue; }
+                    if (c0 > a2) nr2.push([a2, c0]);
+                    if (c1 < b2) nr2.push([c1, b2]);
+                }
+                runsV = nr2;
+            }
+        }
+        var o2 = '';
+        for (var rv = 0; rv < runsV.length; rv++) {
+            if (runsV[rv][1] - runsV[rv][0] < 0.5) continue;
+            o2 += LINE(xpx, cy + runsV[rv][0], xpx, cy + runsV[rv][1], INK, 1.5);
+        }
+        return o2;
+    }
 
     // contorno por tramo fundido (sin aristas internas): verticales completas y
     // silueta superior/inferior interrumpida donde una ranura la come
@@ -1971,7 +2600,7 @@ function drawShaft() {
         var sg = segs[s2];
         var sxA = x0 + sg.x1 * sc, sxB = sxA + sg.len * sc;
         var syT = cy - sg.d * sc / 2, syB = cy + sg.d * sc / 2;
-        out += LINE(sxA, syT, sxA, syB, INK, 1.5) + LINE(sxB, syT, sxB, syB, INK, 1.5);
+        out += cornerVert(sg.b1, sg.d, sxA) + cornerVert(sg.b2, sg.d, sxB);
         var runs = [[sg.x1, sg.x1 + sg.len]];
         for (var gi = 0; gi < eat.length; gi++) {
             var nr = [];
@@ -2033,6 +2662,9 @@ function drawShaft() {
         var ga = x0 + gx1 * sc, gb = x0 + gx2 * sc;
         out += PATH([[ga, cy - rS], [ga, cy - rB], [gb, cy - rB], [gb, cy - rS]], gcol, gw);
         out += PATH([[ga, cy + rS], [ga, cy + rB], [gb, cy + rB], [gb, cy + rS]], gcol, gw);
+        // las paredes son caras anulares vistas de canto: la arista cruza el eje de lado a
+        // lado — tramo central que une las dos muescas
+        out += LINE(ga, cy - rB, ga, cy + rB, gcol, gw) + LINE(gb, cy - rB, gb, cy + rB, gcol, gw);
     }
 
     // entalladuras aceptadas (y la editada en rojo): muesca DIN 509 en ambas siluetas —
@@ -2059,9 +2691,14 @@ function drawShaft() {
             var uex = urb + uv.t2 * UC_RAMP8 * sc;               // salida a 8° sobre la cara
             out += PATH([[xfar, cy - urs], [xrmp, cy - urb], [xd, cy - urb], [xsh, cy - uex]], ucol, uw);
             out += PATH([[xfar, cy + urs], [xrmp, cy + urb], [xd, cy + urb], [xsh, cy + uex]], ucol, uw);
+            // aristas circulares de la revolución: verticales que unen las dos siluetas
+            // (arranque de rampa, fin de rampa y fin de fondo; el hombro ya tiene su vertical)
+            out += LINE(xfar, cy - urs, xfar, cy + urs, ucol, uw);
+            out += LINE(xrmp, cy - urb, xrmp, cy + urb, ucol, uw) + LINE(xd, cy - urb, xd, cy + urb, ucol, uw);
         } else {
             out += PATH([[xfar, cy - urs], [xrmp, cy - urb], [xsh, cy - urb], [xsh, cy - urs]], ucol, uw);
             out += PATH([[xfar, cy + urs], [xrmp, cy + urb], [xsh, cy + urb], [xsh, cy + urs]], ucol, uw);
+            out += LINE(xfar, cy - urs, xfar, cy + urs, ucol, uw) + LINE(xrmp, cy - urb, xrmp, cy + urb, ucol, uw);
         }
     }
 
@@ -2081,6 +2718,71 @@ function drawShaft() {
             botArr.push([x0 + pp[pi].x * sc, cy + pp[pi].r * sc]);
         }
         out += PATH(topArr, ccol, cw) + PATH(botArr, ccol, cw);
+        // aristas circulares del taladro: cada vértice REAL del perfil (no la teselación del
+        // arco) es un círculo de la revolución → línea vertical que une los dos semiperfiles.
+        // Cara (x local 0, ya la dibuja el contorno del tramo) y punta (r = 0) no llevan línea.
+        var vv = chProfile(cv).v, xfC = cv.end === 0 ? 0 : total, sgC = cv.end === 0 ? 1 : -1;
+        var vSeen = {};
+        for (var vi = 0; vi < vv.length; vi++) {
+            var lxV = vv[vi][0], rV = vv[vi][1];
+            if (!(lxV > KTOL) || !(rV > KTOL)) continue;
+            var kV = lxV.toFixed(4);                    // en un mismo x manda el radio mayor
+            if (!(kV in vSeen) || rV > vSeen[kV]) vSeen[kV] = rV;
+        }
+        for (var kX in vSeen) {
+            var xV = x0 + (xfC + sgC * parseFloat(kX)) * sc, rPx = vSeen[kX] * sc;
+            out += LINE(xV, cy - rPx, xV, cy + rPx, ccol, cw);
+        }
+    }
+
+    // roscas cosméticas aceptadas (y la editada en rojo): convenio de dibujo — línea FINA a
+    // Ø de núcleo en ambas siluetas a lo largo de la rosca + límite fino donde termina
+    var allThs = shaftThs.slice();
+    if (editTh) allThs.push(editTh);
+    for (var ti = 0; ti < allThs.length; ti++) {
+        if (editTh && ti === editThIdx) continue;   // en edición se dibuja la copia roja, no la original
+        var tv2 = allThs[ti];
+        if (!(tv2.lvl >= 0 && tv2.lvl < shaftLevels.length) || !(tv2.pitch > 0)) continue;
+        var tlv = shaftLevels[tv2.lvl];
+        var trm = thMinor(tlv.d, tv2.pitch) / 2;
+        if (!(trm > 0)) continue;
+        var tspan = thSpan(tv2);
+        if (!isFinite(tspan[0]) || !(tspan[1] > tspan[0])) continue;
+        var tEdit = editTh && ti === allThs.length - 1;
+        var tcol = tEdit ? RED : INK, tw2 = tEdit ? 1.2 : 0.8;
+        var txa = x0 + tspan[0] * sc, txb = x0 + tspan[1] * sc, tyr = trm * sc;
+        out += LINE(txa, cy - tyr, txb, cy - tyr, tcol, tw2) + LINE(txa, cy + tyr, txb, cy + tyr, tcol, tw2);
+        // límite de rosca: en el extremo donde TERMINA (el arranque es el borde del nivel)
+        var txe = tv2.side === 1 ? txa : txb;
+        out += LINE(txe, cy - tyr, txe, cy + tyr, tcol, tw2);
+    }
+
+    // redondeos/chaflanes: la silueta y las verticales ya vienen recortadas — aquí se
+    // dibuja la arista nueva en cada vértice: diagonal a 45° + su anillo nuevo (chaflán)
+    // o arco tangente sin anillo (redondeo), arriba y abajo. En un vértice CONVEXO
+    // (extremo o Ø mayor) la curva baja hacia el eje; en el CÓNCAVO (Ø menor) sube por
+    // la pared del hombro.
+    for (var co = 0; co < cornerOps.length; co++) {
+        var op2 = cornerOps[co];
+        var ccol2 = op2.edit ? RED : INK, cw3 = op2.edit ? 1.8 : 1.2;
+        var spx = op2.s * sc;
+        var bnd2d = op2.lvl + op2.side;
+        var rL = lv[op2.lvl].d * sc / 2;
+        var dirIn = op2.side === 0 ? 1 : -1;                 // hacia dentro del nivel
+        var xB2 = x0 + bxs[bnd2d] * sc, xFar2 = xB2 + dirIn * spx;
+        var isEnd2 = (op2.side === 0 && op2.lvl === 0) || (op2.side === 1 && op2.lvl === lv.length - 1);
+        var convex = isEnd2 || lv[op2.lvl].d > lv[op2.side === 0 ? op2.lvl - 1 : op2.lvl + 1].d;
+        if (convex && !(spx < rL)) continue;
+        // sentido radial de la curva: convexo baja (radio − s), cóncavo sube (radio + s)
+        var rTo = convex ? rL - spx : rL + spx;
+        if (op2.ch) {
+            out += LINE(xFar2, cy - rL, xB2, cy - rTo, ccol2, cw3) + LINE(xFar2, cy + rL, xB2, cy + rTo, ccol2, cw3);
+            // anillo nuevo donde el cono corta el cilindro del nivel
+            out += LINE(xFar2, cy - rL, xFar2, cy + rL, ccol2, cw3);
+        } else {
+            out += ARCC(xFar2, cy - rL, xB2, cy - rTo, xFar2, cy - rTo, ccol2, cw3);
+            out += ARCC(xFar2, cy + rL, xB2, cy + rTo, xFar2, cy + rTo, ccol2, cw3);
+        }
     }
 
     if (shaftStep === 1) {
@@ -2174,6 +2876,35 @@ function drawShaft() {
                 }
             }
         }
+    } else if (editFil || editChm) {
+        // vértices de esquina clicables: cada nivel expone sus 4 (arriba/abajo son el
+        // MISMO anillo → mismo id y se marcan a la vez). Rojo hueco = libre, rojo
+        // relleno = en el grupo (su preview ya se dibuja en rojo), gris = ocupado por
+        // otro grupo (el clic se ignora). Círculo invisible ancho = zona de clic.
+        var curFC = editFil || editChm;
+        for (var cv2 = 0; cv2 < 2 * lv.length; cv2++) {
+            if (!cornerOkDraw(cv2)) continue;
+            var cvLvl = cv2 >> 1, cvSide = cv2 & 1;
+            var cvx = x0 + bxs[cvLvl + cvSide] * sc, cvr = lv[cvLvl].d * sc / 2;
+            var selV = curFC.edges.indexOf(cv2) >= 0;
+            var takenV = !selV && cornerTaken(cv2);
+            var vcol = takenV ? '#9AA0A6' : RED;
+            // vértice superior e inferior (simétricos, mismo anillo)
+            for (var vs2 = -1; vs2 <= 1; vs2 += 2) {
+                var cvy = cy + vs2 * cvr;
+                out += mk('circle', {
+                    cx: n1(cvx), cy: n1(cvy), r: 4,
+                    fill: selV ? RED : '#FFFFFF', 'fill-opacity': selV ? '1' : '0.01',
+                    stroke: vcol, 'stroke-width': selV ? 2 : 1.6
+                });
+                out += mk('circle', {
+                    cx: n1(cvx), cy: n1(cvy), r: 11,
+                    fill: '#000000', 'fill-opacity': '0',
+                    'pointer-events': 'all',
+                    'class': 'edgehit', 'data-corner': cv2
+                });
+            }
+        }
     } else if (editCh) {
         // punto de centrado en edición: cota de profundidad (axial, cara → punta) y Ø de
         // boca (radial en el carril del extremo), mismo estilo que las cotas del paso 1
@@ -2190,6 +2921,31 @@ function drawShaft() {
             var xQc = editCh.end === 0 ? x0 - 40 : x0 + total * sc + 40;
             out += LINE(xFace, cy - rMouth, xQc, cy - rMouth, INK, 1) + LINE(xFace, cy + rMouth, xQc, cy + rMouth, INK, 1);
             out += vDim(cy - rMouth, cy + rMouth, xQc, 'Ø boca ' + fmt(chMth));
+        }
+    } else if (editTh) {
+        // niveles clicables: rect invisible sobre cada nivel + contorno azul en el elegido
+        var xsT = shaftBounds();
+        for (var li2 = 0; li2 < shaftLevels.length; li2++) {
+            if (!(shaftLevels[li2].d > 0) || !(shaftLevels[li2].l > 0)) continue;
+            var lx1 = x0 + xsT[li2] * sc, lx2 = x0 + xsT[li2 + 1] * sc;
+            var lr2 = shaftLevels[li2].d * sc / 2;
+            if (li2 === editTh.lvl) out += RECT(lx1, cy - lr2, lx2 - lx1, 2 * lr2, BLU, 2.2);
+            out += mk('rect', {
+                x: n1(lx1), y: n1(cy - lr2), width: n1(lx2 - lx1), height: n1(2 * lr2),
+                fill: '#000000', 'fill-opacity': '0',
+                'pointer-events': 'all',         // clicable aunque el relleno sea invisible
+                'class': 'lvlhit', 'data-lvl': li2
+            });
+        }
+        // rosca en edición: cota horizontal del tramo roscado bajo la pieza
+        if (editTh.lvl >= 0 && editTh.lvl < shaftLevels.length && editTh.pitch > 0) {
+            var tzD = thSpan(editTh);
+            if (isFinite(tzD[0]) && tzD[1] > tzD[0]) {
+                var tlvD = shaftLevels[editTh.lvl], trD = tlvD.d * sc / 2;
+                var tx1D = x0 + tzD[0] * sc, tx2D = x0 + tzD[1] * sc, yTh = boxBot + 24;
+                out += LINE(tx1D, cy + trD, tx1D, yTh, INK, 1) + LINE(tx2D, cy + trD, tx2D, yTh, INK, 1);
+                out += hDim(tx1D, tx2D, yTh, 'rosca = ' + fmt(tzD[1] - tzD[0]));
+            }
         }
     }
 
@@ -2267,11 +3023,12 @@ function chDims(c) {
         dia.push({ r: r3, name: 'd3', val: c.d3 });
         dia.push({ r: rc, name: 'd2', val: c.d2 });
         if (c.d1 / 2 > rc) dia.push({ r: c.d1 / 2, name: 'M' + fmt(c.d1), val: null, dash: true });
+        // IS 2540:2008 Fig. 1-2: todas las profundidades se acotan desde la CARA (también en DS)
         if (c.form === 'DS') len.push({ x0: 0, x: s, name: 't5', val: c.t5 });
-        len.push({ x0: s, x: s + c.t4, name: 't4', val: c.t4 });
-        len.push({ x0: s, x: s + c.t3, name: 't3', val: c.t3 });
-        len.push({ x0: s, x: s + c.t1, name: 't1', val: c.t1 });
-        len.push({ x0: s, x: s + c.t2, name: 't2', val: c.t2 });
+        len.push({ x0: 0, x: c.t4, name: 't4', val: c.t4 });
+        len.push({ x0: 0, x: c.t3, name: 't3', val: c.t3 });
+        len.push({ x0: 0, x: c.t1, name: 't1', val: c.t1 });
+        len.push({ x0: 0, x: c.t2, name: 't2', val: c.t2 });
         if (c.form === 'DR') note = 'R = ' + fmt(c.rr);
     } else {
         var r1 = c.d1 / 2, r2 = c.d2 / 2, prot = 0;
@@ -2292,26 +3049,55 @@ function chDims(c) {
     return { dia: dia, len: len, note: note };
 }
 
+// x (mm locales) donde el semiperfil alcanza el radio r: cruce más profundo de la polilínea
+// (arranque de la línea de referencia de cada cota de Ø). Si r no se alcanza (p. ej. la
+// cresta de rosca M, mayor que el núcleo dibujado) devuelve el cruce del chaflán o 0 (cara).
+function chXAtR(pts, r) {
+    var best = 0, found = false;
+    for (var i = 1; i < pts.length; i++) {
+        var r0 = pts[i - 1].r, r1 = pts[i].r;
+        if (r0 === r1) continue;
+        var t = (r - r0) / (r1 - r0);
+        if (t < 0 || t > 1) continue;
+        var x = pts[i - 1].x + (pts[i].x - pts[i - 1].x) * t;
+        if (!found || x > best) { best = x; found = true; }
+    }
+    return best;
+}
+
 // sección axial del punto de centrado (paso 5) con TODAS las cotas: semiperfil taladrado en
-// la cara del extremo, espejado; Ø en carriles verticales a la izquierda y profundidades en
-// filas horizontales debajo. Auto-escala a las medidas reales (como la sección de la chaveta).
+// la cara del extremo, espejado; SOLO cotas horizontales y verticales — Ø como cotas
+// verticales en carriles a la izquierda de la cara (menor más cerca, línea de referencia
+// horizontal desde el punto real del perfil) y profundidades en filas horizontales debajo.
+// Auto-escala a las medidas reales (como la sección de la chaveta).
 function drawChSection() {
     if (!chSectionEl) return;
     if (!editCh) { chSectionEl.innerHTML = ''; return; }
     var c = editCh, D = chDepth(c), mouthR = chMouth(c) / 2;
     if (!(D > 0) || !(mouthR > 0)) { chSectionEl.innerHTML = ''; return; }
     var dims = chDims(c);
-    dims.dia.sort(function (a, b) { return b.r - a.r; });   // Ø mayor primero (fila superior)
+    dims.dia.sort(function (a, b) { return a.r - b.r; });   // Ø menor primero (carril más pegado)
     dims.len.sort(function (a, b) { return a.x - b.x; });   // profundidad menor primero (fila superior)
 
-    var padT = 16, plotH = 104, colW = 92, x0 = colW + 12, plotW = 150, padR = 96;
-    var W = x0 + plotW + padR, padB = 24 + dims.len.length * 15, H = padT + plotH + padB;
-    var axisY = padT + plotH / 2;
+    // pie (se calcula antes para que el ancho del viewBox lo tenga en cuenta al centrar)
+    var foot = 'DIN 332-' + (chIsThreaded(c.form) ? '2' : '1') + ' ' + c.form +
+        (dims.note ? ' · ' + dims.note : '') + ' · prof. ' + fmt(D) + ' · boca Ø' + fmt(chMouth(c));
+
+    var laneGap = 20, padT = 16, plotH = 104, plotW = 150;
+    var laneW = 26 + (dims.dia.length - 1) * laneGap;   // carriles de Ø + valores, a la izquierda de la cara
 
     // radio del bloque = radio del extremo del eje (contexto), acotado para no aplastar el taladro
     var lvd = (c.end === 0 ? shaftLevels[0].d : shaftLevels[shaftLevels.length - 1].d) || (mouthR * 2.4);
     var blockR = Math.max(mouthR * 1.2, Math.min(lvd / 2, mouthR * 2.2));
     var s = Math.min(plotW / D, (plotH / 2 - 6) / blockR);
+
+    // ancho real del contenido (carriles + bloque) → viewBox justo y dibujo CENTRADO en la caja
+    var drawW = D * s + Math.min(16, plotW * 0.12) + 10;
+    var contentW = laneW + drawW;
+    var padB = 24 + dims.len.length * 15, H = padT + plotH + padB;
+    var W = Math.max(contentW + 16, 12 + foot.length * 5.6);
+    var x0 = laneW + (W - contentW) / 2;
+    var axisY = padT + plotH / 2;
     function PX(x) { return x0 + x * s; }
     var bTop = axisY - blockR * s, bBot = axisY + blockR * s, xEnd = PX(D) + Math.min(16, plotW * 0.12);
 
@@ -2323,25 +3109,163 @@ function drawChSection() {
     out += LINE(x0, bTop, xEnd, bTop, INK, 1.4) + LINE(xEnd, bTop, xEnd, bBot, INK, 1.4) + LINE(x0, bBot, xEnd, bBot, INK, 1.4);
     out += LINE(x0, bTop, x0, axisY - mouthR * s, INK, 1.4) + LINE(x0, bBot, x0, axisY + mouthR * s, INK, 1.4);
     out += PATH(top, INK, 1.4) + PATH(bot, INK, 1.4);
-
-    // Ø: columna de llamadas a la izquierda (una fila por diámetro, mayor arriba) con directriz
-    // a la boca — evita apilar cotas verticales concéntricas ilegibles
-    for (var d = 0; d < dims.dia.length; d++) {
-        var e = dims.dia[d], rowY = padT + 6 + d * 15;
-        var lbl = e.val != null ? ('Ø' + e.name + ' = ' + fmt(e.val)) : (e.name + ' (rosca)');
-        var edash = e.dash ? '4,3' : null, ty = axisY - e.r * s, lead = 6 + lbl.length * 6 + 4;
-        out += TEXTL(6, rowY + 4, lbl, INK);
-        out += LINE(lead, rowY, x0 - 4, ty, INK, 0.7, edash) + POLY([[x0, ty], [x0 - 4, ty - 2], [x0 - 4, ty + 2]], INK);
+    // aristas circulares del taladro: cada vértice REAL del perfil es un círculo de la
+    // revolución → vertical que une los dos semiperfiles (cara y punta no llevan línea)
+    var vvS = chProfile(c).v, vSeenS = {};
+    for (var vs = 0; vs < vvS.length; vs++) {
+        var lxS = vvS[vs][0], rS2 = vvS[vs][1];
+        if (!(lxS > KTOL) || !(rS2 > KTOL)) continue;
+        var kS = lxS.toFixed(4);                    // en un mismo x manda el radio mayor
+        if (!(kS in vSeenS) || rS2 > vSeenS[kS]) vSeenS[kS] = rS2;
     }
-    // profundidades: filas de cota horizontales debajo del bloque (la más corta arriba)
+    for (var kSx in vSeenS) {
+        var xVs = PX(parseFloat(kSx)), rPxS = vSeenS[kSx] * s;
+        out += LINE(xVs, axisY - rPxS, xVs, axisY + rPxS, INK, 1.4);
+    }
+
+    // Ø: cotas VERTICALES en carriles a la izquierda de la cara, el Ø menor en el carril más
+    // cercano (las líneas de referencia nunca cruzan una línea de cota). La línea de referencia
+    // sale HORIZONTAL del punto real del perfil donde vive ese Ø.
+    for (var d = 0; d < dims.dia.length; d++) {
+        var e = dims.dia[d], laneX = x0 - 14 - d * laneGap;
+        // solo el nombre (sin valor): los valores viven en los campos del detalle
+        var lbl = e.val != null ? ('Ø' + e.name) : e.name;   // name ya es "M<d1>" en la rosca
+        var edash = e.dash ? '4,3' : null, yT = axisY - e.r * s, yB = axisY + e.r * s;
+        var xw = PX(chXAtR(pts, e.r));
+        out += LINE(laneX - 4, yT, xw, yT, INK, 0.7, edash) + LINE(laneX - 4, yB, xw, yB, INK, 0.7, edash);
+        if (yB - yT >= ARROW_FIT) out += LINE(laneX, yT, laneX, yB, INK, 1) + arrow(laneX, yT, 'u') + arrow(laneX, yB, 'd');
+        else out += LINE(laneX, yT - DIM_EXT, laneX, yB + DIM_EXT, INK, 1) + arrow(laneX, yT, 'd') + arrow(laneX, yB, 'u');
+        // valor junto al extremo SUPERIOR de la cota (no centrado en el eje): texto girado que
+        // crece hacia abajo desde la flecha superior, a la izquierda de la línea de cota
+        out += mk('text', {
+            x: n1(laneX - 2), y: n1(yT + 8), fill: INK, 'text-anchor': 'end',
+            'font-family': 'Segoe UI, sans-serif', 'font-size': '11',
+            transform: 'rotate(-90 ' + n1(laneX - 2) + ' ' + n1(yT + 8) + ')'
+        }, lbl);
+    }
+    // profundidades: filas de cota horizontales debajo del bloque (la más corta arriba).
+    // Las líneas de referencia arrancan en el EJE de revolución (donde viven los puntos de
+    // profundidad) y atraviesan el bloque; etiqueta solo con el nombre (valor en el detalle).
     for (var l = 0; l < dims.len.length; l++) {
         var g = dims.len[l], rowY2 = bBot + 16 + l * 15, xa = PX(g.x0), xb = PX(g.x);
-        out += LINE(xa, bBot, xa, rowY2, INK, 0.8) + LINE(xb, bBot, xb, rowY2, INK, 0.8);
-        out += hDim(xa, xb, rowY2, g.name + ' = ' + fmt(g.val));
+        out += LINE(xa, axisY, xa, rowY2, INK, 0.8) + LINE(xb, axisY, xb, rowY2, INK, 0.8);
+        out += hDim(xa, xb, rowY2, g.name);
     }
     // pie: norma, forma, cotas no dibujadas (R) y profundidad total
-    out += TEXTL(6, H - 5, 'DIN 332-' + (chIsThreaded(c.form) ? '2' : '1') + ' ' + c.form +
-        (dims.note ? ' · ' + dims.note : '') + ' · prof. ' + fmt(D) + ' · boca Ø' + fmt(chMouth(c)), '#5A6068');
+    out += TEXTL(6, H - 5, foot, '#5A6068');
 
     chSectionEl.innerHTML = mk('svg', { viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'xMidYMid meet' }, out);
 }
+
+// ================================================================
+// PRELOAD (re-edición): el host inyecta en window.PRELOAD el mensaje crudo
+// guardado en el registro de piezas (create|shaft|wiz|...). Se parsea al
+// estado del asistente (inverso EXACTO de shaftSubmit) y el asistente se abre
+// directamente en el modo guardado con esos valores. Un mensaje malformado se
+// ignora y se queda el catálogo. Campos solo-UI que el protocolo no lleva:
+// din de las ranuras → false (E1/D3 quedan manuales, no se re-aplica la tabla),
+// ser de las entalladuras → se infiere de la fila DIN 509 que case con r/t1/f,
+// custom de los puntos de centrado → true (las cotas guardadas mandan).
+function loadPreload(raw) {
+    var p = String(raw).split('|');
+    if (p[0] !== 'create' || p[1] !== 'shaft') return false;
+    var wiz = p[2] === 'B' ? 'B' : p[2] === 'S' ? 'S' : null;
+    if (!wiz) return false;
+    var i = 3;
+    function num() { var v = parseFloat(p[i++]); return isFinite(v) ? v : NaN; }
+    function int() { var v = parseInt(p[i++], 10); return isFinite(v) ? v : NaN; }
+
+    var n = int();
+    if (!(n >= 1) || (wiz === 'B' && n !== 2)) return false;
+    var lv = [];
+    for (var k = 0; k < n; k++) {
+        var d = num(), l = num();
+        if (!isFinite(d) || !isFinite(l)) return false;
+        lv.push({ d: d, l: l });
+    }
+
+    var nk = int(); if (!(nk >= 0)) return false;
+    var keys = [];
+    for (var a = 0; a < nk; a++) {
+        var ky = { b: num(), l: num(), edge: int(), off: num(), depth: num(), refd: num(), ang: num(), cnt: int(), ctr: int() };
+        if (!isFinite(ky.b) || !isFinite(ky.l) || !isFinite(ky.edge) || !isFinite(ky.off) ||
+            !isFinite(ky.depth) || !isFinite(ky.refd) || !isFinite(ky.ang) || !isFinite(ky.cnt) || !isFinite(ky.ctr)) return false;
+        keys.push(ky);
+    }
+
+    var ng = int(); if (!(ng >= 0)) return false;
+    var grvs = [];
+    for (var b = 0; b < ng; b++) {
+        var gv = { e1: num(), d3: num(), edge: int(), off: num(), din: false };
+        if (!isFinite(gv.e1) || !isFinite(gv.d3) || !isFinite(gv.edge) || !isFinite(gv.off)) return false;
+        grvs.push(gv);
+    }
+
+    var nu = int(); if (!(nu >= 0)) return false;
+    var ucs = [];
+    for (var c = 0; c < nu; c++) {
+        var u = { bnd: int(), form: p[i++], r: num(), t1: num(), f: num(), t2: num(), ser: 'usual' };
+        if (!isFinite(u.bnd) || (u.form !== 'E' && u.form !== 'F') ||
+            !isFinite(u.r) || !isFinite(u.t1) || !isFinite(u.f) || !isFinite(u.t2)) return false;
+        for (var r9 = 0; r9 < DIN509.length; r9++) {
+            var o = DIN509[r9];
+            if (Math.abs(o.r - u.r) < 1e-9 && Math.abs(o.t1 - u.t1) < 1e-9 && Math.abs(o.f - u.f) < 1e-9) { u.ser = o.ser; break; }
+        }
+        ucs.push(u);
+    }
+
+    var nc = int(); if (!(nc >= 0)) return false;
+    var chs = [];
+    for (var e2 = 0; e2 < nc; e2++) {
+        var cv = {
+            end: int(), form: p[i++], custom: true, _key: 0,
+            d1: num(), d2: num(), d3: num(), d4: num(), d5: num(),
+            b: num(), rr: num(), t: num(), t1: num(), t2: num(), t3: num(), t4: num(), t5: num()
+        };
+        if (!isFinite(cv.end) || !isFinite(cv.d1) || !isFinite(cv.t)) return false;
+        chs.push(cv);
+    }
+
+    var nt = int(); if (!(nt >= 0)) return false;
+    var ths = [];
+    for (var t9 = 0; t9 < nt; t9++) {
+        var th = { lvl: int(), side: int(), pitch: num(), depth: num() };
+        if (!isFinite(th.lvl) || !isFinite(th.side) || !isFinite(th.pitch) || !isFinite(th.depth)) return false;
+        th.mode = th.depth > 0 ? 1 : 0;
+        var lvd = lv[th.lvl] ? lv[th.lvl].d : 0, ps = thPitches(lvd), inList = false;
+        for (var p9 = 0; p9 < ps.length; p9++) { if (Math.abs(ps[p9] - th.pitch) < 1e-9) inList = true; }
+        th.customPitch = !inList;
+        ths.push(th);
+    }
+
+    var nf = int(); if (!(nf >= 0)) return false;
+    var fils = [];
+    for (var f2 = 0; f2 < nf; f2++) {
+        var fr = num(), fm = int();
+        if (!isFinite(fr) || !(fm >= 1)) return false;
+        var fe = [];
+        for (var f3 = 0; f3 < fm; f3++) { var fv = int(); if (!isFinite(fv)) return false; fe.push(fv); }
+        fils.push({ r: fr, edges: fe });
+    }
+
+    var nh = int(); if (!(nh >= 0)) return false;
+    var chms = [];
+    for (var h2 = 0; h2 < nh; h2++) {
+        var hc = num(), hm = int();
+        if (!isFinite(hc) || !(hm >= 1)) return false;
+        var he = [];
+        for (var h3 = 0; h3 < hm; h3++) { var hv = int(); if (!isFinite(hv)) return false; he.push(hv); }
+        chms.push({ c: hc, edges: he });
+    }
+    if (i !== p.length) return false;
+
+    wizMode = wiz;
+    shaftLevels = lv; shaftKeys = keys; shaftGrvs = grvs; shaftUcs = ucs;
+    shaftChs = chs; shaftThs = ths; shaftFils = fils; shaftChms = chms;
+    shaftNEl.value = n;
+    catalog.classList.add('hidden'); shaftSec.classList.remove('hidden');
+    shaftStep = 1; shaftFocus = 0;
+    buildLevelRows(); shaftRender();
+    return true;
+}
+if (window.PRELOAD) { try { loadPreload(window.PRELOAD); } catch (e) { } }

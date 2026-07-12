@@ -17,28 +17,38 @@ namespace VeradeAddin.UI
     /// runtime). The page lives as real editable assets under <c>web\</c> next to the add-in DLL
     /// (configurator.html/.css/.js, copied at build time); the dialog serves that folder through a
     /// WebView2 virtual host (<c>https://veradeapp.local/</c>) so the HTML can reference its CSS/JS
-    /// normally. The DIN 471 table is injected as <c>window.DIN471</c> before the page scripts run.
-    /// On submit the page posts a pipe-delimited message parsed into a
-    /// <see cref="PartConfiguratorSelection"/>: <c>create|bolt|d1|l1|d2|l2|g|p1|e1|d3|c|cang|csize</c>
-    /// (g/c = groove/chamfer 1/0 flags). Cancel: <c>cancel</c>.
+    /// normally. The DIN 471 table is injected as <c>window.DIN471</c> before the page scripts run;
+    /// when re-editing a registered part, the stored message is injected as <c>window.PRELOAD</c>
+    /// so the page reopens the wizard with the saved values. On submit the page posts a
+    /// pipe-delimited message parsed into a <see cref="PartConfiguratorSelection"/>:
+    /// <c>create|shaft|wiz|...</c> where wiz is the wizard mode ('S' = shaft, 'B' = bolt — a
+    /// 2-level shaft). Cancel: <c>cancel</c>.
     /// </summary>
     internal sealed class PartConfiguratorDialog : Form
     {
         private readonly WebView2 _web;
+        private readonly string _preloadMessage;
 
         public PartConfiguratorSelection Selection { get; private set; }
 
-        public PartConfiguratorDialog()
+        public PartConfiguratorDialog(string preloadMessage = null)
         {
+            _preloadMessage = preloadMessage;
             Text = "Configurar pieza";
             StartPosition = FormStartPosition.CenterScreen;
-            FormBorderStyle = FormBorderStyle.FixedDialog;
+            FormBorderStyle = FormBorderStyle.Sizable;
             MinimizeBox = false;
-            MaximizeBox = false;
+            MaximizeBox = true;
             ShowIcon = false;
             ShowInTaskbar = false;
             TopMost = true;
-            ClientSize = new Size(1200, 740);
+            // Casi toda el área de trabajo del monitor actual: los pasos del asistente deben verse
+            // completos sin barras de desplazamiento internas.
+            var work = Screen.FromPoint(Cursor.Position).WorkingArea;
+            ClientSize = new Size(
+                Math.Min(1600, work.Width - 60),
+                Math.Min(1000, work.Height - 80));
+            MinimumSize = new Size(1000, 640);
             BackColor = Color.FromArgb(0xDA, 0xDD, 0xD8);
 
             _web = new WebView2 { Dock = DockStyle.Fill };
@@ -79,6 +89,12 @@ namespace VeradeAddin.UI
                 await _web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(
                     "window.DIN471 = " + dinJson + ";");
 
+                if (!string.IsNullOrEmpty(_preloadMessage))
+                {
+                    await _web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(
+                        "window.PRELOAD = '" + JsEscape(_preloadMessage) + "';");
+                }
+
                 _web.CoreWebView2.Navigate("https://veradeapp.local/configurator.html");
             }
             catch (Exception ex)
@@ -117,33 +133,39 @@ namespace VeradeAddin.UI
                 return;
             }
 
-            if (parts[1] == "bolt")
+            if (parts[1] == "shaft")
             {
-                HandleBolt(parts);
-            }
-            else if (parts[1] == "shaft")
-            {
-                HandleShaft(parts);
+                HandleShaft(parts, message);
             }
         }
 
-        // create|shaft|n|d1|l1|...|dn|ln|K|<keyways×9>|G|<grooves×4>|U|<undercuts×6>|C|<centres×9>
+        // create|shaft|wiz|n|d1|l1|...|dn|ln|K|<keyways×9>|G|<grooves×4>|U|<undercuts×6>|C|<centres×15>|T|<threads×4>
+        //             |F|<fillets, variable>|H|<chamfers, variable>
+        // (wiz = wizard mode: 'S' full shaft wizard, 'B' bolt — a fixed 2-level shaft.)
         // (K keyways × 9 values — ctr: 0 = position by off, 1/2 = LEFT/RIGHT arc CENTRE on the edge
         //  (off ignored, l = centre→opposite extreme) —, G retaining-ring grooves × 4 values,
         //  U DIN 509 undercuts × 6 values — form: "E" | "F", t2 only meaningful for F,
-        //  C DIN 332 centre points × 9 values: end|form|d1|d2|d3|lp|rarc|lc|thread — form:
-        //  "A"|"B"|"R"|"D"; d3 only for B/D, rarc only for R, lc/thread only for D)
-        private void HandleShaft(string[] parts)
+        //  C DIN 332 centre points × 15 values: end|form|d1|d2|d3|d4|d5|b|R|t|t1|t2|t3|t4|t5 —
+        //  form: "A"|"B"|"C"|"R"|"D"|"DR"|"DS" —,
+        //  T cosmetic threads × 4 values: level(0-based)|side(0 left/1 right)|pitch|depth — depth
+        //  0 = the whole level —,
+        //  F fillet groups, VARIABLE length: radius|m|corner1|...|cornerm (m ≥ 1 corner ids,
+        //  corner = 2·levelIndex + side with side 0 = the level's left vertex, 1 = right),
+        //  H 45° chamfer groups, VARIABLE length: length|m|corner1|...|cornerm)
+        private void HandleShaft(string[] parts, string rawMessage)
         {
-            if (parts.Length < 5) return;
-            if (!int.TryParse(parts[2], out int n) || n < 1) return;
-            int keyBase = 3 + 2 * n;
+            if (parts.Length < 6) return;
+            string wiz = parts[2];
+            if (wiz != "S" && wiz != "B") return;
+            if (!int.TryParse(parts[3], out int n) || n < 1) return;
+            if (wiz == "B" && n != 2) return;
+            int keyBase = 4 + 2 * n;
             if (parts.Length < keyBase + 1) return;
 
             var spec = new ShaftSpec();
             for (int i = 0; i < n; i++)
             {
-                if (!TryParse(parts[3 + 2 * i], out double d) || !TryParse(parts[4 + 2 * i], out double l))
+                if (!TryParse(parts[4 + 2 * i], out double d) || !TryParse(parts[5 + 2 * i], out double l))
                 {
                     return;
                 }
@@ -225,7 +247,8 @@ namespace VeradeAddin.UI
             // C center points × 15 values:
             //   end|form|d1|d2|d3|d4|d5|b|R|t|t1|t2|t3|t4|t5   (form: A|B|C|R|D|DR|DS).
             if (!int.TryParse(parts[chBase], out int chCount) || chCount < 0) return;
-            if (parts.Length != chBase + 1 + 15 * chCount) return;
+            int thBase = chBase + 1 + 15 * chCount;
+            if (parts.Length < thBase + 1) return;
             for (int c = 0; c < chCount; c++)
             {
                 int p = chBase + 1 + 15 * c;
@@ -263,56 +286,101 @@ namespace VeradeAddin.UI
                 });
             }
 
+            // T cosmetic threads × 4 values: level|side|pitch|depth (depth 0 = whole level).
+            if (!int.TryParse(parts[thBase], out int thCount) || thCount < 0) return;
+            int pos = thBase + 1 + 4 * thCount;
+            if (parts.Length < pos + 1) return;
+            for (int t = 0; t < thCount; t++)
+            {
+                int p = thBase + 1 + 4 * t;
+                if (!int.TryParse(parts[p], out int tLvl) ||
+                    !int.TryParse(parts[p + 1], out int tSide) || (tSide != 0 && tSide != 1) ||
+                    !TryParse(parts[p + 2], out double tPitch) || !TryParse(parts[p + 3], out double tDepth))
+                {
+                    return;
+                }
+                spec.Threads.Add(new ShaftThread
+                {
+                    LevelIndex = tLvl,
+                    FromRight = tSide,
+                    PitchMm = tPitch,
+                    DepthMm = tDepth
+                });
+            }
+
+            // F fillet groups, VARIABLE length each: radius|m|corner1|...|cornerm.
+            if (!int.TryParse(parts[pos], out int filCount) || filCount < 0) return;
+            pos++;
+            for (int f = 0; f < filCount; f++)
+            {
+                if (parts.Length < pos + 2) return;
+                if (!TryParse(parts[pos], out double fr) ||
+                    !int.TryParse(parts[pos + 1], out int fm) || fm < 1)
+                {
+                    return;
+                }
+                pos += 2;
+                if (parts.Length < pos + fm) return;
+                var fillet = new ShaftFillet { RadiusMm = fr };
+                for (int e = 0; e < fm; e++)
+                {
+                    if (!int.TryParse(parts[pos + e], out int fb)) return;
+                    fillet.Corners.Add(fb);
+                }
+                pos += fm;
+                spec.Fillets.Add(fillet);
+            }
+
+            // H 45° chamfer groups, VARIABLE length each: length|m|corner1|...|cornerm.
+            if (parts.Length < pos + 1) return;
+            if (!int.TryParse(parts[pos], out int chmCount) || chmCount < 0) return;
+            pos++;
+            for (int c = 0; c < chmCount; c++)
+            {
+                if (parts.Length < pos + 2) return;
+                if (!TryParse(parts[pos], out double cl) ||
+                    !int.TryParse(parts[pos + 1], out int cm) || cm < 1)
+                {
+                    return;
+                }
+                pos += 2;
+                if (parts.Length < pos + cm) return;
+                var chamfer = new ShaftChamfer { LengthMm = cl };
+                for (int e = 0; e < cm; e++)
+                {
+                    if (!int.TryParse(parts[pos + e], out int cb)) return;
+                    chamfer.Corners.Add(cb);
+                }
+                pos += cm;
+                spec.Chamfers.Add(chamfer);
+            }
+            if (parts.Length != pos) return;
+
             if (!spec.IsValid)
             {
                 return; // page should not have allowed this
             }
 
-            Selection = new PartConfiguratorSelection { Part = ConfigurablePart.Shaft, Shaft = spec };
+            Selection = new PartConfiguratorSelection
+            {
+                Part = wiz == "B" ? ConfigurablePart.Bolt : ConfigurablePart.Shaft,
+                Shaft = spec,
+                RawMessage = rawMessage
+            };
             DialogResult = DialogResult.OK;
             Close();
-        }
-
-        // create|bolt|d1|l1|d2|l2|g|p1|e1|d3|c|cang|csize  (decimals use '.', produced by JS)
-        private void HandleBolt(string[] parts)
-        {
-            if (parts.Length != 13) return;
-
-            if (TryParse(parts[2], out double d1) && TryParse(parts[3], out double l1) &&
-                TryParse(parts[4], out double d2) && TryParse(parts[5], out double l2) &&
-                TryParse(parts[7], out double p1) && TryParse(parts[8], out double e1) &&
-                TryParse(parts[9], out double d3) && TryParse(parts[11], out double cang) &&
-                TryParse(parts[12], out double csize))
-            {
-                var spec = new BoltSpec
-                {
-                    HeadDiameterMm = d1,
-                    HeadLengthMm = l1,
-                    ShankDiameterMm = d2,
-                    ShankLengthMm = l2,
-                    HasGroove = parts[6] == "1",
-                    GroovePositionMm = p1,
-                    GrooveWidthMm = e1,
-                    GrooveDiameterMm = d3,
-                    HasChamfer = parts[10] == "1",
-                    ChamferAngleDeg = cang,
-                    ChamferSizeMm = csize
-                };
-
-                if (!spec.IsValid)
-                {
-                    return; // page should not have allowed this
-                }
-
-                Selection = new PartConfiguratorSelection { Part = ConfigurablePart.Bolt, Bolt = spec };
-                DialogResult = DialogResult.OK;
-                Close();
-            }
         }
 
         private static bool TryParse(string s, out double value)
         {
             return double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+        }
+
+        // Escapes a string for embedding inside a single-quoted JS literal.
+        private static string JsEscape(string s)
+        {
+            return s.Replace("\\", "\\\\").Replace("'", "\\'")
+                    .Replace("\r", "\\r").Replace("\n", "\\n");
         }
     }
 }

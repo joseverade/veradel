@@ -36,6 +36,7 @@ namespace VeradeAddin.Infrastructure
             ISolidWorksService swService = new SolidWorksService(sw, Logger);
             IFileSystemService fsService = new FileSystemService();
             IScreenCaptureService captureService = new ScreenCaptureService();
+            IPartRegistry partRegistry = new JsonPartRegistry();
             _dialog = new WinFormsDialogService();
 
             // --- Commands (register new commands here, nothing else) -----------------
@@ -48,7 +49,7 @@ namespace VeradeAddin.Infrastructure
                 .Add(new ColorearAristasCommand(swService, _dialog, Logger))
                 .Add(new LimpiarColoresCommand(swService, _dialog, Logger))
                 .Add(new DespieceCalderiaCommand(swService, _dialog, Logger))
-                .Add(new ConfigurarPiezaCommand(swService, _dialog, Logger));
+                .Add(new ConfigurarPiezaCommand(swService, _dialog, partRegistry, Logger));
 
             // --- Ribbon registrar ----------------------------------------------------
             CommandRegistrar = new CommandRegistrar(sw, cookie, _registry, Logger);

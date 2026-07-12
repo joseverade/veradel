@@ -115,9 +115,7 @@
     <Compile Include="Models\EdgeColoringResult.cs" />
     <Compile Include="Models\BoilermakingPlan.cs" />
     <Compile Include="Models\BoilermakingResult.cs" />
-    <Compile Include="Models\BoltSpec.cs" />
     <Compile Include="Models\CommandIcon.cs" />
-    <Compile Include="Models\BoltBuildResult.cs" />
     <Compile Include="Models\ShaftSpec.cs" />
     <Compile Include="Models\ShaftBuildResult.cs" />
     <Compile Include="Models\PartConfiguratorSelection.cs" />
@@ -131,8 +129,9 @@
     <Compile Include="Services\SolidWorksService.cs" />
     <Compile Include="Services\SolidWorksService.EdgeColoring.cs" />
     <Compile Include="Services\SolidWorksService.Boilermaking.cs" />
-    <Compile Include="Services\SolidWorksService.BoltBuilder.cs" />
+    <Compile Include="Services\SolidWorksService.PartBuilderCommon.cs" />
     <Compile Include="Services\SolidWorksService.ShaftBuilder.cs" />
+    <Compile Include="Services\PartRegistry.cs" />
     <Compile Include="Services\IScreenCaptureService.cs" />
     <Compile Include="Services\ScreenCaptureService.cs" />
     <Compile Include="UI\ComponentTreeDialog.cs">

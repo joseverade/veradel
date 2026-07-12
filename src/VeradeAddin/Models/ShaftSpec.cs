@@ -241,17 +241,20 @@ namespace VeradeAddin.Models
 
             if (IsThreaded)
             {
+                // IS 2540:2008 / DIN 332-2 Fig. 1-2 (verified against the official BIS scan,
+                // 2026-07-11): EVERY depth is measured from the END FACE — t5 does NOT shift
+                // t4/t3/t2 on form DS — and t2 is the depth of the full-Ø tap-drill bore, with the
+                // 120° point lying BEYOND t2.
                 double rc = D2Mm / 2.0, r3 = D3Mm / 2.0, r4 = D4Mm / 2.0, r5 = D5Mm / 2.0;
-                double tip = rc / tanTp;                              // 120° core-drill point
-                double s = Form == "DS" ? T5Mm : 0.0;                 // mouth shift for the protective chamfer
+                double tip = rc / tanTp;                              // 120° core-drill point height
                 if (Form == "DS") pts.Add(new[] { 0.0, r5 });         // 120° protective mouth
-                pts.Add(new[] { s, r4 });                             // 60°/arc contact mouth
-                pts.Add(new[] { s + T4Mm, r3 });                      // contact bottom = seat top
+                pts.Add(new[] { Form == "DS" ? T5Mm : 0.0, r4 });     // 60°/arc contact mouth
+                pts.Add(new[] { T4Mm, r3 });                          // contact bottom = seat top
                 if (Form == "DR") { arcSeg = pts.Count - 1; arcRadius = RadiusMm; }
-                pts.Add(new[] { s + T3Mm, r3 });                      // straight seat bottom
-                pts.Add(new[] { s + T3Mm, rc });                      // step down to the core bore
-                pts.Add(new[] { s + T2Mm - tip, rc });               // core cylinder bottom
-                pts.Add(new[] { s + T2Mm, 0.0 });                    // 120° tip
+                pts.Add(new[] { T3Mm, r3 });                          // straight seat bottom
+                pts.Add(new[] { T3Mm, rc });                          // step down to the core bore
+                pts.Add(new[] { T2Mm, rc });                          // full-Ø bore bottom (= t2)
+                pts.Add(new[] { T2Mm + tip, 0.0 });                   // 120° point beyond t2
                 return pts;
             }
 
@@ -294,6 +297,77 @@ namespace VeradeAddin.Models
     }
 
     /// <summary>
+    /// One COSMETIC metric thread on a shaft level's cylindrical surface (no real geometry cut:
+    /// SolidWorks cosmetic-thread annotation only). The nominal designation is M&lt;level Ø&gt;
+    /// (the textbox auto-fills from the level), the pitch comes from the ISO metric table in the
+    /// UI or is typed by hand (non-standard diameters allowed), and the thread starts at one
+    /// boundary edge of the level and runs inward: the whole level ("hasta el siguiente",
+    /// <see cref="DepthMm"/> = 0) or a specific depth that may not exceed the level's length.
+    /// At most one thread per level.
+    /// </summary>
+    public sealed class ShaftThread
+    {
+        /// <summary>0-based index into <see cref="ShaftSpec.Levels"/> of the threaded level.</summary>
+        public int LevelIndex { get; set; }
+        /// <summary>0 = starts at the level's LEFT boundary (grows right); 1 = RIGHT (grows left).</summary>
+        public int FromRight { get; set; }
+        /// <summary>P: thread pitch in mm (ISO table or hand-typed).</summary>
+        public double PitchMm { get; set; }
+        /// <summary>Thread length along the axis; 0 = the whole level ("hasta el siguiente").</summary>
+        public double DepthMm { get; set; }
+
+        /// <summary>External ISO minor (core) Ø: d3 ≈ d − 1.226869·P (ISO 965). Mirrors thMinor in JS.</summary>
+        public double MinorDiameterMm(double nominalDiameterMm)
+        {
+            return nominalDiameterMm - 1.226869 * PitchMm;
+        }
+    }
+
+    /// <summary>
+    /// One fillet GROUP: a single radius applied to one or more corner VERTICES picked on the
+    /// preview — each level rectangle exposes its own four vertices, and the two symmetric ones
+    /// (above/below the axis) are the SAME 3D ring, so a corner is identified as
+    /// <c>2·levelIndex + side</c> (side 0 = the level's left corner, 1 = right). Eligible corners
+    /// are shaft-end corners and real shoulders (an equal-Ø split boundary has no corner); at a
+    /// shoulder the small level's corner is the CONCAVE one and the big level's the CONVEX one,
+    /// and BOTH are independently selectable. Wanting two radii means two groups. Built as ONE
+    /// SolidWorks fillet feature over all the rings (propagation keeps each ring connected).
+    /// </summary>
+    public sealed class ShaftFillet
+    {
+        public ShaftFillet()
+        {
+            Corners = new List<int>();
+        }
+
+        /// <summary>r: fillet radius shared by every corner of the group.</summary>
+        public double RadiusMm { get; set; }
+
+        /// <summary>Corner ids: 2·levelIndex + side (side 0 = left corner of the level, 1 = right).</summary>
+        public List<int> Corners { get; set; }
+    }
+
+    /// <summary>
+    /// One chamfer GROUP: a single 45° leg length applied to one or more corner vertices, same
+    /// corner-id convention as <see cref="ShaftFillet"/>. Wanting two lengths means two groups.
+    /// Built as ONE angle-distance chamfer feature (45°) with tangent propagation, so every
+    /// selected ring is chamfered as a connected whole.
+    /// </summary>
+    public sealed class ShaftChamfer
+    {
+        public ShaftChamfer()
+        {
+            Corners = new List<int>();
+        }
+
+        /// <summary>c: chamfer leg length (equal on both faces, the angle is fixed at 45°).</summary>
+        public double LengthMm { get; set; }
+
+        /// <summary>Corner ids: 2·levelIndex + side (side 0 = left corner of the level, 1 = right).</summary>
+        public List<int> Corners { get; set; }
+    }
+
+    /// <summary>
     /// User-entered geometry for the "Eje personalizado" configurator. All values in millimetres.
     /// The body is a stepped shaft built left → right: n levels, each a diameter × length, revolved
     /// 360° as a single profile. Consecutive levels with the SAME diameter are merged into one
@@ -327,6 +401,9 @@ namespace VeradeAddin.Models
             Grooves = new List<ShaftGroove>();
             Undercuts = new List<ShaftUndercut>();
             CenterHoles = new List<ShaftCenterHole>();
+            Threads = new List<ShaftThread>();
+            Fillets = new List<ShaftFillet>();
+            Chamfers = new List<ShaftChamfer>();
         }
 
         /// <summary>Levels left → right, in the order the user entered them.</summary>
@@ -343,6 +420,15 @@ namespace VeradeAddin.Models
 
         /// <summary>DIN 332 centre points (puntos de centrado), one per end at most. May be empty.</summary>
         public List<ShaftCenterHole> CenterHoles { get; set; }
+
+        /// <summary>Cosmetic metric threads (roscas cosméticas), one per level at most. May be empty.</summary>
+        public List<ShaftThread> Threads { get; set; }
+
+        /// <summary>Fillet groups (redondeos): one radius over several corner rings. May be empty.</summary>
+        public List<ShaftFillet> Fillets { get; set; }
+
+        /// <summary>45° chamfer groups (chaflanes): one leg length over several corner rings. May be empty.</summary>
+        public List<ShaftChamfer> Chamfers { get; set; }
 
         public double TotalLengthMm
         {
@@ -412,6 +498,72 @@ namespace VeradeAddin.Models
                     string err = ValidateCenterHole(CenterHoles[c], c);
                     if (err != null) return "Punto de centrado " + (c + 1) + ": " + err;
                 }
+            }
+
+            if (Threads != null)
+            {
+                for (int t = 0; t < Threads.Count; t++)
+                {
+                    string err = ValidateThread(Threads[t], t);
+                    if (err != null) return "Rosca " + (t + 1) + ": " + err;
+                }
+            }
+
+            if (Fillets != null)
+            {
+                for (int f = 0; f < Fillets.Count; f++)
+                {
+                    string err = ValidateFillet(Fillets[f], f);
+                    if (err != null) return "Redondeo " + (f + 1) + ": " + err;
+                }
+            }
+
+            if (Chamfers != null)
+            {
+                for (int c = 0; c < Chamfers.Count; c++)
+                {
+                    string err = ValidateChamfer(Chamfers[c], c);
+                    if (err != null) return "Chaflán " + (c + 1) + ": " + err;
+                }
+            }
+            return null;
+        }
+
+        private string ValidateThread(ShaftThread thread, int index)
+        {
+            if (thread == null) return "sin datos.";
+            if (thread.LevelIndex < 0 || thread.LevelIndex >= Levels.Count)
+            {
+                return "nivel no válido (¿cambiaste los niveles?).";
+            }
+            var level = Levels[thread.LevelIndex];
+            if (thread.FromRight != 0 && thread.FromRight != 1) return "borde de arranque no válido.";
+            if (!(thread.PitchMm > 0)) return "el paso debe ser mayor que 0.";
+            if (!(thread.MinorDiameterMm(level.DiameterMm) > 0))
+            {
+                return "el paso es demasiado grande para M" + level.DiameterMm + ".";
+            }
+            if (thread.DepthMm < 0) return "la profundidad no puede ser negativa.";
+            if (thread.DepthMm > 0 && thread.DepthMm > level.LengthMm + PositionToleranceMm)
+            {
+                return "la profundidad (" + thread.DepthMm + ") no puede ser mayor que la longitud del nivel (" +
+                       level.LengthMm + " mm).";
+            }
+            for (int i = 0; i < Threads.Count; i++)
+            {
+                if (i != index && Threads[i] != null && Threads[i].LevelIndex == thread.LevelIndex)
+                {
+                    return "ya hay otra rosca en ese nivel.";
+                }
+            }
+            // A corner fillet/chamfer on the anchor ring is fine (the builder re-anchors s
+            // inward), as long as it does not swallow the whole thread.
+            double eaten = CornerOperationSizeAtRingMm(
+                thread.FromRight == 1 ? thread.LevelIndex + 1 : thread.LevelIndex, level.DiameterMm);
+            double usable = thread.DepthMm > 0 ? thread.DepthMm : level.LengthMm;
+            if (eaten > 0 && !(eaten < usable - PositionToleranceMm))
+            {
+                return "el chaflán/redondeo del vértice de arranque cubre toda la rosca.";
             }
             return null;
         }
@@ -884,6 +1036,360 @@ namespace VeradeAddin.Models
                         return "se solapa con la chaveta " + (k + 1) + ".";
                     }
                 }
+            }
+            return null;
+        }
+
+        // ---- fillets / chamfers (redondeos / chaflanes) on corner vertices ---------------------
+
+        /// <summary>Level index a corner id belongs to (id = 2·level + side).</summary>
+        public static int CornerLevel(int corner) { return corner >> 1; }
+
+        /// <summary>Side of the corner within its level: 0 = left, 1 = right.</summary>
+        public static int CornerSide(int corner) { return corner & 1; }
+
+        /// <summary>Boundary index (0 … Levels.Count) the corner sits on.</summary>
+        public static int CornerBoundary(int corner) { return (corner >> 1) + (corner & 1); }
+
+        /// <summary>Ø of the corner's RING = the Ø of the corner's own level (the ring the
+        /// operation consumes). Assumes a valid corner id.</summary>
+        public double CornerRingDiameterMm(int corner)
+        {
+            return Levels[CornerLevel(corner)].DiameterMm;
+        }
+
+        /// <summary>
+        /// True when the corner exists: its boundary is a shaft end (of that level) or a real
+        /// shoulder. At an equal-Ø split boundary the levels merge and there is no corner.
+        /// </summary>
+        public bool CornerExists(int corner)
+        {
+            int lvl = CornerLevel(corner), side = CornerSide(corner);
+            if (lvl < 0 || lvl >= Levels.Count) return false;
+            if (side == 0)
+            {
+                return lvl == 0 ||
+                    System.Math.Abs(Levels[lvl - 1].DiameterMm - Levels[lvl].DiameterMm) >= DiameterToleranceMm;
+            }
+            return lvl == Levels.Count - 1 ||
+                System.Math.Abs(Levels[lvl + 1].DiameterMm - Levels[lvl].DiameterMm) >= DiameterToleranceMm;
+        }
+
+        /// <summary>The corner is on a shaft END face (not a shoulder).</summary>
+        private bool CornerIsEnd(int corner)
+        {
+            int lvl = CornerLevel(corner), side = CornerSide(corner);
+            return (side == 0 && lvl == 0) || (side == 1 && lvl == Levels.Count - 1);
+        }
+
+        /// <summary>
+        /// Axial zone [z1, z2] (mm from the left face) the corner operation eats from its level's
+        /// cylindrical surface: s inward from the level's left or right boundary.
+        /// </summary>
+        public void CornerZoneMm(int corner, double s, out double z1, out double z2)
+        {
+            var xs = BoundariesMm();
+            int lvl = CornerLevel(corner);
+            if (CornerSide(corner) == 0) { z1 = xs[lvl]; z2 = z1 + s; }
+            else { z2 = xs[lvl + 1]; z1 = z2 - s; }
+        }
+
+        /// <summary>Continuous equal-Ø run [start, end] containing a level (split lines are not walls).</summary>
+        private void ContinuousRunMm(int levelIdx, out double start, out double end)
+        {
+            var xs = BoundariesMm();
+            double d = Levels[levelIdx].DiameterMm;
+            int first = levelIdx, last = levelIdx;
+            while (first > 0 && System.Math.Abs(Levels[first - 1].DiameterMm - d) < DiameterToleranceMm) first--;
+            while (last < Levels.Count - 1 && System.Math.Abs(Levels[last + 1].DiameterMm - d) < DiameterToleranceMm) last++;
+            start = xs[first];
+            end = xs[last + 1];
+        }
+
+        private string ValidateFillet(ShaftFillet fillet, int index)
+        {
+            if (fillet == null) return "sin datos.";
+            if (!(fillet.RadiusMm > 0)) return "el radio debe ser mayor que 0.";
+            if (fillet.Corners == null || fillet.Corners.Count == 0) return "marca al menos un vértice.";
+            for (int e = 0; e < fillet.Corners.Count; e++)
+            {
+                string err = ValidateCornerEdge(fillet.Corners[e], fillet.RadiusMm, false, index);
+                if (err != null) return err;
+            }
+            return null;
+        }
+
+        private string ValidateChamfer(ShaftChamfer chamfer, int index)
+        {
+            if (chamfer == null) return "sin datos.";
+            if (!(chamfer.LengthMm > 0)) return "la longitud debe ser mayor que 0.";
+            if (chamfer.Corners == null || chamfer.Corners.Count == 0) return "marca al menos un vértice.";
+            for (int e = 0; e < chamfer.Corners.Count; e++)
+            {
+                string err = ValidateCornerEdge(chamfer.Corners[e], chamfer.LengthMm, true, index);
+                if (err != null) return err;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Full check of ONE corner vertex of a fillet/chamfer group (mirror of cornerErr in
+        /// configurator.js): existence, radial fit, uniqueness across every group, wall sharing
+        /// with the opposite corner of the same shoulder, undercut on that shoulder, axial fit on
+        /// the continuous run, overlap with every other machined zone, and remaining flat face
+        /// for a centre point. Cosmetic threads do NOT block the operation (the thread anchor is
+        /// re-derived by the builder).
+        /// </summary>
+        private string ValidateCornerEdge(int corner, double s, bool ownerIsChamfer, int ownerIndex)
+        {
+            if (corner < 0 || corner > 2 * Levels.Count - 1) return "vértice no válido (¿cambiaste los niveles?).";
+            var xs = BoundariesMm();
+            int lvl = CornerLevel(corner);
+            int bnd = CornerBoundary(corner);
+            if (!CornerExists(corner))
+            {
+                return "el vértice en x = " + xs[bnd] + " mm ya no es una esquina (los Ø son iguales).";
+            }
+            bool isEnd = CornerIsEnd(corner);
+            double dLvl = Levels[lvl].DiameterMm;
+
+            // Radial fit: at an end the leg goes down the face (s < r); at a shoulder it runs
+            // along the step wall, concave corner up / convex corner down (s < h either way).
+            double h = 0;
+            if (isEnd)
+            {
+                if (!(s < dLvl / 2.0 - PositionToleranceMm))
+                {
+                    return "la medida (" + s + " mm) no cabe en el radio del extremo (Ø" + dLvl + ").";
+                }
+            }
+            else
+            {
+                int neighbor = CornerSide(corner) == 0 ? lvl - 1 : lvl + 1;
+                h = System.Math.Abs(Levels[neighbor].DiameterMm - dLvl) / 2.0;
+                if (!(s < h - PositionToleranceMm))
+                {
+                    return "la medida (" + s + " mm) no cabe en la altura del hombro (" + h + " mm).";
+                }
+            }
+
+            double z1, z2;
+            CornerZoneMm(corner, s, out z1, out z2);
+
+            // One operation per corner; the two corners of the SAME shoulder must share the wall
+            // (s + s' < h); and no zone overlap with any other fillet/chamfer corner (including
+            // the other corners of this same group on a short level).
+            int seenSelf = 0;
+            if (Fillets != null)
+            {
+                for (int i = 0; i < Fillets.Count; i++)
+                {
+                    var g = Fillets[i];
+                    if (g == null || g.Corners == null) continue;
+                    bool self = !ownerIsChamfer && i == ownerIndex;
+                    foreach (int c in g.Corners)
+                    {
+                        if (self && c == corner) { seenSelf++; continue; }
+                        string err = CornerAgainstOther(corner, s, z1, z2, h, c, g.RadiusMm, "el redondeo " + (i + 1));
+                        if (err != null) return err;
+                    }
+                }
+            }
+            if (Chamfers != null)
+            {
+                for (int i = 0; i < Chamfers.Count; i++)
+                {
+                    var g = Chamfers[i];
+                    if (g == null || g.Corners == null) continue;
+                    bool self = ownerIsChamfer && i == ownerIndex;
+                    foreach (int c in g.Corners)
+                    {
+                        if (self && c == corner) { seenSelf++; continue; }
+                        string err = CornerAgainstOther(corner, s, z1, z2, h, c, g.LengthMm, "el chaflán " + (i + 1));
+                        if (err != null) return err;
+                    }
+                }
+            }
+            if (seenSelf > 1) return "el vértice en x = " + xs[bnd] + " mm está repetido en el grupo.";
+
+            // A DIN 509 undercut REPLACES the CONCAVE corner (small level) of its shoulder: only
+            // that vertex is taken; the convex one (big level) stays free for a fillet/chamfer.
+            if (!isEnd && Undercuts != null)
+            {
+                for (int u = 0; u < Undercuts.Count; u++)
+                {
+                    var uc0 = Undercuts[u];
+                    if (uc0 == null || uc0.BoundaryIndex != bnd) continue;
+                    int smallLvl = UndercutSmallSideIsLeft(uc0) ? uc0.BoundaryIndex - 1 : uc0.BoundaryIndex;
+                    if (smallLvl == lvl)
+                    {
+                        return "ya hay una entalladura en ese hombro.";
+                    }
+                }
+            }
+
+            // Axial fit: the far end of the zone must stay strictly inside the continuous run of
+            // the level's surface (split lines are not walls; the near end IS the corner itself).
+            double runStart, runEnd;
+            ContinuousRunMm(lvl, out runStart, out runEnd);
+            bool fits = CornerSide(corner) == 0
+                ? z2 < runEnd - PositionToleranceMm
+                : z1 > runStart + PositionToleranceMm;
+            if (!fits)
+            {
+                return "la medida (" + s + " mm) no cabe en el tramo de Ø" + dLvl + ".";
+            }
+
+            // No overlap (or touch) with undercut zones ON THE SAME SURFACE (same Ø): a convex
+            // corner's zone touches the undercut zone exactly at the boundary but lives on the
+            // big cylinder — they do not interfere. Grooves and keyways still block on touch.
+            if (Undercuts != null)
+            {
+                for (int u = 0; u < Undercuts.Count; u++)
+                {
+                    var uc = Undercuts[u];
+                    if (uc == null || uc.BoundaryIndex < 1 || uc.BoundaryIndex > Levels.Count - 1) continue;
+                    double o1, o2, od;
+                    UndercutZoneMm(uc, out o1, out o2, out od);
+                    if (System.Math.Abs(od - dLvl) >= DiameterToleranceMm) continue;
+                    if (z1 < o2 + PositionToleranceMm && z2 > o1 - PositionToleranceMm)
+                    {
+                        return "se solapa con la entalladura " + (u + 1) + ".";
+                    }
+                }
+            }
+            if (Grooves != null)
+            {
+                for (int g = 0; g < Grooves.Count; g++)
+                {
+                    var groove = Grooves[g];
+                    if (groove == null || groove.EdgeIndex < 0 || groove.EdgeIndex > Levels.Count) continue;
+                    double g1 = groove.StartXMm(xs[groove.EdgeIndex]);
+                    double g2 = g1 + groove.WidthMm;
+                    if (z1 < g2 + PositionToleranceMm && z2 > g1 - PositionToleranceMm)
+                    {
+                        return "se solapa con la ranura de anillo " + (g + 1) + ".";
+                    }
+                }
+            }
+            // Keyways do NOT block: the fillet/chamfer is applied BEFORE the keyway cut and they
+            // may overlap (the keyway slices through the chamfer — a valid shop result).
+
+            // An end operation shrinks the flat face: the centre point's mouth must still fit.
+            if (isEnd && CenterHoles != null)
+            {
+                int end = bnd == 0 ? 0 : 1;
+                for (int c = 0; c < CenterHoles.Count; c++)
+                {
+                    var hole = CenterHoles[c];
+                    if (hole == null || hole.End != end) continue;
+                    if (!(hole.MouthDiameterMm / 2.0 < dLvl / 2.0 - s - PositionToleranceMm))
+                    {
+                        return "no deja cara plana para el punto de centrado " + (c + 1) + ".";
+                    }
+                }
+            }
+
+            // Cosmetic threads never block a corner operation: a threaded end almost always
+            // carries a chamfer. The builder re-anchors the thread to the ring the operation
+            // creates, s inward (see CornerOperationSizeAtRingMm). Only limit: the operation
+            // must not swallow the WHOLE thread (s < usable depth).
+            if (Threads != null)
+            {
+                for (int t = 0; t < Threads.Count; t++)
+                {
+                    var th = Threads[t];
+                    if (th == null || th.LevelIndex < 0 || th.LevelIndex >= Levels.Count) continue;
+                    int anchor = th.FromRight == 1 ? th.LevelIndex + 1 : th.LevelIndex;
+                    if (anchor == bnd &&
+                        System.Math.Abs(Levels[th.LevelIndex].DiameterMm - dLvl) < DiameterToleranceMm)
+                    {
+                        double tLen = th.DepthMm > 0 ? th.DepthMm : Levels[th.LevelIndex].LengthMm;
+                        if (!(s < tLen - PositionToleranceMm))
+                        {
+                            return "la medida (" + s + " mm) cubre toda la rosca " + (t + 1) + ".";
+                        }
+                    }
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Axial leg (mm) of the fillet/chamfer whose corner consumes the ring at the given
+        /// boundary with the given Ø, or 0 when that ring stays intact. Corner operations run
+        /// before cosmetic threads, so a thread anchored on that ring must move s inward (the
+        /// operation replaces the ring with a new one at boundary ∓ s on the same cylinder) and
+        /// lose s of blind depth to keep its far end in place. At most one operation can own a
+        /// vertex (enforced by validation), so the first match wins.
+        /// </summary>
+        public double CornerOperationSizeAtRingMm(int boundary, double ringDiameterMm)
+        {
+            if (Fillets != null)
+            {
+                foreach (var g in Fillets)
+                {
+                    if (g == null || g.Corners == null || !(g.RadiusMm > 0)) continue;
+                    foreach (int c in g.Corners)
+                    {
+                        if (c < 0 || c > 2 * Levels.Count - 1) continue;
+                        if (CornerBoundary(c) == boundary &&
+                            System.Math.Abs(CornerRingDiameterMm(c) - ringDiameterMm) < DiameterToleranceMm)
+                        {
+                            return g.RadiusMm;
+                        }
+                    }
+                }
+            }
+            if (Chamfers != null)
+            {
+                foreach (var g in Chamfers)
+                {
+                    if (g == null || g.Corners == null || !(g.LengthMm > 0)) continue;
+                    foreach (int c in g.Corners)
+                    {
+                        if (c < 0 || c > 2 * Levels.Count - 1) continue;
+                        if (CornerBoundary(c) == boundary &&
+                            System.Math.Abs(CornerRingDiameterMm(c) - ringDiameterMm) < DiameterToleranceMm)
+                        {
+                            return g.LengthMm;
+                        }
+                    }
+                }
+            }
+            return 0;
+        }
+
+        /// <summary>
+        /// One corner vertex against another group's corner: uniqueness, wall sharing on the same
+        /// shoulder (the two opposite corners must leave wall between them: s + s' &lt; h), and
+        /// STRICT-interior zone overlap (two zones may touch — different surfaces meet exactly at
+        /// the boundary — but never eat the same stretch of cylinder).
+        /// </summary>
+        private string CornerAgainstOther(int corner, double s, double z1, double z2, double h,
+            int otherCorner, double otherS, string otherName)
+        {
+            if (otherCorner == corner)
+            {
+                return "ese vértice ya lo usa " + otherName + ".";
+            }
+            if (otherCorner < 0 || otherCorner > 2 * Levels.Count - 1 || !(otherS > 0)) return null;
+            if (!CornerExists(otherCorner)) return null;
+            if (h > 0 && CornerBoundary(otherCorner) == CornerBoundary(corner) &&
+                CornerLevel(otherCorner) != CornerLevel(corner))
+            {
+                // Opposite corner of the same shoulder: both run along the same wall.
+                if (!(s + otherS < h - PositionToleranceMm))
+                {
+                    return "no cabe junto a " + otherName + " en la altura del hombro (" + h + " mm).";
+                }
+                return null;   // zones only touch at the boundary — different surfaces
+            }
+            double o1, o2;
+            CornerZoneMm(otherCorner, otherS, out o1, out o2);
+            if (z1 < o2 - PositionToleranceMm && z2 > o1 + PositionToleranceMm)
+            {
+                return "se solapa con " + otherName + ".";
             }
             return null;
         }

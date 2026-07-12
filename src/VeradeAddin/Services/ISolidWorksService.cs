@@ -117,18 +117,19 @@ namespace VeradeAddin.Services
 
         /// <summary>
         /// True when the active document is a part whose feature tree is empty (only the default
-        /// planes/origin/folders, no bodies or user features). Gates the "Bulón personalizado"
+        /// planes/origin/folders, no bodies or user features). Gates the "Generar pieza"
         /// command, which builds geometry from scratch and must not run on a part that already
         /// contains modelling.
         /// </summary>
         bool IsActivePartEmpty();
 
         /// <summary>
-        /// Builds the custom bolt in the active (empty) part: sketches the stepped half-section on
-        /// the front plane with a centreline axis and creates a 360° solid revolve. Returns a
-        /// COM-free summary. Assumes <see cref="IsActivePartEmpty"/> and <see cref="BoltSpec.IsValid"/>.
+        /// Deletes EVERY user feature of the active part (everything after the origin in the tree,
+        /// absorbed sketches and children included) so a registered part can be regenerated from
+        /// scratch. Returns null on success or a Spanish error message. Destructive — the caller
+        /// must have warned the user first.
         /// </summary>
-        BoltBuildResult CreateCustomBolt(BoltSpec spec);
+        string ClearActivePart();
 
         /// <summary>
         /// Builds the custom stepped shaft in the active (empty) part: one 360° revolve of the whole

@@ -452,9 +452,13 @@ namespace VeradeAddin.Services
                 GatherColoredFaces(partModel, rms, map, planar, cylinder, cone);
 
                 // planarGrid is only consulted by the synthetic-view path; real views never use it.
+                // Only edge-on planar faces (normal perpendicular to the view normal) qualify: a face-on
+                // face would otherwise match every visible edge lying on it and falsely colour them.
                 var cylinderGrid = BuildGrid(cylinder);
                 var coneGrid = BuildGrid(cone);
-                var planarGrid = realView ? null : BuildGrid(planar);
+                var planarGrid = realView
+                    ? null
+                    : BuildGrid(planar.Where(f => ArePerpendicular(viewNormal, f.Normal)).ToList());
 
                 ColorOneView(drawing, drawingModel, selMgr, selData, view,
                     planar, cylinder, cone, planarGrid, cylinderGrid, coneGrid, targetSw, result, painted,

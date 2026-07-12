@@ -16,7 +16,8 @@ namespace VeradeAddin.Services
     /// front plane projected both ways onto the cylindrical face
     /// (<see cref="IModelDoc2.InsertSplitLineProject"/>), which rings the shaft at that X and splits
     /// the face — verified by reflection on the interop DLL. Shares the sketch/dimension helpers of
-    /// <c>SolidWorksService.BoltBuilder.cs</c> (same partial class).
+    /// <c>SolidWorksService.PartBuilderCommon.cs</c> (same partial class). This engine builds BOTH
+    /// catalog parts: the eje and the bulón (a fixed 2-level shaft from the wizard's bolt mode).
     /// </summary>
     public sealed partial class SolidWorksService
     {
@@ -101,6 +102,26 @@ namespace VeradeAddin.Services
                     else undercutsOk++;
                 }
 
+                // Fillets and chamfers AFTER grooves/undercuts (their zones never touch a corner:
+                // validation forbids overlap, so every target ring is intact) and BEFORE keyways
+                // (a keyway crossing a boundary may eat part of a ring; here they are still whole).
+                var fillets = spec.Fillets ?? new List<ShaftFillet>();
+                int filletsOk = 0;
+                for (int f = 0; f < fillets.Count; f++)
+                {
+                    err = ApplyShaftCornerFillet(model, spec, fillets[f]);
+                    if (err != null) skipped.Add("Redondeo " + (f + 1) + ": " + err);
+                    else filletsOk++;
+                }
+                var chamfers = spec.Chamfers ?? new List<ShaftChamfer>();
+                int chamfersOk = 0;
+                for (int c = 0; c < chamfers.Count; c++)
+                {
+                    err = ApplyShaftCornerChamfer(model, spec, chamfers[c]);
+                    if (err != null) skipped.Add("Chaflán " + (c + 1) + ": " + err);
+                    else chamfersOk++;
+                }
+
                 Feature shaftAxis = null;
                 var keyways = spec.Keyways ?? new List<ShaftKeyway>();
                 int keywaysOk = 0;
@@ -122,6 +143,19 @@ namespace VeradeAddin.Services
                     else centerHolesOk++;
                 }
 
+                // Cosmetic threads at the very end: annotation-only, anchored to a boundary circle
+                // of the level — every real cut is already done, so the anchor edge that survives
+                // here is the one the finished part actually shows. If a corner fillet/chamfer ate
+                // the boundary ring, ApplyShaftThread re-anchors on the ring the operation created.
+                var threads = spec.Threads ?? new List<ShaftThread>();
+                int threadsOk = 0;
+                for (int t = 0; t < threads.Count; t++)
+                {
+                    err = ApplyShaftThread(model, spec, threads[t]);
+                    if (err != null) skipped.Add("Rosca " + (t + 1) + ": " + err);
+                    else threadsOk++;
+                }
+
                 model.ClearSelection2(true);
                 model.EditRebuild3();
                 model.ViewZoomtofit2();
@@ -134,6 +168,9 @@ namespace VeradeAddin.Services
                 result.GrooveCount = groovesOk;
                 result.UndercutCount = undercutsOk;
                 result.CenterHoleCount = centerHolesOk;
+                result.ThreadCount = threadsOk;
+                result.FilletCount = filletsOk;
+                result.ChamferCount = chamfersOk;
                 result.Warning = skipped.Count > 0 ? string.Join("\n", skipped.ToArray()) : null;
                 return result;
             }
@@ -609,8 +646,8 @@ namespace VeradeAddin.Services
 
         /// <summary>
         /// Cuts one retaining-ring groove: rectangular notch (level radius down to D3/2, width E1)
-        /// sketched on the front plane and removed with a 360° cut-revolve — same recipe as the
-        /// bolt's <c>CutGroove</c>. The rectangle TOP is coincident with the level's silhouette
+        /// sketched on the front plane and removed with a 360° cut-revolve.
+        /// The rectangle TOP is coincident with the level's silhouette
         /// (outer Ø = the level Ø, no extra diameter dim), so it follows the surface if the level
         /// Ø is edited later. Position dim = reference edge ring → the wall the offset sign points
         /// at (positive = left wall, negative = right wall, mirroring the UI cota); falls back to
@@ -973,6 +1010,95 @@ namespace VeradeAddin.Services
             return bestX;
         }
 
+        // ---- 5b) fillets / 45° chamfers on corner rings (redondeos / chaflanes) --------------------
+
+        /// <summary>
+        /// ONE fillet feature over every corner ring of the group (shared radius): each corner id
+        /// (2·level + side, picked as a vertex on the preview) maps to the ring at the level's
+        /// boundary and Ø; the ring is walked out of the body topology
+        /// (<see cref="FindBodyCircularEdge"/>) and selected with mark 1, then a single
+        /// <c>FeatureFillet3</c> call rounds them all. Same options as the undercut's
+        /// <see cref="FilletFace"/> (Propagate | UniformRadius | AttachEdges | KeepFeatures), so
+        /// each ring is filleted as a connected whole. Returns null on success or a Spanish error.
+        /// </summary>
+        private string ApplyShaftCornerFillet(IModelDoc2 model, ShaftSpec spec, ShaftFillet fillet)
+        {
+            string selErr = SelectCornerRings(model, spec, fillet.Corners, 1);
+            if (selErr != null) return selErr;
+
+            var feature = model.FeatureManager.FeatureFillet3(
+                (int)(swFeatureFilletOptions_e.swFeatureFilletPropagate
+                    | swFeatureFilletOptions_e.swFeatureFilletUniformRadius
+                    | swFeatureFilletOptions_e.swFeatureFilletAttachEdges
+                    | swFeatureFilletOptions_e.swFeatureFilletKeepFeatures),
+                fillet.RadiusMm * 0.001, 0, 0,
+                (int)swFeatureFilletType_e.swFeatureFilletType_Simple, 0, 0,
+                null, null, null, null, null, null, null) as Feature;
+            model.ClearSelection2(true);
+            return feature == null ? "SolidWorks no pudo crear el redondeo." : null;
+        }
+
+        /// <summary>
+        /// ONE 45° angle-distance chamfer feature over every corner ring of the group (shared leg
+        /// length): each corner id's ring is selected (mark 0, like the proven bolt chamfer), then
+        /// a single <c>InsertFeatureChamfer</c> call with TangentPropagation (=4) chamfers them,
+        /// following each ring's tangent-connected edges so the chamfer never stops mid-ring. At
+        /// 45° the angle-distance pick is symmetric, so no FlipDirection is needed regardless of
+        /// which adjacent face SolidWorks references. Returns null on success or a Spanish error.
+        /// </summary>
+        private string ApplyShaftCornerChamfer(IModelDoc2 model, ShaftSpec spec, ShaftChamfer chamfer)
+        {
+            string selErr = SelectCornerRings(model, spec, chamfer.Corners, 0);
+            if (selErr != null) return selErr;
+
+            var feature = model.FeatureManager.InsertFeatureChamfer(
+                (int)swFeatureChamferOption_e.swFeatureChamferTangentPropagation,
+                (int)swChamferType_e.swChamferAngleDistance,
+                chamfer.LengthMm * 0.001, Math.PI / 4.0, 0, 0, 0, 0);
+            model.ClearSelection2(true);
+            return feature == null ? "SolidWorks no pudo crear el chaflán." : null;
+        }
+
+        /// <summary>
+        /// Appends every target corner ring of a fillet/chamfer group to the selection with the
+        /// given mark (fillet needs 1, chamfer 0). A corner id (2·level + side) maps to the ring at
+        /// the level's boundary at the LEVEL'S OWN Ø — the two symmetric preview vertices are this
+        /// same ring. Internal rings are not selectable by coordinates, so each one is walked out
+        /// of the body topology at (x, ring radius). Returns null when all were selected, or a
+        /// Spanish error (selection cleared).
+        /// </summary>
+        private static string SelectCornerRings(IModelDoc2 model, ShaftSpec spec, List<int> corners, int mark)
+        {
+            model.ClearSelection2(true);
+            var selMgr = model.SelectionManager as ISelectionMgr;
+            if (selMgr == null) return "no se pudo acceder al gestor de selección.";
+            var selData = selMgr.CreateSelectData();
+            selData.Mark = mark;
+
+            var xs = spec.BoundariesMm();
+            foreach (int corner in corners)
+            {
+                if (corner < 0 || corner > 2 * spec.Levels.Count - 1)
+                {
+                    return "vértice no válido (¿cambiaste los niveles?).";
+                }
+                double xMm = xs[ShaftSpec.CornerBoundary(corner)];
+                double radius = spec.CornerRingDiameterMm(corner) * 0.001 / 2.0;
+                var edge = FindBodyCircularEdge(model, xMm * 0.001, radius);
+                if (edge == null)
+                {
+                    model.ClearSelection2(true);
+                    return "no se encontró la arista circular en x = " + xMm + " mm.";
+                }
+                if (!((Entity)edge).Select4(true, selData))
+                {
+                    model.ClearSelection2(true);
+                    return "no se pudo seleccionar la arista en x = " + xMm + " mm.";
+                }
+            }
+            return null;
+        }
+
         // ---- 6) DIN 332 centre points (puntos de centrado) -----------------------------------------
 
         /// <summary>
@@ -1022,9 +1148,14 @@ namespace VeradeAddin.Services
                 var faceSeg = Line(sketchMgr, xf, 0, mx, pts[0][1]);
 
                 // Inner segments mouth → tip. Cylinder segments (equal, non-zero radius) get a driving
-                // Ø; the arc flank (R, DR) is a 3-point arc tangent to the seat/pilot cylinder.
+                // Ø; the arc flank (R, DR) is a 3-point arc tangent to the seat/pilot cylinder. Along
+                // the way collect what the dimension mop-up below needs: one sketch point per profile
+                // vertex, the slanted cone flanks and the arc.
                 var cylinders = new List<SketchSegment>();       // horizontal bores → Ø dims
                 var cylRadius = new List<double>();
+                var vertexPts = new List<SketchPoint> { EndPt(faceSeg) };   // vertexPts[k] ↔ pts[k]
+                var flanks = new List<SketchSegment>();          // slanted cones → angle dims
+                SketchSegment arcFlank = null;
                 for (int i = 1; i < pts.Count; i++)
                 {
                     double xa = xf + sign * pts[i - 1][0], ya = pts[i - 1][1];
@@ -1039,12 +1170,16 @@ namespace VeradeAddin.Services
                         double sx = ux / un + vx / vn, sy = uy / un + vy / vn;
                         double sn = Math.Sqrt(sx * sx + sy * sy);
                         double midX = cx + arcRadius * sx / sn, midY = cy + arcRadius * sy / sn;
-                        sketchMgr.Create3PointArc(xa, ya, 0, xb, yb, 0, midX, midY, 0);
+                        arcFlank = sketchMgr.Create3PointArc(xa, ya, 0, xb, yb, 0, midX, midY, 0);
+                        vertexPts.Add(null);                     // filled by the next line's start point
                     }
                     else
                     {
                         var seg = Line(sketchMgr, xa, ya, xb, yb);
                         if (Math.Abs(ya - yb) < 1e-9 && ya > 1e-9) { cylinders.Add(seg); cylRadius.Add(ya); }
+                        else if (Math.Abs(xa - xb) > 1e-9 && Math.Abs(ya - yb) > 1e-9) flanks.Add(seg);
+                        if (vertexPts[i - 1] == null) vertexPts[i - 1] = StartPt(seg);
+                        vertexPts.Add(EndPt(seg));
                     }
                 }
                 // Axis segment: tip T → face centre, on the revolve axis.
@@ -1071,15 +1206,107 @@ namespace VeradeAddin.Services
                     model.ClearSelection2(true);
                 }
 
-                // Driving Ø on every straight bore (pilot/core, seat), guarded so a redundant one
-                // never breaks the profile. The cones/arc are then located by their endpoints.
-                for (int i = 0; i < cylinders.Count; i++)
+                // ConstrainAll only adds automatic relations (horizontal/vertical/coincident/
+                // tangent): the Øs, the DIN depths and the cone angles are still free and the sketch
+                // stays under-defined. Guarded mop-up in DIN order — bore Øs, Ø at each remaining
+                // vertex, depths from the face, cone angles, arc radius. TryDrivingDim flips each
+                // candidate to DRIVING on the spot and deletes it again if it over-defines or breaks
+                // the sketch, so the pass stops exactly when SolidWorks reports fully defined.
+                var fPt = StartPt(faceSeg);                     // face centre (xf, 0)
+                double rMouth = pts[0][1];
+                int stack = 0;
+                bool defined = SketchFullyDefined(sketchMgr);
+
+                // Driving Ø on every straight bore (pilot/core, seat).
+                for (int i = 0; i < cylinders.Count && !defined; i++)
                 {
-                    if (SketchBroken(sketchMgr)) break;
-                    var cs = StartPt(cylinders[i]); var ce = EndPt(cylinders[i]);
+                    var cyl = cylinders[i];
+                    var cs = StartPt(cyl); var ce = EndPt(cyl);
                     double xMid = cs != null && ce != null ? 0.5 * (cs.X + ce.X) : xf;
-                    DiameterDim(model, cylinders[i], segCl, xMid, -cylRadius[i]);
-                    if (SketchBroken(sketchMgr)) { try { model.EditUndo2(1); } catch { } break; }
+                    double dy = -(rMouth + 0.006 * (++stack));
+                    defined = TryDrivingDim(model, sketchMgr,
+                        () => cyl.Select4(true, null) && segCl.Select4(true, null),
+                        () => DiametricDim(model, xMid, dy));
+                }
+                // Ø at every vertex not already carried by a bore dim (mouths, cone junctions),
+                // stacked below the axis like the bores. Each radius only ONCE: the second vertex of
+                // an equal-radius pair is tied by the auto horizontal relation, and the in-sketch
+                // solver misreports the redundant dim as "fully defined" instead of over-defined
+                // (live-tested), so the guard alone cannot catch it.
+                var seenR = new List<double>(cylRadius);
+                for (int v = 0; v < vertexPts.Count && !defined; v++)
+                {
+                    var vp = vertexPts[v];
+                    double r = pts[v][1];
+                    if (vp == null || !(r > 1e-9)) continue;
+                    bool dup = false;
+                    foreach (var sr in seenR) { if (Math.Abs(sr - r) < 1e-9) dup = true; }
+                    if (dup) continue;
+                    seenR.Add(r);
+                    double px = xf + sign * pts[v][0];
+                    double dy = -(rMouth + 0.006 * (++stack));
+                    defined = TryDrivingDim(model, sketchMgr,
+                        () => vp.Select4(true, null) && segCl.Select4(true, null),
+                        () => DiametricDim(model, px, dy));
+                }
+                // Depths from the face centre (t, b, t2..t5 — whatever is still free). Same dedupe:
+                // vertical step pairs share the x, the second depth would be redundant. The r = 0
+                // vertex (the drill point) is NOT depth-dimensioned here: its distance from the face
+                // is no DIN value (the point lies beyond t/t2) — the 120° angle fallback below pins
+                // it instead, with a face→point depth only as last resort.
+                var seenX = new List<double>();
+                Func<int, bool> depthDim = v =>
+                {
+                    var vp = vertexPts[v];
+                    if (vp == null || fPt == null || !(pts[v][0] > 1e-9)) return defined;
+                    bool dup = false;
+                    foreach (var sx in seenX) { if (Math.Abs(sx - pts[v][0]) < 1e-9) dup = true; }
+                    if (dup) return defined;
+                    seenX.Add(pts[v][0]);
+                    double px = xf + sign * pts[v][0];
+                    double dy = -(rMouth + 0.006 * (++stack));
+                    return TryDrivingDim(model, sketchMgr,
+                        () => fPt.Select4(true, null) && vp.Select4(true, null),
+                        () => model.AddHorizontalDimension2((xf + px) / 2.0, dy, 0));
+                };
+                for (int v = 0; v < vertexPts.Count && !defined; v++)
+                {
+                    if (pts[v][1] > 1e-9) defined = depthDim(v);
+                }
+                // Drill-point angle against the centreline, text inside the acute wedge (flank ↔
+                // axis) so SolidWorks measures the half angle. ONLY the tip flank (one endpoint on
+                // the axis) may get an angle, and it goes BEFORE the arc dim: every other flank is
+                // already pinned by the Ø + depth dims, and any redundant candidate triggers the
+                // in-sketch "fully defined" lie (live-tested: countersink angle left A/B/C/D/DS
+                // over-defined with the tip free; the always-tangent form-R arc did the same to R).
+                foreach (var flank in flanks)
+                {
+                    if (defined) break;
+                    var fl = flank;
+                    var pa = StartPt(fl); var pb = EndPt(fl);
+                    if (pa == null || pb == null) continue;
+                    if (Math.Min(Math.Abs(pa.Y), Math.Abs(pb.Y)) > 1e-9) continue;   // not the tip
+                    double atx = (pa.X + pb.X) / 2.0, aty = (pa.Y + pb.Y) / 4.0;
+                    defined = TryDrivingDim(model, sketchMgr,
+                        () => fl.Select4(true, null) && segCl.Select4(true, null),
+                        () => model.AddDimension2(atx, aty, 0));
+                }
+                // Arc flank radius AFTER the tip angle: only a NON-tangent arc (DR with the
+                // tabulated DIN radius) still has a free bulge by now; the tangent form-R arc is
+                // already pinned and never reaches this point undefined.
+                if (arcFlank != null && !defined && arcSeg > 0)
+                {
+                    double ax = xf + sign * (pts[arcSeg - 1][0] + pts[arcSeg][0]) / 2.0;
+                    double ay = (pts[arcSeg - 1][1] + pts[arcSeg][1]) / 2.0 + 0.004;
+                    defined = TryDrivingDim(model, sketchMgr,
+                        () => arcFlank.Select4(true, null),
+                        () => model.AddDimension2(ax, ay, 0));
+                }
+                // Last resort: face→point depth for anything still free (non-DIN value, but the
+                // sketch must end fully defined).
+                for (int v = 0; v < vertexPts.Count && !defined; v++)
+                {
+                    defined = depthDim(v);
                 }
 
                 model.ClearSelection2(true);
@@ -1099,12 +1326,171 @@ namespace VeradeAddin.Services
                     (int)swThinWallType_e.swThinWallOneDirection, 0.0, 0.0,
                     true, false, true);
                 if (cut == null) return "SolidWorks no pudo crear el corte del punto de centrado.";
+
+                // IS 2540:2008 / DIN 332-2 Fig. 1: t1 (useful thread) is measured FROM THE END FACE,
+                // and the thread lives in the tap-drill core bore that starts under the seat at t3 —
+                // so the cosmetic thread anchors on the seat-step edge (pts[n−3] = (t3, d2/2)) with
+                // blind depth t1 − t3. The edge is INTERNAL — SelectByID2 by coordinates never finds
+                // it (live-tested) — so it is walked out of the cut's cylindrical faces and selected
+                // as an entity. The core cylinder only extends one way from the edge (toward the
+                // tip), so SolidWorks infers the direction. Failure is reported but the point itself
+                // is already cut.
+                if (hole.IsThreaded && hole.D1Mm > 0 && hole.T1Mm > hole.T3Mm && pts.Count >= 3)
+                {
+                    double xEdge = xf + sign * pts[pts.Count - 3][0];   // seat step = core-bore start
+                    double rCore = pts[pts.Count - 3][1];
+                    string callout = "M" + hole.D1Mm.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+                    model.ClearSelection2(true);
+                    Feature thread = null;
+                    var threadEdge = FindCircularEdge(cut, xEdge, rCore);
+                    if (threadEdge != null && ((Entity)threadEdge).Select4(false, null))
+                    {
+                        thread = model.FeatureManager.InsertCosmeticThread3(
+                            0, "", "", hole.D1Mm * mmToM,
+                            (int)swCosmeticThreadType_e.swApplyCosmeticThread_Blind,
+                            (hole.T1Mm - hole.T3Mm) * mmToM, callout);
+                    }
+                    model.ClearSelection2(true);
+                    if (thread == null) return "punto creado, pero sin la rosca cosmética " + callout + ".";
+                }
                 return null;
             }
             finally
             {
                 RestoreSketch(sketchMgr, addToDbWas, displayWas);
             }
+        }
+
+        // ---- 7) cosmetic threads: metric annotation on a level's cylinder --------------------------
+
+        /// <summary>
+        /// Applies one COSMETIC metric thread (no geometry cut) to the cylinder of the chosen
+        /// level. Selects the circular boundary edge where the thread starts (walked from the
+        /// body topology — internal edges are not selectable by coordinates) and calls
+        /// <c>InsertCosmeticThread3</c> with the external ISO minor Ø (d − 1.226869·P) and a
+        /// BLIND depth: the specific one, or the whole level for "hasta el siguiente". Same
+        /// parameter combo already live-tested for the DIN 332-2 threaded centre points.
+        /// Returns null on success or a Spanish error (the thread is skipped, not fatal).
+        /// </summary>
+        private string ApplyShaftThread(IModelDoc2 model, ShaftSpec spec, ShaftThread thread)
+        {
+            const double mmToM = 0.001;
+            var xs = spec.BoundariesMm();
+            var level = spec.Levels[thread.LevelIndex];
+            double minor = thread.MinorDiameterMm(level.DiameterMm);
+            double depthMm = thread.DepthMm > 0 ? thread.DepthMm : level.LengthMm;
+            int anchorBnd = thread.FromRight == 1 ? thread.LevelIndex + 1 : thread.LevelIndex;
+            double xEdgeMm = xs[anchorBnd];
+            // A corner fillet/chamfer already consumed the boundary ring: the surviving ring on
+            // this cylinder sits s inward (fillet tangent edge / chamfer-cylinder edge). Anchor
+            // there and shave s off the blind depth so the thread still ends at the same x.
+            double eatenMm = spec.CornerOperationSizeAtRingMm(anchorBnd, level.DiameterMm);
+            if (eatenMm > 0)
+            {
+                xEdgeMm += thread.FromRight == 1 ? -eatenMm : eatenMm;
+                depthMm -= eatenMm;
+                if (!(depthMm > 0))
+                {
+                    return "el chaflán/redondeo del vértice de arranque cubre toda la rosca.";
+                }
+            }
+            string callout = "M" +
+                level.DiameterMm.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) + "x" +
+                thread.PitchMm.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+
+            model.ClearSelection2(true);
+            var edge = FindBodyCircularEdge(model, xEdgeMm * mmToM, level.DiameterMm * mmToM / 2.0);
+            if (edge == null)
+            {
+                return "no se encontró la arista circular de arranque en x = " + xEdgeMm +
+                       " mm (¿una entalladura o chaveta eliminó ese borde?).";
+            }
+            Feature feature = null;
+            if (((Entity)edge).Select4(false, null))
+            {
+                feature = model.FeatureManager.InsertCosmeticThread3(
+                    0, "", "", minor * mmToM,
+                    (int)swCosmeticThreadType_e.swApplyCosmeticThread_Blind,
+                    depthMm * mmToM, callout);
+            }
+            model.ClearSelection2(true);
+            return feature == null ? "SolidWorks no insertó la rosca cosmética " + callout + "." : null;
+        }
+
+        /// <summary>
+        /// Circular edge at (x, radius) on any cylindrical face of the part's solid body. Same
+        /// topology walk as <see cref="FindCircularEdge"/>, but over the WHOLE body: after split
+        /// lines, grooves and undercuts the level cylinders no longer belong to a single feature.
+        /// </summary>
+        private static Edge FindBodyCircularEdge(IModelDoc2 model, double x, double radius)
+        {
+            const double tol = 1e-6;
+            var part = model as PartDoc;
+            var bodies = part == null ? null : part.GetBodies2((int)swBodyType_e.swSolidBody, true) as object[];
+            if (bodies == null) return null;
+            foreach (object bodyObj in bodies)
+            {
+                var body = bodyObj as Body2;
+                var faces = body == null ? null : body.GetFaces() as object[];
+                if (faces == null) continue;
+                foreach (object faceObj in faces)
+                {
+                    var face = faceObj as Face2;
+                    var surface = face == null ? null : face.GetSurface() as Surface;
+                    if (surface == null || !surface.IsCylinder()) continue;
+                    var cylinder = surface.CylinderParams as double[];   // origin(3), axis(3), radius
+                    if (cylinder == null || Math.Abs(cylinder[6] - radius) > tol) continue;
+                    var edges = face.GetEdges() as object[];
+                    if (edges == null) continue;
+                    foreach (object edgeObj in edges)
+                    {
+                        var edge = edgeObj as Edge;
+                        var curve = edge == null ? null : edge.GetCurve() as Curve;
+                        if (curve == null || !curve.IsCircle()) continue;
+                        var circle = curve.CircleParams as double[];     // center(3), axis(3), radius
+                        if (circle != null && Math.Abs(circle[0] - x) < 1e-5 && Math.Abs(circle[6] - radius) < tol)
+                        {
+                            return edge;
+                        }
+                    }
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Circular edge of one of <paramref name="feature"/>'s cylindrical faces at (x, radius) —
+        /// where the centre point's cosmetic thread starts. Internal edges are NOT selectable by
+        /// coordinates (SelectByID2 returns false, live-tested 2026-07-11), so the edge is walked
+        /// out of the feature's face/edge topology instead. Returns null if not found.
+        /// </summary>
+        private static Edge FindCircularEdge(Feature feature, double x, double radius)
+        {
+            const double tol = 1e-6;
+            var faces = feature.GetFaces() as object[];
+            if (faces == null) return null;
+            foreach (object faceObj in faces)
+            {
+                var face = faceObj as Face2;
+                var surface = face == null ? null : face.GetSurface() as Surface;
+                if (surface == null || !surface.IsCylinder()) continue;
+                var cylinder = surface.CylinderParams as double[];   // origin(3), axis(3), radius
+                if (cylinder == null || Math.Abs(cylinder[6] - radius) > tol) continue;
+                var edges = face.GetEdges() as object[];
+                if (edges == null) continue;
+                foreach (object edgeObj in edges)
+                {
+                    var edge = edgeObj as Edge;
+                    var curve = edge == null ? null : edge.GetCurve() as Curve;
+                    if (curve == null || !curve.IsCircle()) continue;
+                    var circle = curve.CircleParams as double[];     // center(3), axis(3), radius
+                    if (circle != null && Math.Abs(circle[0] - x) < 1e-5 && Math.Abs(circle[6] - radius) < tol)
+                    {
+                        return edge;
+                    }
+                }
+            }
+            return null;
         }
 
         // ---- sketch solve status + guarded relations -----------------------------------------------
@@ -1193,6 +1579,66 @@ namespace VeradeAddin.Services
             }
             catch { return false; }
             finally { model.ClearSelection2(true); }
+        }
+
+        /// <summary>
+        /// AddDiameterDimension2 with the Diametric flag, shared by the centre-point mop-up: works
+        /// for a bore line + centreline AND for a vertex point + centreline selection.
+        /// </summary>
+        private static object DiametricDim(IModelDoc2 model, double x, double y)
+        {
+            var display = model.AddDiameterDimension2(x, y, 0) as DisplayDimension;
+            if (display != null) { try { display.Diametric = true; } catch { } }
+            return display;
+        }
+
+        /// <summary>
+        /// Adds ONE guarded DRIVING dimension inside the active sketch: runs the selection, adds the
+        /// dim (born driven under the swAddDrivenDimensions toggle), flips it to driving immediately
+        /// and re-checks the solve status. A dim that fails, over-defines or breaks the sketch is
+        /// deleted again — checking while the dim is still driven is useless because driven dims do
+        /// not constrain anything (live-tested 2026-07-11: forms C/D/DR/DS ended over-defined when
+        /// the flip was deferred to ForceDrivingDims). Returns true when the sketch is FULLY defined
+        /// afterwards so the caller can stop offering candidates.
+        /// </summary>
+        private static bool TryDrivingDim(
+            IModelDoc2 model, SketchManager sketchMgr, Func<bool> select, Func<object> add)
+        {
+            model.ClearSelection2(true);
+            bool selected;
+            try { selected = select(); } catch { selected = false; }
+            if (!selected) { model.ClearSelection2(true); return SketchFullyDefined(sketchMgr); }
+            object dim = null;
+            try { dim = add(); } catch { }
+            model.ClearSelection2(true);
+            if (dim == null) return SketchFullyDefined(sketchMgr);
+            MakeDriving(dim);
+            int status = SketchStatus(sketchMgr);
+            if (status != (int)swConstrainedStatus_e.swFullyConstrained &&
+                status != (int)swConstrainedStatus_e.swUnderConstrained)
+            {
+                DeleteDisplayDim(model, dim);
+            }
+            return SketchFullyDefined(sketchMgr);
+        }
+
+        /// <summary>
+        /// Deletes a display dimension via its annotation — deterministic rollback for
+        /// <see cref="TryDrivingDim"/> (EditUndo2 is unreliable here: the driving flip may or may
+        /// not be its own undo step).
+        /// </summary>
+        private static void DeleteDisplayDim(IModelDoc2 model, object displayDimension)
+        {
+            try
+            {
+                var display = displayDimension as DisplayDimension;
+                var annotation = display == null ? null : display.GetAnnotation() as Annotation;
+                if (annotation == null) return;
+                model.ClearSelection2(true);
+                if (annotation.Select3(false, null)) model.EditDelete();
+                model.ClearSelection2(true);
+            }
+            catch { }
         }
 
         /// <summary>

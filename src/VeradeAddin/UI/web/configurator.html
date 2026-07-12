@@ -1,23 +1,26 @@
 <!DOCTYPE html>
 <!--
-  Configurador de pieza (Bulón) que se muestra dentro de PartConfiguratorDialog (WebView2).
-  Pantalla 1 = catálogo. Elegir "Bulón" abre un asistente de 4 pasos con una vista previa SVG
-  acotada a la izquierda (la pieza del paso activo se dibuja en rojo) y los campos a la derecha:
-    1) Cabeza: Ø1, L1
-    2) Vástago: Ø2, L2  (Ø2 < Ø1)
-    3) Ranura (opcional): P1 (posición desde la cabeza), E1 (ancho), D3 (Ø fondo) + botón "usar DIN 471"
-    4) Chaflán (opcional): ángulo (45° por defecto) y medida (cateto axial) en el extremo libre
-
-  Pantalla 3 = asistente del EJE, 5 pasos: 1) cuerpo (n niveles Ø × L; Ø iguales consecutivos se
-  funden y la frontera es línea de división), 2) chavetas DIN 6885-A, 3) ranuras de anillo DIN 471,
-  4) entalladuras DIN 509 en los hombros (tipo E o F + solicitación usual/fatiga; medidas de la
-  norma según el Ø menor), 5) puntos de centrado DIN 332 en los extremos (formas A/B/R sin rosca y
-  D roscado; tamaño según el Ø del extremo).
+  Configurador de pieza que se muestra dentro de PartConfiguratorDialog (WebView2).
+  Pantalla 1 = catálogo (BULON y EJE). Las DOS piezas usan el MISMO asistente (el motor del eje);
+  la tarjeta solo fija el modo:
+    - EJE   (modo S): 8 pasos: 1) cuerpo (n niveles Ø × L; Ø iguales consecutivos se funden y la
+      frontera es línea de división), 2) chavetas DIN 6885-A, 3) ranuras de anillo DIN 471,
+      4) entalladuras DIN 509 en los hombros (tipo E o F + solicitación usual/fatiga; medidas de la
+      norma según el Ø menor), 5) puntos de centrado DIN 332 en los extremos (formas A/B/R sin
+      rosca y D roscado; tamaño según el Ø del extremo), 6) roscas cosméticas métricas sobre un
+      nivel (M = Ø del nivel; paso de la tabla ISO o a mano; todo el nivel o profundidad ≤ L del
+      nivel), 7) redondeos (un radio por grupo; los vértices se eligen con CLIC sobre los puntos
+      rojos del dibujo — cada nivel expone sus 4 vértices y el simétrico bajo el eje es el MISMO
+      anillo) y 8) chaflanes a 45° (una longitud por grupo, misma selección de vértices).
+    - BULON (modo B): el mismo asistente reducido a 3 pasos: 1) cuerpo FIJO en 2 niveles
+      (cabeza Ø1 × L1 y vástago Ø2 × L2, con Ø2 < Ø1), 2) ranuras de anillo y 3) chaflanes a 45°.
 
   Estilos en configurator.css, lógica en configurator.js.
   El host inyecta la tabla DIN 471 en window.DIN471 antes de cargar el JS; abrir este .html suelto
-  en el navegador funciona igual (la tabla queda vacía). Al confirmar publica
-  create|bolt|d1|l1|d2|l2|g|p1|e1|d3|c|cang|csize, o create|shaft|n|d1|l1|...|dn|ln (o cancel) al host.
+  en el navegador funciona igual (la tabla queda vacía). Si el host inyecta window.PRELOAD (mensaje
+  crudo guardado en el registro de piezas), el asistente se abre directamente con esos valores
+  (re-edición). Al confirmar publica create|shaft|S|... o create|shaft|B|... (o cancel) al host;
+  el protocolo completo está en la cabecera de configurator.js.
 -->
 <html lang="es">
 <head>
@@ -47,91 +50,31 @@
         </svg>
         <div class="ttl">EJE</div>
       </div>
-      <div class="card soon"><span class="badge">Próximamente</span><div class="desc">Más piezas</div></div>
     </div>
   </section>
 
-  <!-- ===== pantalla 2: asistente del bulón ===== -->
-  <section id="bolt" class="hidden">
-    <h1>BULON</h1>
-    <div class="sub" id="stepSub"></div>
-    <div class="cfg">
-      <div class="left" id="canvas"></div>  <!-- Cuadro renderizado-->
-      <div class="right">
-        <div class="steps">
-          <div class="dot" id="dot1">1</div><div class="bar"></div>
-          <div class="dot" id="dot2">2</div><div class="bar"></div>
-          <div class="dot" id="dot3">3</div><div class="bar"></div>
-          <div class="dot" id="dot4">4</div>
-        </div>
-
-        <!-- paso 1: cabeza -->
-        <div class="group hidden" id="grp1">
-          <h2>Paso 1 &middot; Cabeza</h2>
-          <div class="field"><label>Diámetro D1</label><div class="inp"><input id="d1" type="number" min="0" step="any" value="30"><span class="u">mm</span></div></div>
-          <div class="field"><label>Longitud L1</label><div class="inp"><input id="l1" type="number" min="0" step="any" value="5"><span class="u">mm</span></div></div>
-        </div>
-
-        <!-- paso 2: vástago -->
-        <div class="group hidden" id="grp2">
-          <h2>Paso 2 &middot; Vástago (cuerpo)</h2>
-          <div class="field"><label>Diámetro Ø2</label><div class="inp"><input id="d2" type="number" min="0" step="any" value="20"><span class="u">mm</span></div></div>
-          <div class="field"><label>Longitud L2</label><div class="inp"><input id="l2" type="number" min="0" step="any" value="25"><span class="u">mm</span></div></div>
-        </div>
-
-        <!-- paso 3: ranura -->
-        <div class="group hidden" id="grp3">
-          <h2>Paso 3 &middot; Ranura</h2>
-          <label class="toggle"><input id="gOn" type="checkbox"><span>¿Lleva ranura?</span></label>
-          <div class="opt off" id="gFields">
-            <div class="din">
-              <label class="toggle" style="margin:0"><input id="dinOn" type="checkbox"><span>Usar DIN 471</span></label>
-              <span class="note" id="dinNote"></span>
-            </div>
-            <div class="field"><label>Posición P1 (desde la cabeza)</label><div class="inp"><input id="p1" type="number" min="0" step="any" value="15"><span class="u">mm</span></div></div>
-            <div class="field"><label>Ancho E1</label><div class="inp"><input id="e1" type="number" min="0" step="any" value="1.3"><span class="u">mm</span></div></div>
-            <div class="field"><label>Diámetro fondo D3</label><div class="inp"><input id="d3" type="number" min="0" step="any" value="19"><span class="u">mm</span></div></div>
-          </div>
-        </div>
-
-        <!-- paso 4: chaflán -->
-        <div class="group hidden" id="grp4">
-          <h2>Paso 4 &middot; Chaflán</h2>
-          <label class="toggle"><input id="cOn" type="checkbox"><span>¿Lleva chaflán?</span></label>
-          <div class="opt off" id="cFields">
-            <div class="field"><label>Ángulo</label><div class="inp"><input id="cang" type="number" min="0" max="90" step="any" value="45"><span class="u">°</span></div></div>
-            <div class="field"><label>Medida (cateto axial)</label><div class="inp"><input id="csize" type="number" min="0" step="any" value="2"><span class="u">mm</span></div></div>
-          </div>
-        </div>
-
-        <div id="err" class="err"></div>
-        <div class="actions">
-          <button class="ghost" id="btnBack">Volver</button>
-          <button class="primary" id="btnNext">Siguiente</button>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ===== pantalla 3: asistente del eje (paso 1 cuerpo, paso 2 chavetas, paso 3 ranuras de anillo) ===== -->
+  <!-- ===== pantalla 2: asistente (motor del eje; sirve al EJE y al BULON) ===== -->
   <section id="shaft" class="hidden">
-    <h1>EJE</h1>
+    <h1 id="shaftTitle">EJE</h1>
     <div class="sub" id="shaftSub"></div>
     <div class="cfg">
       <div class="left" id="shaftCanvas"></div>
       <div class="right">
-        <div class="steps">
+        <div class="steps" id="shaftSteps">
           <div class="dot" id="sdot1">1</div><div class="bar"></div>
           <div class="dot" id="sdot2">2</div><div class="bar"></div>
           <div class="dot" id="sdot3">3</div><div class="bar"></div>
           <div class="dot" id="sdot4">4</div><div class="bar"></div>
-          <div class="dot" id="sdot5">5</div>
+          <div class="dot" id="sdot5">5</div><div class="bar"></div>
+          <div class="dot" id="sdot6">6</div><div class="bar"></div>
+          <div class="dot" id="sdot7">7</div><div class="bar"></div>
+          <div class="dot" id="sdot8">8</div>
         </div>
 
         <!-- paso 1: cuerpo -->
         <div class="group shaft-body" id="sgrp1">
-          <h2>Paso 1 &middot; Cuerpo (niveles)</h2>
-          <div class="field">
+          <h2 id="sgrp1Title">Paso 1 &middot; Cuerpo (niveles)</h2>
+          <div class="field" id="shaftNWrap">
             <label>Número de niveles</label>
             <div class="inp"><input id="shaftN" type="number" min="1" max="20" step="1" value="3"></div>
           </div>
@@ -181,7 +124,7 @@
 
         <!-- paso 3: ranuras de anillo de retención (DIN 471) -->
         <div class="group shaft-grooves hidden" id="sgrp3">
-          <h2>Paso 3 &middot; Ranuras de anillo</h2>
+          <h2 id="sgrp3Title">Paso 3 &middot; Ranuras</h2>
           <div id="grvList"></div>
           <button id="btnAddGrv" class="addkey">+ Añadir ranura</button>
           <div id="grvForm" class="hidden">
@@ -271,6 +214,86 @@
             <div class="krow">
               <button id="btnChOk" class="primary">Aceptar punto</button>
               <button id="btnChDel" class="ghost">Eliminar</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- paso 6: roscas cosméticas métricas sobre un nivel -->
+        <div class="group shaft-threads hidden" id="sgrp6">
+          <h2>Paso 6 &middot; Roscas cosm&eacute;ticas</h2>
+          <div id="thList"></div>
+          <button id="btnAddTh" class="addkey">+ A&ntilde;adir rosca</button>
+          <div id="thForm" class="hidden">
+            <div class="field">
+              <label>Nivel</label>
+              <select id="tlvl"></select>
+            </div>
+            <div class="field">
+              <label>Arranque</label>
+              <select id="tside">
+                <option value="0">Borde izquierdo del nivel</option>
+                <option value="1">Borde derecho del nivel</option>
+              </select>
+            </div>
+            <div class="mrow">
+              <div class="field">
+                <label>M&eacute;trica (&Oslash; del nivel)</label>
+                <div class="inp"><input id="tm" type="text" readonly></div>
+              </div>
+              <div class="field">
+                <label>Paso</label>
+                <select id="tpitch"></select>
+              </div>
+            </div>
+            <div class="field hidden" id="tpitchCustomWrap">
+              <label>Paso a mano</label>
+              <div class="inp"><input id="tpitchCustom" type="number" min="0" step="any"><span class="u">mm</span></div>
+            </div>
+            <div class="field">
+              <label>Alcance</label>
+              <select id="tmode">
+                <option value="0">Hasta el siguiente cambio (todo el nivel)</option>
+                <option value="1">Profundidad espec&iacute;fica</option>
+              </select>
+            </div>
+            <div class="field hidden" id="tdepthWrap">
+              <label>Profundidad</label>
+              <div class="inp"><input id="tdepth" type="number" min="0" step="any"><span class="u">mm</span></div>
+            </div>
+            <div class="note" id="thNote"></div>
+            <div class="krow">
+              <button id="btnThOk" class="primary">Aceptar rosca</button>
+              <button id="btnThDel" class="ghost">Eliminar</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- paso 7: redondeos (fillets) en hombros y extremos -->
+        <div class="group shaft-fillets hidden" id="sgrp7">
+          <h2>Paso 7 &middot; Redondeos</h2>
+          <div id="filList"></div>
+          <button id="btnAddFil" class="addkey">+ A&ntilde;adir redondeo</button>
+          <div id="filForm" class="hidden">
+            <div class="field"><label>Radio r (uno por grupo)</label><div class="inp"><input id="frad" type="number" min="0" step="any" value="1"><span class="u">mm</span></div></div>
+            <div class="note" id="filNote"></div>
+            <div class="krow">
+              <button id="btnFilOk" class="primary">Aceptar redondeo</button>
+              <button id="btnFilDel" class="ghost">Eliminar</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- paso 8: chaflanes a 45° en hombros y extremos -->
+        <div class="group shaft-chamfers hidden" id="sgrp8">
+          <h2 id="sgrp8Title">Paso 8 &middot; Chaflanes (45&deg;)</h2>
+          <div id="chmList"></div>
+          <button id="btnAddChm" class="addkey">+ A&ntilde;adir chafl&aacute;n</button>
+          <div id="chmForm" class="hidden">
+            <div class="field"><label>Longitud c a 45&deg; (una por grupo)</label><div class="inp"><input id="clen" type="number" min="0" step="any" value="1"><span class="u">mm</span></div></div>
+            <div class="note" id="chmNote"></div>
+            <div class="krow">
+              <button id="btnChmOk" class="primary">Aceptar chafl&aacute;n</button>
+              <button id="btnChmDel" class="ghost">Eliminar</button>
             </div>
           </div>
         </div>

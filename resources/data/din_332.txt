@@ -131,10 +131,18 @@ Angulos: punta 120; avellanado 60; proteccion 120.
   M20  17.5      21     28.4   31.3   31.5   42   53   15    6.4   1.3   50-85
   M24  21        25     34.2   38     40     50   63   18    8     1.6   85-130
 
-Notas roscadas (Fig. 1 / Fig. 2 IS 2540):
-  t1 = longitud util de rosca; t2 = profundidad total taladrada (min);
+Notas roscadas (Fig. 1 / Fig. 2 IS 2540:2008, escan oficial BIS verificado
+2026-07-11 -- law.resource.org/pub/in/bis/S01/is.2540.2008.pdf):
+  TODAS las profundidades se miden desde la CARA del extremo; en DS la
+  proteccion t5 NO desplaza a t4/t3/t2.
+  t1 = longitud util de rosca (cara -> fin de rosca; despues viene la
+       salida de rosca "e" segun IS 1369-3);
+  t2 = profundidad MIN del cilindro de broca (cara -> fondo del tramo
+       recto d2); la punta 120 queda MAS ALLA de t2;
   t3 = profundidad del asiento/avellanado; t4 = profundidad del contacto
   60 (d4); t5 = profundidad de la proteccion 120 (solo DS).
+  Rosca cosmetica en el modelo: arranca en el asiento (t3) con longitud
+  t1 - t3 (la rosca vive en el taladro d2, t3 -> t1 desde la cara).
 
 ========================================================================
 RECOMENDACION POR Ø DE EJE (solo sugerencia, editable; NO norma para
