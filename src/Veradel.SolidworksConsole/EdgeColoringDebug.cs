@@ -472,7 +472,7 @@ namespace Veradel.SolidworksConsole
                 int iz0 = Cell(f.Box[2]) - 1, iz1 = Cell(f.Box[5]) + 1;
                 for (int x = ix0; x <= ix1; x++)
                     for (int y = iy0; y <= iy1; y++)
-                        for (int z = iz0; z <= iz1; z++)    p
+                        for (int z = iz0; z <= iz1; z++)
                         {
                             var key = (x, y, z);
                             List<FaceData> list;

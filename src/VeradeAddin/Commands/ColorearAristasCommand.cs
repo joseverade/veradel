@@ -26,8 +26,8 @@ namespace VeradeAddin.Commands
             _log = log;
         }
 
-        public string Name { get { return "Colorear aristas (experimental)"; } }
-        public string Tooltip { get { return "Colorear aristas (experimental)"; } }
+        public string Name { get { return "Colorear aristas"; } }
+        public string Tooltip { get { return "Colorear aristas"; } }
         public string Hint { get { return "Colorea las aristas de la VISTA de pieza seleccionada según las apariencias de color de su pieza"; } }
         public CommandIcon Icon { get { return CommandIcon.ColorEdges; } }
 
@@ -57,18 +57,6 @@ namespace VeradeAddin.Commands
             {
                 _log.Log(Name, docType, LogOutcome.Cancel, plan.Message ?? "Nothing to color");
                 _dialog.ShowMessage(Name, plan.Message ?? "No hay colores que aplicar.");
-                return;
-            }
-
-            bool proceed = _dialog.Confirm(Name,
-                "⚠ Comando EXPERIMENTAL.\n\n" +
-                "Colorea las aristas de la VISTA seleccionada según las apariencias de su pieza. " +
-                "Puede TARDAR: el tiempo crece con la cantidad de caras a procesar (no es lo mismo 30 que 400). " +
-                "La pieza tiene " + plan.TotalFaceCount + " caras.\n\n" +
-                "Para deshacer, usa «Líneas a negro» sobre la misma vista.\n\n¿Continuar?");
-            if (!proceed)
-            {
-                _log.Log(Name, docType, LogOutcome.Cancel, "User declined experimental warning");
                 return;
             }
 

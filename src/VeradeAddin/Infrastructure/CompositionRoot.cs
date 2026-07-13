@@ -48,7 +48,8 @@ namespace VeradeAddin.Infrastructure
                 .Add(new ExportarCommand(swService, _dialog, Logger))
                 .Add(new ColorearAristasCommand(swService, _dialog, Logger))
                 .Add(new LimpiarColoresCommand(swService, _dialog, Logger))
-                .Add(new DespieceCalderiaCommand(swService, _dialog, Logger))
+                // Despiece de calderería oculto del ribbon (código intacto): descomentar para reactivar.
+                //.Add(new DespieceCalderiaCommand(swService, _dialog, Logger))
                 .Add(new ConfigurarPiezaCommand(swService, _dialog, partRegistry, Logger));
 
             // --- Ribbon registrar ----------------------------------------------------

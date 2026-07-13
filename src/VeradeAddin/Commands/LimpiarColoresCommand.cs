@@ -44,16 +44,6 @@ namespace VeradeAddin.Commands
         {
             const string docType = "Drawing";
 
-            if (!_dialog.Confirm(Name,
-                "Devuelve a NEGRO las aristas que coloreaste en la VISTA de pieza seleccionada.\n\n" +
-                "Si no hay registro en memoria de esta sesión (p.ej. tras reiniciar), pondrá en negro TODAS " +
-                "las aristas de la vista (incluidas las ocultas).\n\n" +
-                "Selecciona una vista de pieza antes de continuar.\n\n¿Continuar?"))
-            {
-                _log.Log(Name, docType, LogOutcome.Cancel, "User declined");
-                return;
-            }
-
             EdgeColoringResult result;
             using (_dialog.ShowWait(Name, "Poniendo las aristas en negro…"))
             {
