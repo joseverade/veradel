@@ -78,8 +78,21 @@ namespace VeradeAddin.Services
                 // still cut, and every skip is reported at the end via result.Warning.
                 var skipped = new List<string>();
 
-                // Grooves BEFORE keyways: their position dims reference the boundary edge rings,
-                // which an angled keyway cut could otherwise have carved away.
+                // Feature-tree order is a product convention: keyways, cosmetic threads, grooves,
+                // undercuts, centre points, fillets, chamfers. Caveat inherited from the old
+                // ring-anchored order: a keyway straddling a diameter boundary (overlap is blocked
+                // by validation, straddle is not) can eat the shoulder ring a later groove/undercut/
+                // fillet/chamfer anchors to — those operations then skip with a warning.
+                Feature shaftAxis = null;
+                var keyways = spec.Keyways ?? new List<ShaftKeyway>();
+                int keywaysOk = 0;
+                for (int k = 0; k < keyways.Count; k++)
+                {
+                    err = CutKeyway(model, spec, keyways[k], ref shaftAxis);
+                    if (err != null) skipped.Add("Chaveta " + (k + 1) + ": " + err);
+                    else keywaysOk++;
+                }
+
                 var grooves = spec.Grooves ?? new List<ShaftGroove>();
                 int groovesOk = 0;
                 for (int g = 0; g < grooves.Count; g++)
@@ -89,10 +102,8 @@ namespace VeradeAddin.Services
                     else groovesOk++;
                 }
 
-                // Undercuts AFTER grooves (a groove never touches a diameter-change boundary, so
-                // every shoulder ring is still intact here) and BEFORE keyways (an overlapping
-                // keyway cut is blocked by validation, but a straddling one could still eat the
-                // shoulder ring the undercut anchors to).
+                // Undercuts after grooves: a groove never touches a diameter-change boundary, so
+                // every shoulder ring a groove leaves behind is still intact here.
                 var undercuts = spec.Undercuts ?? new List<ShaftUndercut>();
                 int undercutsOk = 0;
                 for (int u = 0; u < undercuts.Count; u++)
@@ -102,9 +113,19 @@ namespace VeradeAddin.Services
                     else undercutsOk++;
                 }
 
-                // Fillets and chamfers AFTER grooves/undercuts (their zones never touch a corner:
-                // validation forbids overlap, so every target ring is intact) and BEFORE keyways
-                // (a keyway crossing a boundary may eat part of a ring; here they are still whole).
+                // Centre points: coaxial cut-revolves on the end faces, independent of every
+                // other feature (the faces are untouched by keyways/grooves/undercuts).
+                var centerHoles = spec.CenterHoles ?? new List<ShaftCenterHole>();
+                int centerHolesOk = 0;
+                for (int c = 0; c < centerHoles.Count; c++)
+                {
+                    err = CutShaftCenterHole(model, spec, centerHoles[c]);
+                    if (err != null) skipped.Add("Punto de centrado " + (c + 1) + ": " + err);
+                    else centerHolesOk++;
+                }
+
+                // Fillets and chamfers last: their zones never touch a groove/undercut (validation
+                // forbids overlap), so every target corner ring is still intact at this point.
                 var fillets = spec.Fillets ?? new List<ShaftFillet>();
                 int filletsOk = 0;
                 for (int f = 0; f < fillets.Count; f++)
@@ -122,31 +143,11 @@ namespace VeradeAddin.Services
                     else chamfersOk++;
                 }
 
-                Feature shaftAxis = null;
-                var keyways = spec.Keyways ?? new List<ShaftKeyway>();
-                int keywaysOk = 0;
-                for (int k = 0; k < keyways.Count; k++)
-                {
-                    err = CutKeyway(model, spec, keyways[k], ref shaftAxis);
-                    if (err != null) skipped.Add("Chaveta " + (k + 1) + ": " + err);
-                    else keywaysOk++;
-                }
-
-                // Centre points last: coaxial cut-revolves on the end faces, independent of every
-                // other feature (the faces are untouched by keyways/grooves/undercuts).
-                var centerHoles = spec.CenterHoles ?? new List<ShaftCenterHole>();
-                int centerHolesOk = 0;
-                for (int c = 0; c < centerHoles.Count; c++)
-                {
-                    err = CutShaftCenterHole(model, spec, centerHoles[c]);
-                    if (err != null) skipped.Add("Punto de centrado " + (c + 1) + ": " + err);
-                    else centerHolesOk++;
-                }
-
-                // Cosmetic threads at the very end: annotation-only, anchored to a boundary circle
-                // of the level — every real cut is already done, so the anchor edge that survives
-                // here is the one the finished part actually shows. If a corner fillet/chamfer ate
-                // the boundary ring, ApplyShaftThread re-anchors on the ring the operation created.
+                // Cosmetic threads at the very end — this is a hard constraint, not tree cosmetics:
+                // the annotation anchors to a circular edge that must exist on the FINISHED body.
+                // If a corner fillet/chamfer ate the boundary ring, ApplyShaftThread re-anchors on
+                // the ring that operation created — which only exists once the operation ran.
+                // (Tree order is unaffected: cosmetic threads nest under their owning feature.)
                 var threads = spec.Threads ?? new List<ShaftThread>();
                 int threadsOk = 0;
                 for (int t = 0; t < threads.Count; t++)
