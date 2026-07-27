@@ -32,6 +32,12 @@ namespace VeradeAddin.Services
         private DAssemblyDocEvents_NewSelectionNotifyEventHandler _pickSelHandler;
         private DAssemblyDocEvents_DestroyNotifyEventHandler _pickDestroyHandler;
         private ICallout _currentCallout;
+        // Strong ref: SolidWorks holds the handler through a CCW, but keeping it here guarantees the
+        // managed object outlives the callout so a drag callback can never hit a collected handler.
+        private HoleCalloutHandler _currentCalloutHandler;
+        // The entity the current callout is attached to, so we can tell an actual selection change
+        // apart from the spurious NewSelectionNotify events fired while dragging the callout.
+        private IEntity _calloutEntity;
 
         public bool IsHolePickModeActive()
         {
@@ -174,6 +180,16 @@ namespace VeradeAddin.Services
                 return;
             }
 
+            // If the same entity is already annotated, leave the live callout untouched. Rebuilding it
+            // on every NewSelectionNotify tears the callout down mid-drag, and SetCallout on the
+            // torn-down object crashes SolidWorks with an AccessViolationException.
+            IEntity selEnt = (edge as IEntity) ?? (face as IEntity);
+            if (_currentCallout != null && _calloutEntity != null && selEnt != null
+                && SameCom(_calloutEntity, selEnt))
+            {
+                return;
+            }
+
             if (face == null)
             {
                 face = CylindricalFaceOfEdge(edge);
@@ -186,7 +202,7 @@ namespace VeradeAddin.Services
                 return;
             }
 
-            ShowCallout(selMgr, selIndex, desc.Lines);
+            ShowCallout(selMgr, selIndex, selEnt, desc);
         }
 
         // ---- description ---------------------------------------------------------------------------
@@ -198,6 +214,11 @@ namespace VeradeAddin.Services
             // Each entry is "Label|Value"; empty value => single-column row.
             public readonly List<string> Lines = new List<string>();
 
+            // When set, the row at ResolveRow acts as a "Resolver" link that resolves the lightweight
+            // component when the user activates it.
+            public int ResolveRow = -1;
+            public Component2 ResolveComponent;
+
             public void Add(string label, string value)
             {
                 Lines.Add(label + "|" + (value ?? string.Empty));
@@ -205,6 +226,20 @@ namespace VeradeAddin.Services
         }
 
         private HoleDescription DescribeHole(IFace2 face, IEdge edge, Component2 comp)
+        {
+            var d = DescribeHoleCore(face, edge, comp);
+
+            // A mirrored hole's face belongs to the mirror feature, not to the original Hole Wizard /
+            // cosmetic thread, so everything we report about it is inferred from the source hole and may
+            // not match reality. Flag it so the user does not trust the numbers blindly.
+            if (d != null && d.Lines.Count > 0 && IsMirroredFeature(face))
+            {
+                d.Add("Simétrica", "datos no reales");
+            }
+            return d;
+        }
+
+        private HoleDescription DescribeHoleCore(IFace2 face, IEdge edge, Component2 comp)
         {
             var d = new HoleDescription();
 
@@ -244,13 +279,21 @@ namespace VeradeAddin.Services
                 if (!string.IsNullOrWhiteSpace(match.Callout)) d.Add("Rosca", match.Callout);
                 else if (!string.IsNullOrWhiteSpace(match.Size)) d.Add("Rosca", match.Size);
                 if (match.NominalDia > 0) d.Add("Ø nominal", Mm(match.NominalDia));
-                d.Add("Ø taladro", Mm(boreDia));
+                d.Add("Ø Agujero", Mm(boreDia));
                 return d;
             }
 
-            // Plain (unthreaded) hole: just the measured diameter.
+            // Plain (unthreaded) hole: just the measured diameter. If the component is lightweight,
+            // SolidWorks only exposes the geometry (no feature tree), so we can measure the bore but
+            // never recover the thread. Warn the user to resolve it instead of silently hiding it.
             d.Title = "Ø" + Mm(boreDia);
-            d.Add("Ø taladro", Mm(boreDia));
+            d.Add("Ø Agujero", Mm(boreDia));
+            if (IsComponentLightweight(comp))
+            {
+                d.ResolveRow = d.Lines.Count; // index of the row we are about to add
+                d.ResolveComponent = comp;
+                d.Add("Aligerado", "Resolver");
+            }
             return d;
         }
 
@@ -272,8 +315,7 @@ namespace VeradeAddin.Services
 
         private void FillFromWizard(HoleDescription d, IWizardHoleFeatureData2 w)
         {
-            string fastener = Safe(() => w.FastenerSize);   // e.g. "M8"
-            string threadClass = Safe(() => w.ThreadClass);
+            string fastener = Safe(() => w.FastenerSize);   // e.g. "M8x1.25" (includes the pitch)
 
             // The modelled bore (smaller) and the counter feature (larger), so both the minimum and
             // the maximum diameter of a countersink / counterbore hole are reported.
@@ -291,14 +333,14 @@ namespace VeradeAddin.Services
 
             d.Title = threaded && !string.IsNullOrWhiteSpace(fastener)
                       ? fastener
-                      : (bore > 0 ? "Ø" + Mm(bore) : "Taladro");
+                      : (bore > 0 ? "Ø" + Mm(bore) : "Agujero");
 
             if (!string.IsNullOrWhiteSpace(fastener))
             {
-                d.Add(threaded ? "Rosca" : "Tamaño",
-                      fastener + (threaded && !string.IsNullOrWhiteSpace(threadClass) ? " " + threadClass : ""));
+                // Thread designation with its pitch (kept), without the tolerance class.
+                d.Add(threaded ? "Para rosca de" : "Tamaño", fastener);
             }
-            if (bore > 0) d.Add("Ø taladro (mín)", Mm(bore));
+            if (bore > 0) d.Add("Ø agujero (mín)", Mm(bore));
             if (csink > 0) d.Add("Ø avellanado (máx)", Mm(csink));
             if (cbore > 0) d.Add("Ø caja (máx)", Mm(cbore));
             if (depth > 0) d.Add("Profundidad", Mm(depth));
@@ -360,6 +402,35 @@ namespace VeradeAddin.Services
             return best;
         }
 
+        /// <summary>
+        /// True when the face is produced by a mirror feature — either a mirrored body ("por sólido")
+        /// or a mirrored feature ("por operación"). Both cases give the face a mirror-type owning
+        /// feature ("Mirror...") instead of the real hole/thread feature.
+        /// </summary>
+        private static bool IsMirroredFeature(IFace2 face)
+        {
+            if (face == null) return false;
+            var feat = face.GetFeature() as IFeature;
+            if (feat == null) return false;
+            string type = null;
+            try { type = feat.GetTypeName2(); } catch { }
+            return !string.IsNullOrEmpty(type)
+                && type.IndexOf("Mirror", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        /// <summary>True when the component is loaded lightweight (feature/thread data unavailable).</summary>
+        private static bool IsComponentLightweight(Component2 comp)
+        {
+            if (comp == null) return false;
+            try
+            {
+                int s = comp.GetSuppression2();
+                return s == (int)swComponentSuppressionState_e.swComponentLightweight
+                    || s == (int)swComponentSuppressionState_e.swComponentFullyLightweight;
+            }
+            catch { return false; }
+        }
+
         // ---- geometry ------------------------------------------------------------------------------
 
         private static bool IsCylindrical(IFace2 face)
@@ -411,14 +482,16 @@ namespace VeradeAddin.Services
         /// visible until the object is deselected (the proven CodeStack pattern — no leader/position
         /// maths needed). The callout handler must be COM-visible for SolidWorks to accept it.
         /// </summary>
-        private void ShowCallout(ISelectionMgr selMgr, int selIndex, List<string> lines)
+        private void ShowCallout(ISelectionMgr selMgr, int selIndex, IEntity entity, HoleDescription desc)
         {
             // Replace any previous callout so only the latest hole is annotated.
             HideCurrentCallout();
 
+            var lines = desc.Lines;
             try
             {
-                var callout = selMgr.CreateCallout2(lines.Count, new HoleCalloutHandler()) as ICallout;
+                var handler = new HoleCalloutHandler();
+                var callout = selMgr.CreateCallout2(lines.Count, handler) as ICallout;
                 if (callout == null)
                 {
                     _log.Log("IdentificarRosca", "Assembly", LogOutcome.Error, "CreateCallout2 returned null");
@@ -434,11 +507,29 @@ namespace VeradeAddin.Services
 
                     callout.set_Label2(i, label);
                     callout.set_Value(i, value);
-                    callout.set_ValueInactive(i, true); // read-only, informational
+
+                    bool isResolveRow = i == desc.ResolveRow;
+                    // The "Resolver" row stays editable so activating it fires OnStringValueChanged;
+                    // every other value is read-only informational. The row is coloured blue so it
+                    // reads as a clickable link.
+                    callout.set_ValueInactive(i, !isResolveRow);
+                    if (isResolveRow)
+                    {
+                        try { callout.set_TextColor(i, 0x00FF0000); } catch { } // COLORREF (BGR) = blue
+                    }
+                }
+
+                if (desc.ResolveComponent != null && desc.ResolveRow >= 0)
+                {
+                    var compToResolve = desc.ResolveComponent;
+                    handler.ResolveRow = desc.ResolveRow;
+                    handler.OnResolve = () => ResolveComponentAndRefresh(compToResolve);
                 }
 
                 bool ok = selMgr.SetCallout(selIndex, callout as Callout);
                 _currentCallout = callout;
+                _currentCalloutHandler = handler;
+                _calloutEntity = entity;
 
                 try { _pickModel?.GraphicsRedraw2(); } catch { }
 
@@ -454,11 +545,35 @@ namespace VeradeAddin.Services
             }
         }
 
+        /// <summary>
+        /// Resolves a lightweight component so its thread data becomes readable, then rebuilds the
+        /// callout. Deferred via a one-shot timer because we are called from inside the callout's own
+        /// OnStringValueChanged callback: resolving reloads the component and invalidates the face the
+        /// callout hangs off, so doing it mid-callback would re-enter SolidWorks and crash.
+        /// </summary>
+        private void ResolveComponentAndRefresh(Component2 comp)
+        {
+            if (comp == null) return;
+
+            var timer = new System.Windows.Forms.Timer { Interval = 1 };
+            timer.Tick += (s, e) =>
+            {
+                timer.Stop();
+                timer.Dispose();
+                try { HideCurrentCallout(); } catch { } // drop the stale callout before geometry reloads
+                try { comp.SetSuppression2((int)swComponentSuppressionState_e.swComponentFullyResolved); } catch { }
+                try { RefreshCalloutFromSelection(); } catch { }
+            };
+            timer.Start();
+        }
+
         private void HideCurrentCallout()
         {
             if (_currentCallout == null) return;
             try { _currentCallout.Display(false); } catch { }
             _currentCallout = null;
+            _currentCalloutHandler = null;
+            _calloutEntity = null;
             try { _pickModel?.GraphicsRedraw2(); } catch { }
         }
 
@@ -478,6 +593,25 @@ namespace VeradeAddin.Services
             return 0;
         }
 
+        /// <summary>True when both RCWs wrap the same underlying COM object (canonical IUnknown).</summary>
+        private static bool SameCom(object a, object b)
+        {
+            if (a == null || b == null) return false;
+            IntPtr pa = IntPtr.Zero, pb = IntPtr.Zero;
+            try
+            {
+                pa = Marshal.GetIUnknownForObject(a);
+                pb = Marshal.GetIUnknownForObject(b);
+                return pa == pb;
+            }
+            catch { return false; }
+            finally
+            {
+                if (pa != IntPtr.Zero) Marshal.Release(pa);
+                if (pb != IntPtr.Zero) Marshal.Release(pb);
+            }
+        }
+
         private static string Safe(Func<string> get)
         {
             try { return get(); } catch { return null; }
@@ -495,8 +629,10 @@ namespace VeradeAddin.Services
     }
 
     /// <summary>
-    /// Minimal callout handler: our callouts are read-only (informational), so any attempted value
-    /// edit is rejected. Required because <see cref="ISelectionMgr.CreateCallout2"/> needs a handler.
+    /// Callout handler. Values are informational (read-only), so any attempted edit is rejected — with
+    /// one exception: the "Resolver" row of a lightweight-component callout uses the value-edit callback
+    /// as its click hook, invoking <see cref="OnResolve"/> to resolve the component. Required because
+    /// <see cref="ISelectionMgr.CreateCallout2"/> needs a handler.
     ///
     /// MUST be public + COM-visible: the assembly is <c>[assembly: ComVisible(false)]</c>, so without
     /// it SolidWorks cannot marshal the handler and the callout never appears. The default class
@@ -508,9 +644,18 @@ namespace VeradeAddin.Services
     [ComVisible(true)]
     public sealed class HoleCalloutHandler : ISwCalloutHandler
     {
+        /// <summary>Row id of the "Resolver" link, or -1 when the callout has no resolve action.</summary>
+        public int ResolveRow = -1;
+        /// <summary>Invoked when the "Resolver" row is activated.</summary>
+        public Action OnResolve;
+
         public bool OnStringValueChanged(object pManipulator, int rowID, string text)
         {
-            return false; // reject edits
+            if (OnResolve != null && rowID == ResolveRow)
+            {
+                try { OnResolve(); } catch { }
+            }
+            return false; // never accept the typed text; the row is a link, not a real field
         }
     }
 }
