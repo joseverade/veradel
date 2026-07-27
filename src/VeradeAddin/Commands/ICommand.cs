@@ -35,4 +35,15 @@ namespace VeradeAddin.Commands
         /// <summary>Run the command. Implementations must log their own outcome.</summary>
         void Execute();
     }
+
+    /// <summary>
+    /// A command that behaves as a toggle: its ribbon button stays visually pressed while
+    /// <see cref="IsActive"/> is true. The registrar reports the pressed state to SolidWorks
+    /// (selected + enabled) instead of the plain enabled/disabled state of a normal command.
+    /// </summary>
+    public interface IToggleCommand : ICommand
+    {
+        /// <summary>True when the toggle is currently on (button drawn pressed).</summary>
+        bool IsActive { get; }
+    }
 }

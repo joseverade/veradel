@@ -84,16 +84,20 @@
     <Compile Include="Commands\OpenFolderCommand.cs" />
     <Compile Include="Commands\MostrarRoscaCommand.cs" />
     <Compile Include="Commands\ExtraerPiezaCommand.cs" />
+    <Compile Include="Commands\IdentificarRoscaCommand.cs" />
     <Compile Include="Commands\CapturaPantallaCommand.cs" />
     <Compile Include="Commands\ExportarCommand.cs" />
     <Compile Include="Commands\ColorearAristasCommand.cs" />
     <Compile Include="Commands\LimpiarColoresCommand.cs" />
     <Compile Include="Commands\DespieceCalderiaCommand.cs" />
     <Compile Include="Commands\ConfigurarPiezaCommand.cs" />
+    <Compile Include="Commands\LicenciaCommand.cs" />
     <Compile Include="Infrastructure\CompositionRoot.cs" />
     <Compile Include="Infrastructure\CommandRegistrar.cs" />
     <Compile Include="Infrastructure\ComRelease.cs" />
     <Compile Include="Infrastructure\RibbonIds.cs" />
+    <Compile Include="Licensing\ILicenseService.cs" />
+    <Compile Include="Licensing\LicenseService.cs" />
     <Compile Include="Logging\ILogger.cs" />
     <Compile Include="Logging\ILogSink.cs" />
     <Compile Include="Logging\Logger.cs" />
@@ -128,6 +132,7 @@
     <Compile Include="Services\ISolidWorksService.cs" />
     <Compile Include="Services\SolidWorksService.cs" />
     <Compile Include="Services\SolidWorksService.EdgeColoring.cs" />
+    <Compile Include="Services\SolidWorksService.HoleInfo.cs" />
     <Compile Include="Services\SolidWorksService.Boilermaking.cs" />
     <Compile Include="Services\SolidWorksService.PartBuilderCommon.cs" />
     <Compile Include="Services\SolidWorksService.ShaftBuilder.cs" />
@@ -150,6 +155,9 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="UI\ListChoiceDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\LicenseDialog.cs">
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="UI\PartConfiguratorDialog.cs">

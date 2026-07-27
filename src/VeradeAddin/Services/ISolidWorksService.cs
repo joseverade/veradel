@@ -36,6 +36,17 @@ namespace VeradeAddin.Services
         /// <summary>True when the active document is an assembly with a component selected.</summary>
         bool IsComponentSelectedInActiveAssembly();
 
+        /// <summary>True while "Identificar rosca / taladro" pick-mode is active (button pressed).</summary>
+        bool IsHolePickModeActive();
+
+        /// <summary>
+        /// Toggles the "Identificar rosca / taladro" pick-mode. When on, the add-in listens to the
+        /// active assembly's selection events and shows a Measure-style callout with the thread and
+        /// diameters every time the user clicks a hole's circular edge / cylindrical face. Returns the
+        /// NEW active state (false when it could not start, e.g. no active assembly).
+        /// </summary>
+        bool ToggleHolePickMode();
+
         /// <summary>
         /// Describes what extracting the selected component would change (fixed? how many mates?),
         /// so the caller can warn the user first. Null when the active doc is not an assembly or

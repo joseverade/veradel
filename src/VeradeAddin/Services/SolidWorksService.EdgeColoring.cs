@@ -464,11 +464,13 @@ namespace VeradeAddin.Services
                     planar, cylinder, cone, planarGrid, cylinderGrid, coneGrid, targetSw, result, painted,
                     viewNormal, realView, isoView, probes);
 
-                // Silhouette edges (cylinder/cone outlines) have no model edge — match them by midpoint
-                // against the once-collected silhouette list, scoped to THIS view.
+                // Silhouette edges (cylinder/cone outlines) have no model edge — match each one by its
+                // OWNING face (ISilhouetteEdge::GetFace) against the coloured cylinder/cone faces, scoped
+                // to THIS view. Midpoint-vs-grid is only a fallback: silhouette endpoints are not reliably
+                // in part model space, so the geometric match can miss legitimate silhouettes.
                 try { selData.View = null; } catch { }
                 result.EdgesColored += ColorSilhouettesFromList(drawing, drawingModel, selMgr, selData,
-                    silhouettes, cylinderGrid, coneGrid, targetSw, painted);
+                    silhouettes, cylinder, cone, cylinderGrid, coneGrid, targetSw, painted);
             }
             finally
             {
@@ -544,37 +546,74 @@ namespace VeradeAddin.Services
             drawingModel.ClearSelection2(true);
         }
 
-        // Colour the silhouettes (curved-face outlines) of this view whose midpoint lies on a cylinder/cone
-        // face of the current colour. Works off the once-collected silhouette list; selection-filter/suspend
-        // state is managed once by the caller (ApplyEdgeColoring).
+        // Colour the silhouettes (curved-face outlines) of this view that belong to a cylinder/cone face
+        // of the current colour. Primary match: the silhouette's OWNING face (GetFace) against the
+        // coloured face lists. Fallback: midpoint vs the grids (only reachable if GetFace yields nothing).
+        // Works off the once-collected silhouette list; selection-filter/suspend state is managed once by
+        // the caller (ApplyEdgeColoring).
         private int ColorSilhouettesFromList(IDrawingDoc drawing, IModelDoc2 drawingModel, ISelectionMgr selMgr,
             SelectData selData, List<object> silhouettes,
+            List<FaceData> cylinder, List<FaceData> cone,
             Dictionary<(int, int, int), List<FaceData>> cylinderGrid,
             Dictionary<(int, int, int), List<FaceData>> coneGrid, int targetSw,
             HashSet<(long, long, long)> painted)
         {
             if (silhouettes == null || silhouettes.Count == 0) return 0;
 
-            int colored = 0;
             foreach (var os in silhouettes)
             {
                 var sil = os as SilhouetteEdge;
                 if (sil == null) continue;
 
                 double x, y, z;
-                if (!SilhouetteMidpoint(sil, out x, out y, out z)) continue;
-                if (!PointLiesOnGridFace(x, y, z, cylinderGrid) && !PointLiesOnGridFace(x, y, z, coneGrid)) continue;
+                bool hasMid = SilhouetteMidpoint(sil, out x, out y, out z);
 
-                if (selMgr.AddSelectionListObject(sil, selData))
+                bool match = SilhouetteFaceMatches(sil, cylinder) || SilhouetteFaceMatches(sil, cone);
+                if (!match && hasMid)
                 {
-                    colored++;
-                    painted.Add(MidpointKey(x, y, z));
+                    match = PointLiesOnGridFace(x, y, z, cylinderGrid) || PointLiesOnGridFace(x, y, z, coneGrid);
                 }
+                if (!match) continue;
+
+                // Do NOT gate on the AddSelectionListObject return value — as with view-resolved model
+                // edges, it can report false even when the silhouette IS added to the selection.
+                selMgr.AddSelectionListObject(sil, selData);
+                if (hasMid) painted.Add(MidpointKey(x, y, z));
             }
 
+            int colored = selMgr.GetSelectedObjectCount2(-1);
             if (colored > 0) drawing.SetLineColor(targetSw);
             drawingModel.ClearSelection2(true);
             return colored;
+        }
+
+        // Does this silhouette belong to one of the coloured faces? Same-face test: identical surface
+        // bounding box (the silhouette's face and the gathered face are the same part-model face, so
+        // their boxes agree to numeric noise; distinct faces of a real part differ well beyond 1e-5).
+        private static bool SilhouetteFaceMatches(SilhouetteEdge sil, List<FaceData> faces)
+        {
+            if (faces == null || faces.Count == 0) return false;
+
+            var face = sil.GetFace();
+            if (face == null) return false;
+            try
+            {
+                var box = face.GetBox() as double[];
+                if (box == null || box.Length < 6) return false;
+
+                foreach (var fd in faces)
+                {
+                    if (fd.Box == null || fd.Box.Length < 6) continue;
+                    bool same = true;
+                    for (int i = 0; i < 6 && same; i++)
+                    {
+                        same = Math.Abs(box[i] - fd.Box[i]) <= BoxTolerance;
+                    }
+                    if (same) return true;
+                }
+                return false;
+            }
+            finally { ComRelease.Release(face); }
         }
 
         // ===================== reset one view (Líneas a negro) =====================

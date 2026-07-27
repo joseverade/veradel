@@ -71,5 +71,11 @@ namespace VeradeAddin.Services
         /// previously generated part). Returns the chosen part and its spec, or null if cancelled.
         /// </summary>
         PartConfiguratorSelection ShowPartConfigurator(string preloadMessage = null);
+
+        /// <summary>
+        /// Shows the license/activation dialog (trial status + key entry). Blocking; the caller
+        /// re-checks <see cref="Licensing.ILicenseService.CanRun"/> afterwards.
+        /// </summary>
+        void ShowLicense(Licensing.ILicenseService license);
     }
 }

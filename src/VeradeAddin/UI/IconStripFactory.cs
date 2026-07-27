@@ -132,6 +132,7 @@ namespace VeradeAddin.UI
                 case CommandIcon.ClearColors: ColorEdges(g, r, unit, true); break;
                 case CommandIcon.Breakdown: Breakdown(g, r, unit); break;
                 case CommandIcon.Configure: Gear(g, r, unit); break;
+                case CommandIcon.Measure: Caliper(g, r, unit); break;
                 default: BrandV(g, cell); break;
             }
         }
@@ -432,6 +433,36 @@ namespace VeradeAddin.UI
                 g.FillEllipse(white, cx - rOut, cy - rOut, rOut * 2, rOut * 2);
                 g.FillEllipse(bg, cx - rHole, cy - rHole, rHole * 2, rHole * 2);
                 g.DrawEllipse(ring, cx - rHole, cy - rHole, rHole * 2, rHole * 2);
+            }
+        }
+
+        // Measure a hole: a bore circle with a diameter dimension (arrows both ways) across it.
+        private static void Caliper(Graphics g, RectangleF r, float unit)
+        {
+            float cx = r.Left + r.Width * 0.5f, cy = r.Top + r.Height * 0.52f;
+            float rad = r.Width * 0.34f;
+
+            using (var bore = new Pen(Steel, Math.Max(1.5f, unit * 0.09f)))
+            using (var dim = new Pen(Ink, Math.Max(1.5f, unit * 0.08f)) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            using (var ink = new SolidBrush(Ink))
+            {
+                // the hole
+                g.DrawEllipse(bore, cx - rad, cy - rad, rad * 2, rad * 2);
+
+                // horizontal diameter dimension line with arrowheads at both rims
+                var left = new PointF(cx - rad, cy);
+                var right = new PointF(cx + rad, cy);
+                g.DrawLine(dim, left, right);
+                Arrowhead(g, dim, right, left, unit * 0.22f);
+                Arrowhead(g, dim, left, right, unit * 0.22f);
+
+                // Ø glyph above the line
+                using (var font = new Font("Segoe UI", r.Height * 0.30f, FontStyle.Bold, GraphicsUnit.Pixel))
+                using (var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                {
+                    g.DrawString("Ø", font, ink,
+                        new RectangleF(r.Left, r.Top - r.Height * 0.02f, r.Width, r.Height * 0.34f), fmt);
+                }
             }
         }
 

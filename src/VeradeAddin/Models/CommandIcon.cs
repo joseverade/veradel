@@ -18,6 +18,7 @@ namespace VeradeAddin.Models
         ColorEdges,
         ClearColors,
         Breakdown,
-        Configure
+        Configure,
+        Measure
     }
 }

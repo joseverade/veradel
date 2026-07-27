@@ -94,5 +94,13 @@ namespace VeradeAddin.UI
                 return dialog.ShowDialog() == DialogResult.OK ? dialog.Selection : null;
             }
         }
+
+        public void ShowLicense(Licensing.ILicenseService license)
+        {
+            using (var dialog = new LicenseDialog(license))
+            {
+                dialog.ShowDialog();
+            }
+        }
     }
 }
