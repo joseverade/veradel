@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Runtime.InteropServices;
@@ -38,6 +38,17 @@ namespace VeradeAddin.Services
         // The entity the current callout is attached to, so we can tell an actual selection change
         // apart from the spurious NewSelectionNotify events fired while dragging the callout.
         private IEntity _calloutEntity;
+        // Auto-resolve of lightweight components: one attempt per component per session, and never
+        // two in flight (resolving fires selection events of its own).
+        private readonly HashSet<string> _resolveAttempted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private bool _resolvePending;
+        // Advanced-hole element stacks that could only be read through AccessSelections (which rolls the
+        // model back), keyed by part path + feature name: read at most once per pick-mode session.
+        private readonly Dictionary<string, List<AdvElement>> _advElementCache =
+            new Dictionary<string, List<AdvElement>>(StringComparer.OrdinalIgnoreCase);
+        private bool _advReadPending;
+        // Holes already reported to the log, so the diagnostic is written once per hole, not per click.
+        private readonly HashSet<string> _advLogged = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         public bool IsHolePickModeActive()
         {
@@ -110,6 +121,10 @@ namespace VeradeAddin.Services
             _pickDestroyHandler = null;
             _pickModel = null;
             _pickActive = false;
+            _resolveAttempted.Clear();
+            _advElementCache.Clear();
+            _advLogged.Clear();
+            _advReadPending = false;
         }
 
         // NewSelectionNotify / DestroyNotify both return int (0 = proceed normally).
@@ -152,7 +167,9 @@ namespace VeradeAddin.Services
                 if (t == (int)swSelectType_e.swSelFACES)
                 {
                     var f = selMgr.GetSelectedObject6(i, -1) as IFace2;
-                    if (f != null && IsCylindrical(f))
+                    // Cones count too: the conical face of a countersink (or of a countersunk screw
+                    // head) is what the user naturally clicks on.
+                    if (f != null && (IsCylindrical(f) || IsConical(f)))
                     {
                         face = f;
                         comp = selMgr.GetSelectedObjectsComponent4(i, -1) as Component2;
@@ -192,7 +209,16 @@ namespace VeradeAddin.Services
 
             if (face == null)
             {
-                face = CylindricalFaceOfEdge(edge);
+                face = HoleFaceOfEdge(edge);
+            }
+
+            // A lightweight component exposes geometry but no feature tree, so the thread can never be
+            // read. Resolve it automatically (deferred — see ScheduleResolve) and annotate afterwards.
+            if (IsComponentLightweight(comp))
+            {
+                HideCurrentCallout();
+                ScheduleResolve(comp, face);
+                return;
             }
 
             var desc = DescribeHole(face, edge, comp);
@@ -213,11 +239,6 @@ namespace VeradeAddin.Services
             public string Title;
             // Each entry is "Label|Value"; empty value => single-column row.
             public readonly List<string> Lines = new List<string>();
-
-            // When set, the row at ResolveRow acts as a "Resolver" link that resolves the lightweight
-            // component when the user activates it.
-            public int ResolveRow = -1;
-            public Component2 ResolveComponent;
 
             public void Add(string label, string value)
             {
@@ -257,6 +278,13 @@ namespace VeradeAddin.Services
                 if (d.Lines.Count > 0) return d;
             }
 
+            var adv = def as IAdvancedHoleFeatureData;
+            if (adv != null)
+            {
+                FillFromAdvancedHole(d, feat, face, comp);
+                if (d.Lines.Count > 0) return d;
+            }
+
             var thread = def as ICosmeticThreadFeatureData;
             if (thread != null)
             {
@@ -269,7 +297,7 @@ namespace VeradeAddin.Services
             double boreDia = CylinderDiameter(face); // metres, 0 when not a cylinder
             if (boreDia <= 0)
             {
-                return null;
+                return DescribeCone(face, comp);
             }
 
             var match = FindCosmeticThreadByDiameter(comp, boreDia);
@@ -283,17 +311,44 @@ namespace VeradeAddin.Services
                 return d;
             }
 
-            // Plain (unthreaded) hole: just the measured diameter. If the component is lightweight,
-            // SolidWorks only exposes the geometry (no feature tree), so we can measure the bore but
-            // never recover the thread. Warn the user to resolve it instead of silently hiding it.
+            // Plain (unthreaded) hole: just the measured diameter.
             d.Title = "Ø" + Mm(boreDia);
             d.Add("Ø Agujero", Mm(boreDia));
-            if (IsComponentLightweight(comp))
+            return d;
+        }
+
+        /// <summary>
+        /// Conical face with no feature data behind it: a countersink cut by hand, or the head of a
+        /// countersunk screw. Both extreme diameters plus the included angle are reported, and the
+        /// small end (= shank Ø on a screw) is used to look for a matching cosmetic thread.
+        /// </summary>
+        private HoleDescription DescribeCone(IFace2 face, Component2 comp)
+        {
+            double dMin, dMax;
+            if (!ConeDiameters(face, out dMin, out dMax))
             {
-                d.ResolveRow = d.Lines.Count; // index of the row we are about to add
-                d.ResolveComponent = comp;
-                d.Add("Aligerado", "Resolver");
+                return null;
             }
+
+            var d = new HoleDescription();
+            var match = FindCosmeticThreadByDiameter(comp, dMin);
+            if (match != null)
+            {
+                string label = !string.IsNullOrWhiteSpace(match.Callout) ? match.Callout : match.Size;
+                d.Title = label;
+                if (!string.IsNullOrWhiteSpace(label)) d.Add("Rosca", label);
+                if (match.NominalDia > 0) d.Add("Ø nominal", Mm(match.NominalDia));
+            }
+            else
+            {
+                d.Title = "Avellanado Ø" + Mm(dMax);
+            }
+
+            d.Add("Ø avellanado (máx)", Mm(dMax));
+            if (dMin > 0 && dMin < dMax) d.Add("Ø avellanado (mín)", Mm(dMin));
+
+            double ang = ConeIncludedAngleDeg(face);
+            if (ang > 0) d.Add("Ángulo", Deg(ang) + "°");
             return d;
         }
 
@@ -327,9 +382,8 @@ namespace VeradeAddin.Services
             double csink = SafeD(() => w.CounterSinkDiameter);
             double depth = FirstPositive(SafeD(() => w.HoleDepth), SafeD(() => w.Depth));
 
-            bool threaded = !string.IsNullOrWhiteSpace(fastener) &&
-                            (SafeD(() => w.ThreadDiameter) > 0 || SafeD(() => w.MajorDiameter) > 0
-                             || SafeI(() => w.TapType) != 0);
+            bool threaded = IsThreadedHoleType(SafeI(() => w.Type))
+                            || SafeI(() => w.CosmeticThreadType) != (int)swWzdHoleCosmeticThreadTypes_e.swCosmeticThreadNone;
 
             d.Title = threaded && !string.IsNullOrWhiteSpace(fastener)
                       ? fastener
@@ -337,13 +391,739 @@ namespace VeradeAddin.Services
 
             if (!string.IsNullOrWhiteSpace(fastener))
             {
-                // Thread designation with its pitch (kept), without the tolerance class.
-                d.Add(threaded ? "Para rosca de" : "Tamaño", fastener);
+                // Thread designation with its pitch (kept), without the tolerance class. A tapped hole
+                // IS the thread ("Rosca"); a clearance/counterbore hole is only sized for a screw of
+                // that size ("Para rosca de").
+                d.Add(threaded ? "Rosca" : "Para rosca de", fastener);
             }
             if (bore > 0) d.Add("Ø agujero (mín)", Mm(bore));
             if (csink > 0) d.Add("Ø avellanado (máx)", Mm(csink));
             if (cbore > 0) d.Add("Ø caja (máx)", Mm(cbore));
             if (depth > 0) d.Add("Profundidad", Mm(depth));
+        }
+
+        /// <summary>
+        /// True when a Hole Wizard <see cref="swWzdHoleTypes_e"/> is a tapped hole (straight or pipe
+        /// tap). Matched by enum NAME because the tap variants are scattered across the enum; the two
+        /// "swTapered*" values are conical DRILLED holes, not threads, so they are excluded.
+        /// </summary>
+        private static bool IsThreadedHoleType(int wizardType)
+        {
+            string name = null;
+            try { name = Enum.GetName(typeof(swWzdHoleTypes_e), wizardType); } catch { }
+            if (string.IsNullOrEmpty(name)) return false;
+            if (name.StartsWith("swTapered", StringComparison.OrdinalIgnoreCase)) return false;
+            return name.IndexOf("Tap", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        // ---- "Taladro avanzado" --------------------------------------------------------------------
+
+        /// <summary>
+        /// One element of an advanced-hole stack. Snapshotted into plain data because the COM element
+        /// objects stop reporting as soon as the feature releases selection access, and because the same
+        /// list is reused on every click — nothing here is mutated by the matching.
+        /// </summary>
+        private sealed class AdvElement
+        {
+            public int Order;          // 0-based position inside its own side stack, outside -> inside
+            public bool FarSide;
+            public int Type;           // swAdvWzdGeneralHoleTypes_e
+            public string Size;        // designation as SolidWorks writes it, e.g. "M8x1.25"
+            public double Diameter;    // metres
+            public double BlindDepth;  // metres, 0 when not blind
+            public int EndCondition;   // swEndConditions_e
+
+            public bool Tapped
+            {
+                get
+                {
+                    return Type == (int)swAdvWzdGeneralHoleTypes_e.swAdvWzdStraightTap
+                        || Type == (int)swAdvWzdGeneralHoleTypes_e.swAdvWzdTaperTap;
+                }
+            }
+
+            /// <summary>True when this element cuts a CONICAL face instead of a cylindrical one.</summary>
+            public bool Conical
+            {
+                get
+                {
+                    return Type == (int)swAdvWzdGeneralHoleTypes_e.swAdvWzdCounterSink
+                        || Type == (int)swAdvWzdGeneralHoleTypes_e.swAdvWzdTaperTap;
+                }
+            }
+        }
+
+        /// <summary>One cylindrical / conical stretch of a hole, measured from the model.</summary>
+        private sealed class HoleSegment
+        {
+            public bool Cone;
+            public double DiaMin;      // metres (== DiaMax on a cylinder)
+            public double DiaMax;
+            public double Angle;       // degrees, cones only
+            public double TMin;        // axial extent, metres
+            public double TMax;
+            public bool Clicked;
+            public AdvElement El;      // stack element that cut it, null when unmatched
+            public ThreadMatch Thread; // cosmetic thread cutting this stretch, null when plain
+            public string TypeEs;      // "Caja" / "Avellanado" / "Rosca" / "Agujero"
+
+            public double Length { get { return TMax - TMin; } }
+        }
+
+        /// <summary>
+        /// "Taladro avanzado": a STACK of elements (counterbore / countersink / straight bore / straight
+        /// or tapered tap), each one cutting its own face.
+        ///
+        /// Two sources are combined. <see cref="IAdvancedHoleFeatureData.GetNearSideElements"/> /
+        /// <c>GetFarSideElements</c> give WHAT was drilled: the designation of every element
+        /// (<see cref="IAdvancedHoleElementData.Size"/> = "M8x1.25"), its type and its end condition,
+        /// in stack order. The geometry gives WHERE: the coaxial faces the feature cut, measured and
+        /// ordered along the axis, one per element, with the clicked one flagged. Position — which
+        /// element the user actually clicked — comes from matching those two ORDERED lists
+        /// (<see cref="MatchElementsByPosition"/>), not from guessing by diameter.
+        ///
+        /// When the elements cannot be read the stretches are still described from the model alone,
+        /// with the thread designations recovered from the feature's own cosmetic threads.
+        /// </summary>
+        private void FillFromAdvancedHole(HoleDescription d, IFeature feat, IFace2 face, Component2 comp)
+        {
+            var segs = MeasureHoleStack(feat, face);
+            if (segs.Count == 0) return;
+
+            var els = GetAdvancedElements(feat, face, comp);
+            if (els.Count > 0)
+            {
+                MatchElementsByPosition(segs, els);
+            }
+            else
+            {
+                OrderWidestFirst(segs);
+            }
+
+            MatchThreadsToSegments(segs, CollectThreads(feat));
+            ClassifySegments(segs);
+
+            HoleSegment hit = null;
+            foreach (var s in segs)
+            {
+                if (s.Clicked) { hit = s; break; }
+            }
+            if (hit == null) hit = segs[0];
+
+            DescribeSegment(d, hit);
+
+            d.Add("Taladro avanzado", segs.Count + (segs.Count == 1 ? " tramo" : " tramos"));
+            for (int i = 0; i < segs.Count; i++)
+            {
+                d.Add("Tramo " + (i + 1), SegmentValue(segs[i]) + (segs[i].Clicked ? "  ◄" : string.Empty));
+            }
+        }
+
+        /// <summary>Detail rows for the stretch the user clicked on.</summary>
+        private static void DescribeSegment(HoleDescription d, HoleSegment s)
+        {
+            var el = s.El;
+            string size = el != null ? el.Size : null;
+            // The element's own designation wins: it is what the hole was DEFINED with. The cosmetic
+            // thread is the fallback for when the element stack could not be read.
+            string thread = el != null
+                ? (el.Tapped && !string.IsNullOrWhiteSpace(size) ? size : null)
+                : ThreadLabel(s.Thread);
+
+            if (thread != null)
+            {
+                d.Title = thread;
+                d.Add("Rosca", thread);
+                if (el == null && s.Thread.NominalDia > 0) d.Add("Ø nominal", Mm(s.Thread.NominalDia));
+                else if (el != null && el.Diameter > 0) d.Add("Ø nominal", Mm(el.Diameter));
+                d.Add(s.Cone ? "Ø broca (máx)" : "Ø broca", Mm(s.DiaMax));
+                if (s.Cone && s.Angle > 0) d.Add("Ángulo", Deg(s.Angle) + "°");
+            }
+            else
+            {
+                d.Title = (s.Cone ? "Avellanado Ø" : "Ø") + Mm(s.DiaMax);
+                d.Add("Tipo", s.TypeEs);
+                // A clearance element carries the size of the screw it is meant for, not a thread.
+                if (!string.IsNullOrWhiteSpace(size)) d.Add("Para rosca de", size);
+
+                if (s.Cone)
+                {
+                    d.Add("Ø avellanado (máx)", Mm(s.DiaMax));
+                    if (s.DiaMin > 0 && s.DiaMin < s.DiaMax) d.Add("Ø avellanado (mín)", Mm(s.DiaMin));
+                    if (s.Angle > 0) d.Add("Ángulo", Deg(s.Angle) + "°");
+                }
+                else
+                {
+                    d.Add("Ø agujero", Mm(s.DiaMax));
+                }
+            }
+
+            if (s.Length > 0) d.Add("Longitud tramo", Mm(s.Length));
+            if (el != null) d.Add("Lado", el.FarSide ? "Lejano" : "Cercano");
+        }
+
+        private static string SegmentValue(HoleSegment s)
+        {
+            var el = s.El;
+            string label = el != null && !string.IsNullOrWhiteSpace(el.Size) ? el.Size : ThreadLabel(s.Thread);
+            string v;
+
+            if (label != null)
+            {
+                v = s.TypeEs + " " + label;
+            }
+            else if (s.Cone)
+            {
+                v = "Avellanado Ø" + Mm(s.DiaMax);
+                if (s.Angle > 0) v += " " + Deg(s.Angle) + "°";
+            }
+            else
+            {
+                v = s.TypeEs + " Ø" + Mm(s.DiaMax);
+            }
+
+            if (s.Length > 0) v += " × " + Mm(s.Length);
+            return v;
+        }
+
+        private static string ThreadLabel(ThreadMatch t)
+        {
+            if (t == null) return null;
+            if (!string.IsNullOrWhiteSpace(t.Callout)) return t.Callout;
+            return !string.IsNullOrWhiteSpace(t.Size) ? t.Size : null;
+        }
+
+        /// <summary>
+        /// Names every stretch. The element type is authoritative when it was read; otherwise the name
+        /// comes from what the stretch IS in the model: a threaded one is a thread, a cone is a
+        /// countersink, and a plain cylinder wider than the narrowest bore of the stack is the
+        /// counterbore that leads to it (works from either end, so a far-side counterbore is named too).
+        /// </summary>
+        private static void ClassifySegments(List<HoleSegment> segs)
+        {
+            double minDia = double.MaxValue;
+            foreach (var s in segs)
+            {
+                if (!s.Cone && s.DiaMax > 0 && s.DiaMax < minDia) minDia = s.DiaMax;
+            }
+
+            foreach (var s in segs)
+            {
+                if (s.El != null) s.TypeEs = TypeNameEs(s.El.Type);
+                else if (s.Thread != null) s.TypeEs = s.Cone ? "Rosca cónica" : "Rosca";
+                else if (s.Cone) s.TypeEs = "Avellanado";
+                else if (minDia < double.MaxValue && s.DiaMax > minDia * 1.01) s.TypeEs = "Caja";
+                else s.TypeEs = "Agujero";
+            }
+        }
+
+        private static string TypeNameEs(int type)
+        {
+            switch (type)
+            {
+                case (int)swAdvWzdGeneralHoleTypes_e.swAdvWzdCounterBore: return "Caja";
+                case (int)swAdvWzdGeneralHoleTypes_e.swAdvWzdCounterSink: return "Avellanado";
+                case (int)swAdvWzdGeneralHoleTypes_e.swAdvWzdStraightTap: return "Rosca";
+                case (int)swAdvWzdGeneralHoleTypes_e.swAdvWzdTaperTap: return "Rosca cónica";
+                default: return "Agujero";
+            }
+        }
+
+        /// <summary>
+        /// Joins the measured stretches to the feature's own cosmetic threads by diameter, best fit
+        /// first, one thread per stretch. The bore is cut at the tap-drill size, always SMALLER than the
+        /// nominal diameter the thread declares, hence the one-sided tolerance. Only used for stretches
+        /// no element claimed.
+        /// </summary>
+        private static void MatchThreadsToSegments(List<HoleSegment> segs, List<ThreadMatch> threads)
+        {
+            if (threads.Count == 0) return;
+
+            var used = new HashSet<ThreadMatch>();
+            while (true)
+            {
+                HoleSegment bestSeg = null;
+                ThreadMatch bestTh = null;
+                double bestCost = double.MaxValue;
+
+                foreach (var s in segs)
+                {
+                    if (s.Thread != null || s.El != null || s.DiaMax <= 0) continue;
+                    foreach (var t in threads)
+                    {
+                        if (t.NominalDia <= 0 || used.Contains(t)) continue;
+
+                        double gap = t.NominalDia - s.DiaMax;                  // > 0 on a tapped bore
+                        if (gap < -t.NominalDia * 0.02) continue;              // bore wider than nominal
+                        double cost = Math.Abs(gap);
+                        if (cost > t.NominalDia * 0.25 + 0.0005 || cost >= bestCost) continue;
+
+                        bestCost = cost;
+                        bestSeg = s;
+                        bestTh = t;
+                    }
+                }
+
+                if (bestSeg == null) return;
+                bestSeg.Thread = bestTh;
+                used.Add(bestTh);
+            }
+        }
+
+        /// <summary>
+        /// Every cosmetic thread the feature keeps underneath itself — an advanced hole (like a hole
+        /// wizard) creates one per tapped element — read WITHOUT touching
+        /// <see cref="IAdvancedHoleFeatureData"/>, so the model is never rolled back and the live
+        /// selection and callout survive. The whole sub-tree is walked because the thread can hang one
+        /// or two levels down, and each sub-feature is probed by CAST: they are not all named
+        /// "CosmeticThread".
+        /// </summary>
+        private static List<ThreadMatch> CollectThreads(IFeature feat)
+        {
+            var list = new List<ThreadMatch>();
+            CollectThreadsInto(list, feat, 0);
+            return list;
+        }
+
+        private static void CollectThreadsInto(List<ThreadMatch> into, IFeature feat, int depth)
+        {
+            if (feat == null || depth > 4) return;
+
+            var sub = Try(() => feat.GetFirstSubFeature()) as IFeature;
+            while (sub != null)
+            {
+                var cur = sub;
+
+                ICosmeticThreadFeatureData data = null;
+                try { data = cur.GetDefinition() as ICosmeticThreadFeatureData; } catch { }
+                if (data != null)
+                {
+                    double nominal = SafeD(() => data.Diameter);
+                    if (nominal > 0)
+                    {
+                        into.Add(new ThreadMatch
+                        {
+                            Callout = Safe(() => data.ThreadCallout),
+                            Size = Safe(() => data.Size),
+                            NominalDia = nominal
+                        });
+                    }
+                }
+                else
+                {
+                    CollectThreadsInto(into, cur, depth + 1);
+                }
+
+                sub = Try(() => cur.GetNextSubFeature()) as IFeature;
+            }
+        }
+
+        // ---- advanced-hole elements ----------------------------------------------------------------
+
+        /// <summary>
+        /// The feature's element stacks. Tried FIRST without <c>AccessSelections</c>: when SolidWorks
+        /// serves the arrays straight away nothing is disturbed and the data is fresh on every click.
+        /// Only when that returns nothing is the read DEFERRED to
+        /// <see cref="ScheduleAdvancedRead"/>, which pays for AccessSelections (it rolls the part back,
+        /// drops the selection and tears the callout down) exactly once per hole and caches the result.
+        /// </summary>
+        private List<AdvElement> GetAdvancedElements(IFeature feat, IFace2 face, Component2 comp)
+        {
+            string key = AdvCacheKey(feat, comp);
+            List<AdvElement> cached;
+            if (key != null && _advElementCache.TryGetValue(key, out cached)) return cached;
+
+            var a = Try(() => feat.GetDefinition()) as IAdvancedHoleFeatureData;
+            var direct = ReadElements(a);
+            if (direct.Count > 0)
+            {
+                LogElements(key, "lectura directa", direct);
+                return direct;
+            }
+
+            ScheduleAdvancedRead(key, feat, face, comp);
+            return direct;
+        }
+
+        /// <summary>Writes the stack to the log once per hole, so the source of the data is traceable.</summary>
+        private void LogElements(string key, string how, List<AdvElement> els)
+        {
+            if (key == null || !_advLogged.Add(key)) return;
+
+            var parts = new List<string>();
+            foreach (var el in els)
+            {
+                parts.Add((el.FarSide ? "Lejano" : "Cercano") + "[" + el.Order + "] " +
+                          TypeNameEs(el.Type) + " " + el.Size + " Ø" + Mm(el.Diameter));
+            }
+            _log.Log("IdentificarRosca", "Assembly", LogOutcome.Success,
+                "Taladro avanzado (" + how + "): " + els.Count + " elementos", string.Join(" | ", parts));
+        }
+
+        /// <summary>Both stacks as plain data. Empty when the arrays are not being served.</summary>
+        private static List<AdvElement> ReadElements(IAdvancedHoleFeatureData a)
+        {
+            var list = new List<AdvElement>();
+            if (a == null) return list;
+            Snapshot(list, Try(() => a.GetNearSideElements()), false);
+            Snapshot(list, Try(() => a.GetFarSideElements()), true);
+            return list;
+        }
+
+        private static void Snapshot(List<AdvElement> into, object raw, bool farSide)
+        {
+            var arr = raw as object[];
+            if (arr == null) return;
+
+            int i = 0;
+            foreach (var o in arr)
+            {
+                var el = o as IAdvancedHoleElementData;
+                if (el == null) continue;
+                into.Add(new AdvElement
+                {
+                    Order = i++,
+                    FarSide = farSide,
+                    Type = SafeI(() => el.ElementType),
+                    Size = Safe(() => el.Size),
+                    Diameter = SafeD(() => el.Diameter),
+                    BlindDepth = SafeD(() => el.BlindDepth),
+                    EndCondition = SafeI(() => el.EndCondition)
+                });
+            }
+        }
+
+        /// <summary>
+        /// Fallback read, outside the selection notification and on a one-shot timer, because
+        /// AccessSelections re-enters SolidWorks and must never run inside NewSelectionNotify. The
+        /// outcome is cached even when empty: one attempt per hole, so a feature that cannot be read
+        /// never rolls the model back twice. The rollback DROPS THE SELECTION, so a point on the clicked
+        /// face is captured beforehand and the face is selected again afterwards.
+        /// </summary>
+        private void ScheduleAdvancedRead(string key, IFeature feat, IFace2 face, Component2 comp)
+        {
+            if (key == null || feat == null || _advReadPending) return;
+
+            double[] pt = FacePoint(face);
+            _advReadPending = true;
+
+            var timer = new System.Windows.Forms.Timer { Interval = 1 };
+            timer.Tick += (s, e) =>
+            {
+                timer.Stop();
+                timer.Dispose();
+                try
+                {
+                    _advElementCache[key] = ReadAdvancedElementsNow(feat, comp);
+
+                    // Drop the live callout so the rebuild is not skipped as "same entity".
+                    HideCurrentCallout();
+                    if (!ReselectFace(comp, pt))
+                    {
+                        // Selection survived the rollback -> just describe it again.
+                        RefreshCalloutFromSelection();
+                    }
+                    // Otherwise the re-selection fires NewSelectionNotify, which rebuilds the callout.
+                }
+                catch (Exception ex)
+                {
+                    _log.Log("IdentificarRosca", "Assembly", LogOutcome.Error,
+                        "Lectura de taladro avanzado falló", ex.ToString());
+                }
+                finally { _advReadPending = false; }
+            };
+            timer.Start();
+        }
+
+        /// <summary>
+        /// The AccessSelections read. The definition is re-fetched here rather than carried over from
+        /// the notification, and the access is ALWAYS released — a granted access left open keeps the
+        /// part rolled back and breaks every following click. Graphics and feature tree are frozen so
+        /// the rollback is not drawn.
+        /// </summary>
+        private List<AdvElement> ReadAdvancedElementsNow(IFeature feat, Component2 comp)
+        {
+            var list = new List<AdvElement>();
+            var a = Try(() => feat.GetDefinition()) as IAdvancedHoleFeatureData;
+            if (a == null) return list;
+
+            var part = comp != null ? comp.GetModelDoc2() as IModelDoc2 : _pickModel;
+            var view = _pickModel != null ? _pickModel.ActiveView as IModelView : null;
+            var featMgr = part != null ? part.FeatureManager : null;
+
+            bool graphics = true, tree = true;
+            try
+            {
+                if (view != null) { graphics = view.EnableGraphicsUpdate; view.EnableGraphicsUpdate = false; }
+                if (featMgr != null) { tree = featMgr.EnableFeatureTree; featMgr.EnableFeatureTree = false; }
+
+                // Part context first: rolling the part back does not drag the assembly into edit mode.
+                ReadStack(list, a, part, null);
+                if (list.Count == 0 && comp != null) ReadStack(list, a, _pickModel, comp);
+            }
+            catch (Exception ex)
+            {
+                _log.Log("IdentificarRosca", "Assembly", LogOutcome.Error,
+                    "AccessSelections del taladro avanzado falló", ex.ToString());
+            }
+            finally
+            {
+                try { if (featMgr != null) featMgr.EnableFeatureTree = tree; } catch { }
+                try { if (view != null) view.EnableGraphicsUpdate = graphics; } catch { }
+            }
+
+            if (list.Count > 0)
+            {
+                LogElements(AdvCacheKey(feat, comp), "AccessSelections", list);
+            }
+            else
+            {
+                _log.Log("IdentificarRosca", "Assembly", LogOutcome.Cancel,
+                    "Taladro avanzado " + Safe(() => feat.Name) + ": sin elementos legibles");
+            }
+
+            return list;
+        }
+
+        private static void ReadStack(List<AdvElement> into, IAdvancedHoleFeatureData a, object topDoc, object comp)
+        {
+            try { a.AccessSelections(topDoc, comp); } catch { }
+            try { Snapshot(into, Try(() => a.GetNearSideElements()), false); Snapshot(into, Try(() => a.GetFarSideElements()), true); }
+            finally { try { a.ReleaseSelectionAccess(); } catch { } }
+        }
+
+        private static string AdvCacheKey(IFeature feat, Component2 comp)
+        {
+            string f = feat != null ? Safe(() => feat.Name) : null;
+            if (string.IsNullOrEmpty(f)) return null;
+            string c = comp != null ? Safe(() => comp.GetPathName()) : string.Empty;
+            return c + "|" + f;
+        }
+
+        // ---- position: which element cut which stretch ----------------------------------------------
+
+        /// <summary>
+        /// Assigns elements to stretches BY POSITION. Both lists are ordered: the near-side stack runs
+        /// from the face the hole starts at inwards, the far-side stack from the opposite face inwards,
+        /// and <paramref name="segs"/> is sorted along the axis. Which end of the axis is the near side
+        /// is not known, so both orientations are laid out and the one whose diameters agree best wins.
+        /// The winning layout is applied and, when the hole runs the other way, the stretch list is
+        /// flipped so "Tramo 1" is always the near-side opening.
+        /// </summary>
+        private static void MatchElementsByPosition(List<HoleSegment> segs, List<AdvElement> els)
+        {
+            var near = SideStack(els, false);
+            var far = SideStack(els, true);
+            int last = segs.Count - 1;
+
+            // Which end of the axis is the near side, and whether element 0 of a stack is the outermost
+            // one, are both unstated by the API, so all four readings are laid out and scored. Ties keep
+            // the natural one (near side at the low end of the axis, element 0 outermost).
+            AdvElement[] best = null;
+            double bestCost = double.MaxValue;
+            bool bestFlip = false;
+
+            for (int variant = 0; variant < 4; variant++)
+            {
+                bool flip = (variant & 1) != 0;          // near side sits at the high end of the axis
+                bool inward = (variant & 2) != 0;        // element 0 is the innermost of its stack
+                var n = inward ? Reversed(near) : near;
+                var f = inward ? Reversed(far) : far;
+
+                var map = new AdvElement[segs.Count];
+                double cost = flip
+                    ? Lay(segs, n, last, -1, map) + Lay(segs, f, 0, +1, map)
+                    : Lay(segs, n, 0, +1, map) + Lay(segs, f, last, -1, map);
+
+                if (cost >= bestCost) continue;
+                bestCost = cost;
+                best = map;
+                bestFlip = flip;
+            }
+
+            if (best == null) return;
+            for (int i = 0; i < segs.Count; i++) segs[i].El = best[i];
+
+            // "Tramo 1" is always the near-side opening.
+            if (bestFlip) segs.Reverse();
+        }
+
+        private static List<AdvElement> Reversed(List<AdvElement> src)
+        {
+            var copy = new List<AdvElement>(src);
+            copy.Reverse();
+            return copy;
+        }
+
+        /// <summary>One side's elements in stack order.</summary>
+        private static List<AdvElement> SideStack(List<AdvElement> els, bool farSide)
+        {
+            var side = new List<AdvElement>();
+            foreach (var el in els)
+            {
+                if (el.FarSide == farSide) side.Add(el);
+            }
+            side.Sort((x, y) => x.Order.CompareTo(y.Order));
+            return side;
+        }
+
+        /// <summary>
+        /// Walks one stack over the stretches from <paramref name="start"/> in direction
+        /// <paramref name="step"/>, writing the assignment into <paramref name="map"/> and returning how
+        /// badly the diameters disagree. Free stretches whose shape does not fit the element (a drill
+        /// tip left at the bottom of a bore, say) are stepped over.
+        /// </summary>
+        private static double Lay(List<HoleSegment> segs, List<AdvElement> stack, int start, int step, AdvElement[] map)
+        {
+            const double Unmatched = 0.01; // 10 mm of "cost" for an element no stretch took
+            double cost = 0;
+            int i = start;
+
+            foreach (var el in stack)
+            {
+                int probe = i, skipped = 0;
+                while (probe >= 0 && probe < segs.Count && skipped < 3
+                       && (map[probe] != null || segs[probe].Cone != el.Conical))
+                {
+                    probe += step;
+                    skipped++;
+                }
+
+                if (probe < 0 || probe >= segs.Count || map[probe] != null || segs[probe].Cone != el.Conical)
+                {
+                    cost += Unmatched;
+                    continue;
+                }
+
+                map[probe] = el;
+                cost += PairCost(el, segs[probe]);
+                i = probe + step;
+            }
+            return cost;
+        }
+
+        /// <summary>
+        /// How far the element's declared diameter is from the measured one. A tap declares its NOMINAL
+        /// diameter while the bore is cut at the tap-drill size (~0.75-1.0 x nominal), so anything inside
+        /// that band costs nothing.
+        /// </summary>
+        private static double PairCost(AdvElement el, HoleSegment s)
+        {
+            if (el.Diameter <= 0 || s.DiaMax <= 0) return 0.001;
+            if (el.Tapped)
+            {
+                double lo = el.Diameter * 0.72, hi = el.Diameter * 1.02;
+                if (s.DiaMax < lo) return lo - s.DiaMax;
+                return s.DiaMax > hi ? s.DiaMax - hi : 0;
+            }
+            return Math.Abs(el.Diameter - s.DiaMax);
+        }
+
+        /// <summary>
+        /// Display order when there are no elements to say which end the hole starts at: the widest
+        /// opening first, which is the end an advanced hole is normally drilled from.
+        /// </summary>
+        private static void OrderWidestFirst(List<HoleSegment> segs)
+        {
+            if (segs.Count > 1 && segs[segs.Count - 1].DiaMax > segs[0].DiaMax) segs.Reverse();
+        }
+
+        /// <summary>
+        /// Every cylindrical / conical face cut by <paramref name="feat"/> that shares the clicked
+        /// face's axis, measured and ordered along that axis (ascending). The clicked face is flagged.
+        /// </summary>
+        private static List<HoleSegment> MeasureHoleStack(IFeature feat, IFace2 face)
+        {
+            var segs = new List<HoleSegment>();
+            double[] axis = HoleAxis(face);
+            if (axis == null) return segs;
+
+            foreach (var f in CoaxialFaces(face, axis))
+            {
+                // Same feature only: a different hole crossing this axis is not part of the stack.
+                if (feat != null && !SameCom(feat, Try(() => f.GetFeature()))) continue;
+
+                var s = MeasureSegment(f, axis);
+                if (s == null) continue;
+                s.Clicked = SameCom(face, f);
+                segs.Add(s);
+            }
+
+            segs.Sort((x, y) => x.TMin.CompareTo(y.TMin));
+            return segs;
+        }
+
+        private static HoleSegment MeasureSegment(IFace2 f, double[] axis)
+        {
+            var s = new HoleSegment();
+            if (IsConical(f))
+            {
+                double dMin, dMax;
+                if (!ConeDiameters(f, out dMin, out dMax)) return null;
+                s.Cone = true;
+                s.DiaMin = dMin;
+                s.DiaMax = dMax;
+                s.Angle = ConeIncludedAngleDeg(f);
+            }
+            else
+            {
+                double dia = CylinderDiameter(f);
+                if (dia <= 0) return null;
+                s.DiaMin = s.DiaMax = dia;
+            }
+
+            double tMin, tMax;
+            if (!FaceAxialExtent(f, axis, out tMin, out tMax))
+            {
+                tMin = tMax = AxialCoord(f, axis);
+            }
+            s.TMin = tMin;
+            s.TMax = tMax;
+            return s;
+        }
+
+        /// <summary>
+        /// Cosmetic thread created BY this feature — an advanced hole keeps the thread of its tapped
+        /// element underneath itself — whose nominal diameter matches the measured bore. The whole
+        /// sub-tree is walked (the thread can hang one or two levels down) and, since this is a small
+        /// scoped search, every sub-feature is probed by CAST instead of by type name: the sub-features
+        /// an advanced hole creates are not all named "CosmeticThread".
+        /// </summary>
+        private static ThreadMatch FindThreadInFeature(IFeature feat, double boreDia)
+        {
+            if (feat == null || boreDia <= 0) return null;
+
+            var sub = Try(() => feat.GetFirstSubFeature()) as IFeature;
+            while (sub != null)
+            {
+                var cur = sub;
+                var hit = ThreadOf(cur, boreDia) ?? FindThreadInFeature(cur, boreDia);
+                if (hit != null) return hit;
+                sub = Try(() => cur.GetNextSubFeature()) as IFeature;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// The feature read as a cosmetic thread whose nominal diameter matches the bore, or null when
+        /// it is not a cosmetic thread / does not match. The modelled bore is the tap drill, always
+        /// smaller than the nominal diameter, hence the generous tolerance.
+        /// </summary>
+        private static ThreadMatch ThreadOf(IFeature f, double boreDia)
+        {
+            ICosmeticThreadFeatureData data = null;
+            try { data = f.GetDefinition() as ICosmeticThreadFeatureData; } catch { }
+            if (data == null) return null;
+
+            double nominal = SafeD(() => data.Diameter);
+            if (nominal <= 0 || Math.Abs(nominal - boreDia) > boreDia * 0.25 + 0.0005) return null;
+
+            return new ThreadMatch
+            {
+                Callout = Safe(() => data.ThreadCallout),
+                Size = Safe(() => data.Size),
+                NominalDia = nominal
+            };
         }
 
         // ---- sibling cosmetic-thread lookup by diameter --------------------------------------------
@@ -368,36 +1148,34 @@ namespace VeradeAddin.Services
                 return null;
             }
 
-            double tol = boreDia * 0.25 + 0.0005; // generous: tap-drill bore is smaller than nominal
             ThreadMatch best = null;
             double bestDiff = double.MaxValue;
 
             var f = part.FirstFeature() as IFeature;
             while (f != null)
             {
+                var cur = f;
                 string type = null;
-                try { type = f.GetTypeName2(); } catch { }
-                if (type == "CosmeticThread")
+                try { type = cur.GetTypeName2(); } catch { }
+
+                // Standalone cosmetic thread, or one buried inside a hole feature (a hole wizard and an
+                // advanced hole both keep the thread of their tapped element as a sub-feature).
+                ThreadMatch m = null;
+                if (!string.IsNullOrEmpty(type) && type.IndexOf("Thread", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
-                    ICosmeticThreadFeatureData data = null;
-                    try { data = f.GetDefinition() as ICosmeticThreadFeatureData; } catch { }
-                    if (data != null)
-                    {
-                        double nominal = SafeD(() => data.Diameter);
-                        double diff = Math.Abs(nominal - boreDia);
-                        if (nominal > 0 && diff <= tol && diff < bestDiff)
-                        {
-                            bestDiff = diff;
-                            best = new ThreadMatch
-                            {
-                                Callout = Safe(() => data.ThreadCallout),
-                                Size = Safe(() => data.Size),
-                                NominalDia = nominal
-                            };
-                        }
-                    }
+                    m = ThreadOf(cur, boreDia);
                 }
-                f = f.GetNextFeature() as IFeature;
+                else if (!string.IsNullOrEmpty(type) && type.IndexOf("Hole", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    m = FindThreadInFeature(cur, boreDia);
+                }
+
+                if (m != null && m.NominalDia > 0)
+                {
+                    double diff = Math.Abs(m.NominalDia - boreDia);
+                    if (diff < bestDiff) { bestDiff = diff; best = m; }
+                }
+                f = cur.GetNextFeature() as IFeature;
             }
             return best;
         }
@@ -440,6 +1218,13 @@ namespace VeradeAddin.Services
             return surf != null && surf.IsCylinder();
         }
 
+        private static bool IsConical(IFace2 face)
+        {
+            if (face == null) return false;
+            var surf = face.GetSurface() as ISurface;
+            return surf != null && surf.IsCone();
+        }
+
         private static bool IsCircular(IEdge edge)
         {
             if (edge == null) return false;
@@ -447,20 +1232,21 @@ namespace VeradeAddin.Services
             return curve != null && curve.IsCircle();
         }
 
-        private static IFace2 CylindricalFaceOfEdge(IEdge edge)
+        /// <summary>Cylindrical (preferred) or conical face adjacent to a circular edge.</summary>
+        private static IFace2 HoleFaceOfEdge(IEdge edge)
         {
             if (edge == null) return null;
             var faces = edge.GetTwoAdjacentFaces2() as object[];
             if (faces == null) return null;
+            IFace2 cone = null;
             foreach (var o in faces)
             {
                 var f = o as IFace2;
-                if (f != null && IsCylindrical(f))
-                {
-                    return f;
-                }
+                if (f == null) continue;
+                if (IsCylindrical(f)) return f;
+                if (cone == null && IsConical(f)) cone = f;
             }
-            return null;
+            return cone;
         }
 
         /// <summary>Diameter (metres) of a cylindrical face, or 0 when the face is not a cylinder.</summary>
@@ -472,6 +1258,166 @@ namespace VeradeAddin.Services
             var p = surf.CylinderParams as double[]; // [ox,oy,oz, ax,ay,az, radius]
             if (p == null || p.Length < 7) return 0;
             return p[6] * 2.0;
+        }
+
+        /// <summary>
+        /// Smallest / largest diameter (metres) of a conical face, taken from its own circular edges
+        /// (the exact cut extremes). Falls back to the cone's own radius when the face has no circular
+        /// edge. Returns false when the face is not a cone.
+        /// </summary>
+        private static bool ConeDiameters(IFace2 face, out double dMin, out double dMax)
+        {
+            dMin = dMax = 0;
+            if (!IsConical(face)) return false;
+
+            double min = double.MaxValue, max = 0;
+            var edges = face.GetEdges() as object[];
+            if (edges != null)
+            {
+                foreach (var o in edges)
+                {
+                    var e = o as IEdge;
+                    if (e == null) continue;
+                    var curve = e.GetCurve() as ICurve;
+                    if (curve == null || !curve.IsCircle()) continue;
+                    var cp = curve.CircleParams as double[]; // [cx,cy,cz, ax,ay,az, radius]
+                    if (cp == null || cp.Length < 7) continue;
+                    double dia = cp[6] * 2.0;
+                    if (dia <= 0) continue;
+                    if (dia < min) min = dia;
+                    if (dia > max) max = dia;
+                }
+            }
+
+            if (max <= 0)
+            {
+                var surf = face.GetSurface() as ISurface;
+                var p = surf != null ? surf.ConeParams as double[] : null; // [ox,oy,oz, ax,ay,az, radius, halfAngle]
+                if (p == null || p.Length < 7 || p[6] <= 0) return false;
+                min = max = p[6] * 2.0;
+            }
+
+            dMin = min == double.MaxValue ? max : min;
+            dMax = max;
+            return true;
+        }
+
+        /// <summary>Included angle of a cone in degrees (90 for a standard metric countersink), or 0.</summary>
+        private static double ConeIncludedAngleDeg(IFace2 face)
+        {
+            var surf = face != null ? face.GetSurface() as ISurface : null;
+            var p = surf != null && surf.IsCone() ? surf.ConeParams as double[] : null;
+            if (p == null || p.Length < 8) return 0;
+            double deg = Math.Abs(p[7]) * 2.0 * 180.0 / Math.PI;
+            return deg > 0 && deg < 180 ? deg : 0;
+        }
+
+        /// <summary>
+        /// Axis of a cylindrical / conical face as {ox,oy,oz, dx,dy,dz} with a unit direction, or null.
+        /// Coordinates are the ones the face reports (part space), which is all the axial comparisons
+        /// below need since they only ever mix faces of the same body.
+        /// </summary>
+        private static double[] HoleAxis(IFace2 face)
+        {
+            var surf = face != null ? face.GetSurface() as ISurface : null;
+            if (surf == null) return null;
+
+            double[] p = null;
+            if (surf.IsCylinder()) p = surf.CylinderParams as double[];   // [ox,oy,oz, ax,ay,az, r]
+            else if (surf.IsCone()) p = surf.ConeParams as double[];      // [ox,oy,oz, ax,ay,az, r, halfAngle]
+            if (p == null || p.Length < 6) return null;
+
+            double len = Math.Sqrt(p[3] * p[3] + p[4] * p[4] + p[5] * p[5]);
+            if (len < 1e-12) return null;
+            return new[] { p[0], p[1], p[2], p[3] / len, p[4] / len, p[5] / len };
+        }
+
+        /// <summary>Position of the face's bounding-box centre along <paramref name="axis"/> (metres).</summary>
+        private static double AxialCoord(IFace2 face, double[] axis)
+        {
+            var box = face != null ? face.GetBox() as double[] : null; // [x1,y1,z1, x2,y2,z2]
+            if (box == null || box.Length < 6) return 0;
+            double vx = (box[0] + box[3]) / 2 - axis[0];
+            double vy = (box[1] + box[4]) / 2 - axis[1];
+            double vz = (box[2] + box[5]) / 2 - axis[2];
+            return vx * axis[3] + vy * axis[4] + vz * axis[5];
+        }
+
+        /// <summary>
+        /// Axial span of a face, from the points of its edges projected on the hole axis: this is the
+        /// LENGTH of that stretch of the hole. A circular edge (the end of a bore) is represented by its
+        /// centre, which sits exactly at that end's axial position. False when the face has no edge.
+        /// </summary>
+        private static bool FaceAxialExtent(IFace2 face, double[] axis, out double tMin, out double tMax)
+        {
+            tMin = double.MaxValue;
+            tMax = double.MinValue;
+
+            var edges = face != null ? face.GetEdges() as object[] : null;
+            if (edges == null) return false;
+
+            foreach (var o in edges)
+            {
+                var e = o as IEdge;
+                if (e == null) continue;
+
+                var curve = Try(() => e.GetCurve()) as ICurve;
+                if (curve != null && curve.IsCircle())
+                {
+                    Span(curve.CircleParams as double[], axis, ref tMin, ref tMax); // [cx,cy,cz, ...]
+                    continue;
+                }
+
+                Span(VertexPoint(Try(() => e.GetStartVertex())), axis, ref tMin, ref tMax);
+                Span(VertexPoint(Try(() => e.GetEndVertex())), axis, ref tMin, ref tMax);
+            }
+            return tMax >= tMin;
+        }
+
+        private static void Span(double[] pt, double[] axis, ref double tMin, ref double tMax)
+        {
+            if (pt == null || pt.Length < 3) return;
+            double t = (pt[0] - axis[0]) * axis[3] + (pt[1] - axis[1]) * axis[4] + (pt[2] - axis[2]) * axis[5];
+            if (t < tMin) tMin = t;
+            if (t > tMax) tMax = t;
+        }
+
+        private static double[] VertexPoint(object vertex)
+        {
+            var v = vertex as IVertex;
+            return v != null ? v.GetPoint() as double[] : null;
+        }
+
+        /// <summary>
+        /// Every cylindrical / conical face of the same body sharing <paramref name="axis"/> — i.e. the
+        /// faces cut by the same coaxial hole, used to measure how deep the clicked face sits.
+        /// </summary>
+        private static IEnumerable<IFace2> CoaxialFaces(IFace2 face, double[] axis)
+        {
+            var body = face != null ? face.GetBody() as IBody2 : null;
+            var faces = body != null ? body.GetFaces() as object[] : null;
+            if (faces == null) yield break;
+
+            foreach (var o in faces)
+            {
+                var f = o as IFace2;
+                if (f == null) continue;
+
+                double[] fa = HoleAxis(f);
+                if (fa == null) continue;
+                if (Math.Abs(fa[3] * axis[3] + fa[4] * axis[4] + fa[5] * axis[5]) < 0.999) continue; // not parallel
+                if (AxisOffset(fa, axis) > 1e-5) continue;                                           // parallel but not the same line
+                yield return f;
+            }
+        }
+
+        /// <summary>Perpendicular distance from another axis' origin to the reference axis line.</summary>
+        private static double AxisOffset(double[] other, double[] axis)
+        {
+            double vx = other[0] - axis[0], vy = other[1] - axis[1], vz = other[2] - axis[2];
+            double d = vx * axis[3] + vy * axis[4] + vz * axis[5];
+            double px = vx - d * axis[3], py = vy - d * axis[4], pz = vz - d * axis[5];
+            return Math.Sqrt(px * px + py * py + pz * pz);
         }
 
         // ---- callout -------------------------------------------------------------------------------
@@ -507,23 +1453,7 @@ namespace VeradeAddin.Services
 
                     callout.set_Label2(i, label);
                     callout.set_Value(i, value);
-
-                    bool isResolveRow = i == desc.ResolveRow;
-                    // The "Resolver" row stays editable so activating it fires OnStringValueChanged;
-                    // every other value is read-only informational. The row is coloured blue so it
-                    // reads as a clickable link.
-                    callout.set_ValueInactive(i, !isResolveRow);
-                    if (isResolveRow)
-                    {
-                        try { callout.set_TextColor(i, 0x00FF0000); } catch { } // COLORREF (BGR) = blue
-                    }
-                }
-
-                if (desc.ResolveComponent != null && desc.ResolveRow >= 0)
-                {
-                    var compToResolve = desc.ResolveComponent;
-                    handler.ResolveRow = desc.ResolveRow;
-                    handler.OnResolve = () => ResolveComponentAndRefresh(compToResolve);
+                    callout.set_ValueInactive(i, true); // every value is read-only informational
                 }
 
                 bool ok = selMgr.SetCallout(selIndex, callout as Callout);
@@ -546,25 +1476,101 @@ namespace VeradeAddin.Services
         }
 
         /// <summary>
-        /// Resolves a lightweight component so its thread data becomes readable, then rebuilds the
-        /// callout. Deferred via a one-shot timer because we are called from inside the callout's own
-        /// OnStringValueChanged callback: resolving reloads the component and invalidates the face the
-        /// callout hangs off, so doing it mid-callback would re-enter SolidWorks and crash.
+        /// Resolves a lightweight component so its feature data (threads) becomes readable, then
+        /// annotates the same face again. Deferred via a one-shot timer because we run inside
+        /// NewSelectionNotify: resolving reloads the component and invalidates the selected face, so
+        /// doing it mid-notification would re-enter SolidWorks and crash.
+        ///
+        /// <paramref name="face"/> is the face the user clicked; its position is captured BEFORE the
+        /// reload so the face can be re-selected afterwards if SolidWorks drops the selection.
         /// </summary>
-        private void ResolveComponentAndRefresh(Component2 comp)
+        private void ScheduleResolve(Component2 comp, IFace2 face)
         {
-            if (comp == null) return;
+            if (comp == null || _resolvePending) return;
+
+            // One attempt per component: if resolving fails (missing file, read-only assembly...) the
+            // component stays lightweight and retrying on every click would loop forever.
+            string key = Safe(() => comp.Name2);
+            if (!string.IsNullOrEmpty(key) && !_resolveAttempted.Add(key)) return;
+
+            double[] pt = FacePoint(face);
+            _resolvePending = true;
 
             var timer = new System.Windows.Forms.Timer { Interval = 1 };
             timer.Tick += (s, e) =>
             {
                 timer.Stop();
                 timer.Dispose();
-                try { HideCurrentCallout(); } catch { } // drop the stale callout before geometry reloads
-                try { comp.SetSuppression2((int)swComponentSuppressionState_e.swComponentFullyResolved); } catch { }
-                try { RefreshCalloutFromSelection(); } catch { }
+                try
+                {
+                    comp.SetSuppression2((int)swComponentSuppressionState_e.swComponentFullyResolved);
+                    if (!ReselectFace(comp, pt))
+                    {
+                        // Selection survived the reload -> describe it as usual.
+                        RefreshCalloutFromSelection();
+                    }
+                    // When ReselectFace re-selected the face, its NewSelectionNotify does the rest.
+                }
+                catch (Exception ex)
+                {
+                    _log.Log("IdentificarRosca", "Assembly", LogOutcome.Error, "Resolver aligerado falló", ex.ToString());
+                }
+                finally { _resolvePending = false; }
             };
             timer.Start();
+        }
+
+        /// <summary>A point lying on the face (part space), used to find it again after a reload.</summary>
+        private static double[] FacePoint(IFace2 face)
+        {
+            if (face == null) return null;
+            try
+            {
+                var box = face.GetBox() as double[]; // [x1,y1,z1, x2,y2,z2]
+                if (box == null || box.Length < 6) return null;
+                var p = face.GetClosestPointOn((box[0] + box[3]) / 2, (box[1] + box[4]) / 2, (box[2] + box[5]) / 2) as double[];
+                return p != null && p.Length >= 3 ? new[] { p[0], p[1], p[2] } : null;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Re-selects the face at <paramref name="pt"/> on a just-resolved component. Returns true when
+        /// it selected something (the selection notification then rebuilds the callout), false when the
+        /// caller should simply re-read the current selection.
+        /// </summary>
+        private bool ReselectFace(Component2 comp, double[] pt)
+        {
+            if (pt == null || _pickModel == null) return false;
+
+            var selMgr = _pickModel.SelectionManager as ISelectionMgr;
+            if (selMgr == null) return false;
+
+            // Selection survived the reload: nothing to do.
+            if (selMgr.GetSelectedObjectCount2(-1) > 0) return false;
+
+            var body = comp.GetBody() as IBody2;
+            if (body == null) return false;
+
+            var faces = body.GetFaces() as object[];
+            if (faces == null) return false;
+
+            const double tol = 1e-6; // 0.001 mm
+            foreach (var o in faces)
+            {
+                var f = o as IFace2;
+                if (f == null || !(IsCylindrical(f) || IsConical(f))) continue;
+
+                double[] q = null;
+                try { q = f.GetClosestPointOn(pt[0], pt[1], pt[2]) as double[]; } catch { }
+                if (q == null || q.Length < 3) continue;
+                double dx = q[0] - pt[0], dy = q[1] - pt[1], dz = q[2] - pt[2];
+                if (dx * dx + dy * dy + dz * dz > tol * tol) continue;
+
+                var ent = f as IEntity;
+                if (ent != null && ent.Select4(false, null)) return true;
+            }
+            return false;
         }
 
         private void HideCurrentCallout()
@@ -582,6 +1588,11 @@ namespace VeradeAddin.Services
         private static string Mm(double metres)
         {
             return (metres * 1000.0).ToString("0.##", CultureInfo.CurrentCulture);
+        }
+
+        private static string Deg(double degrees)
+        {
+            return degrees.ToString("0.#", CultureInfo.CurrentCulture);
         }
 
         private static double FirstPositive(params double[] values)
@@ -626,13 +1637,16 @@ namespace VeradeAddin.Services
         {
             try { return get(); } catch { return 0; }
         }
+
+        private static object Try(Func<object> get)
+        {
+            try { return get(); } catch { return null; }
+        }
     }
 
     /// <summary>
-    /// Callout handler. Values are informational (read-only), so any attempted edit is rejected — with
-    /// one exception: the "Resolver" row of a lightweight-component callout uses the value-edit callback
-    /// as its click hook, invoking <see cref="OnResolve"/> to resolve the component. Required because
-    /// <see cref="ISelectionMgr.CreateCallout2"/> needs a handler.
+    /// Callout handler. Values are informational (read-only), so any attempted edit is rejected. Only
+    /// required because <see cref="ISelectionMgr.CreateCallout2"/> needs a handler.
     ///
     /// MUST be public + COM-visible: the assembly is <c>[assembly: ComVisible(false)]</c>, so without
     /// it SolidWorks cannot marshal the handler and the callout never appears. The default class
@@ -644,18 +1658,9 @@ namespace VeradeAddin.Services
     [ComVisible(true)]
     public sealed class HoleCalloutHandler : ISwCalloutHandler
     {
-        /// <summary>Row id of the "Resolver" link, or -1 when the callout has no resolve action.</summary>
-        public int ResolveRow = -1;
-        /// <summary>Invoked when the "Resolver" row is activated.</summary>
-        public Action OnResolve;
-
         public bool OnStringValueChanged(object pManipulator, int rowID, string text)
         {
-            if (OnResolve != null && rowID == ResolveRow)
-            {
-                try { OnResolve(); } catch { }
-            }
-            return false; // never accept the typed text; the row is a link, not a real field
+            return false; // values are read-only
         }
     }
 }
