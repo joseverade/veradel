@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using SolidWorks.Interop.sldworks;
@@ -46,6 +46,7 @@ namespace VeradeAddin.Services
             var model = _sw.IActiveDoc2 as IModelDoc2;
             if (model == null || model.GetType() != (int)swDocumentTypes_e.swDocDRAWING)
             {
+                ComRelease.Release(model);
                 plan.Message = "Debe haber un dibujo activo.";
                 return plan;
             }
@@ -53,6 +54,7 @@ namespace VeradeAddin.Services
 
             bool sawAssembly;
             var part = FindReferencedPart(model as IDrawingDoc, out sawAssembly);
+            ComRelease.Release(model);
             if (part == null)
             {
                 plan.Message = sawAssembly
@@ -123,10 +125,13 @@ namespace VeradeAddin.Services
 
                     _log.Log(BmName, "Drawing", LogOutcome.Error,
                         "IRREVERSIBLE: insertando función Soldadura en la pieza (sin copia, sin rollback).");
-                    var wf = part.FeatureManager.InsertWeldmentFeature();
+                    object featMgr = part.FeatureManager;
+                    var wf = ((FeatureManager)featMgr).InsertWeldmentFeature();
+                    ComRelease.Release(featMgr);
                     part.ForceRebuild3(false);
                     result.WeldmentInserted = wf != null;
-                    if (wf == null) Warn(result, "No se pudo insertar la función Soldadura.");
+                    ComRelease.Release(wf);
+                    if (!result.WeldmentInserted) Warn(result, "No se pudo insertar la función Soldadura.");
                     else Decide("Función Soldadura insertada.");
                 }
 
@@ -191,7 +196,9 @@ namespace VeradeAddin.Services
                 if (mv != null) { try { mv.EnableGraphicsUpdate = true; } catch { } }
                 _sw.CommandInProgress = prevCmd;
                 foreach (var it in items) foreach (var b in it.Bodies) ComRelease.Release(b);
+                ComRelease.Release(mv);
                 ComRelease.Release(part);
+                ComRelease.Release(model);
             }
 
             return result;
@@ -226,6 +233,8 @@ namespace VeradeAddin.Services
             var feat = part.FirstFeature() as Feature;
             int idx = 0;
 
+            // Every feature / body folder walked is a reference of its own. The bodies collected into
+            // the items are NOT released here: they are used later and freed by the caller's finally.
             while (feat != null)
             {
                 var bf = feat.GetSpecificFeature2() as BodyFolder;
@@ -242,11 +251,19 @@ namespace VeradeAddin.Services
                             any = true;
                             items.Add(MakeItem(++idx, sub, sbf));
                         }
-                        sub = sub.GetNextSubFeature() as Feature;
+                        ComRelease.Release(sbf);
+
+                        var nextSub = sub.GetNextSubFeature() as Feature;
+                        ComRelease.Release(sub);
+                        sub = nextSub;
                     }
                     if (!any && bf.GetBodyCount() > 0) items.Add(MakeItem(++idx, feat, bf));
                 }
-                feat = feat.GetNextFeature() as Feature;
+                ComRelease.Release(bf);
+
+                var next = feat.GetNextFeature() as Feature;
+                ComRelease.Release(feat);
+                feat = next;
             }
             return items;
         }
@@ -273,8 +290,8 @@ namespace VeradeAddin.Services
                 foreach (var ob in bodies)
                 {
                     var b = ob as Body2;
-                    if (b == null) continue;
-                    item.Bodies.Add(b);
+                    if (b == null) { ComRelease.Release(ob); continue; }
+                    item.Bodies.Add(b); // released with the item, by the caller's finally
                     try { if (b.IsSheetMetal()) item.SheetMetal = true; } catch { }
                 }
             }
@@ -287,15 +304,18 @@ namespace VeradeAddin.Services
 
         private static string ReadProp(Feature feat, string name)
         {
+            object cpm = null;
             try
             {
-                var cpm = feat.CustomPropertyManager;
-                if (cpm == null) return null;
+                cpm = feat.CustomPropertyManager;
+                var mgr = cpm as CustomPropertyManager;
+                if (mgr == null) return null;
                 string val, resolved; bool wasResolved;
-                cpm.Get5(name, false, out val, out resolved, out wasResolved);
+                mgr.Get5(name, false, out val, out resolved, out wasResolved);
                 return string.IsNullOrEmpty(resolved) ? val : resolved;
             }
             catch { return null; }
+            finally { ComRelease.Release(cpm); }
         }
 
         private static int CountBodies(IPartDoc partDoc)
@@ -428,29 +448,32 @@ namespace VeradeAddin.Services
 
             var arr = ToBodyArray(item.Bodies);
 
-            var front = drawing.CreateDrawViewFromModelView3(modelName, "*Front", fx, fy, 0) as View;
-            if (front == null) { Warn(result, "No se pudo crear la vista frontal de la marca " + item.Mark + "."); return; }
-            result.ViewsCreated++;
-            try { front.ScaleRatio = new double[] { 1, den }; } catch { }
-            SetBodies(front, arr, item, result);
-
-            string fn = front.GetName2();
-
-            try
+            using (var com = new ComScope())
             {
-                drawing.ActivateView(fn);
-                var side = drawing.CreateUnfoldedViewAt3(sx, sy, 0, false) as View;
-                if (side != null) { result.ViewsCreated++; SetBodies(side, arr, item, result); }
-            }
-            catch (Exception ex) { Warn(result, "Vista lateral marca " + item.Mark + ": " + ex.Message); }
+                var front = com.Track(drawing.CreateDrawViewFromModelView3(modelName, "*Front", fx, fy, 0) as View);
+                if (front == null) { Warn(result, "No se pudo crear la vista frontal de la marca " + item.Mark + "."); return; }
+                result.ViewsCreated++;
+                try { front.ScaleRatio = new double[] { 1, den }; } catch { }
+                SetBodies(front, arr, item, result);
 
-            try
-            {
-                drawing.ActivateView(fn);
-                var top = drawing.CreateUnfoldedViewAt3(tx, ty, 0, false) as View;
-                if (top != null) { result.ViewsCreated++; SetBodies(top, arr, item, result); }
+                string fn = front.GetName2();
+
+                try
+                {
+                    drawing.ActivateView(fn);
+                    var side = com.Track(drawing.CreateUnfoldedViewAt3(sx, sy, 0, false) as View);
+                    if (side != null) { result.ViewsCreated++; SetBodies(side, arr, item, result); }
+                }
+                catch (Exception ex) { Warn(result, "Vista lateral marca " + item.Mark + ": " + ex.Message); }
+
+                try
+                {
+                    drawing.ActivateView(fn);
+                    var top = com.Track(drawing.CreateUnfoldedViewAt3(tx, ty, 0, false) as View);
+                    if (top != null) { result.ViewsCreated++; SetBodies(top, arr, item, result); }
+                }
+                catch (Exception ex) { Warn(result, "Vista superior marca " + item.Mark + ": " + ex.Message); }
             }
-            catch (Exception ex) { Warn(result, "Vista superior marca " + item.Mark + ": " + ex.Message); }
 
             result.GroupsCreated++;
             PlaceLabel(model, ccx, labelY, "Marca " + item.Mark + "   Cant.: " + item.Quantity);
@@ -464,11 +487,15 @@ namespace VeradeAddin.Services
             catch (Exception ex) { Warn(result, "Desarrollo marca " + item.Mark + ": " + ex.Message); return; }
 
             if (fp == null) { Warn(result, "No se pudo crear el desarrollo de la marca " + item.Mark + "."); return; }
-            result.ViewsCreated++;
-            result.FlatPatternsCreated++;
-            try { fp.ScaleRatio = new double[] { 1, den }; } catch { }
-            try { fp.Position = new double[] { ccx, ccy }; } catch { }
-            SetBodies(fp, ToBodyArray(item.Bodies), item, result); // isolate to this item (best-effort)
+            try
+            {
+                result.ViewsCreated++;
+                result.FlatPatternsCreated++;
+                try { fp.ScaleRatio = new double[] { 1, den }; } catch { }
+                try { fp.Position = new double[] { ccx, ccy }; } catch { }
+                SetBodies(fp, ToBodyArray(item.Bodies), item, result); // isolate to this item (best-effort)
+            }
+            finally { ComRelease.Release(fp); }
             PlaceLabel(model, ccx, labelY, "Marca " + item.Mark + " - Desarrollo");
         }
 
@@ -478,7 +505,9 @@ namespace VeradeAddin.Services
         {
             try
             {
-                var cfg = part.GetActiveConfiguration() as Configuration;
+            using (var com = new ComScope())
+            {
+                var cfg = com.Track(part.GetActiveConfiguration() as Configuration);
                 if (cfg == null) { Warn(result, "No se pudo obtener la configuración activa para explosionar."); return; }
                 if (cfg.GetNumberOfPartExplodeSteps() > 0) { result.Exploded = true; return; }
 
@@ -495,13 +524,14 @@ namespace VeradeAddin.Services
                 }
 
                 int err;
-                var step = cfg.AddPartExplodeStep("Despiece", 0.15, 0, false, true, out err);
+                var step = com.Track(cfg.AddPartExplodeStep("Despiece", 0.15, 0, false, true, out err));
                 part.ClearSelection2(true);
                 part.ForceRebuild3(false);
 
                 result.Exploded = step != null && err == 0;
                 if (!result.Exploded) Warn(result, "No se pudo crear la explosión (la vista isométrica irá sin explosionar).");
                 else Decide("Explosión de pieza creada (auto-espaciado).");
+            }
             }
             catch (Exception ex) { Warn(result, "Explosión: " + ex.Message); }
         }
@@ -514,6 +544,9 @@ namespace VeradeAddin.Services
 
             var iso = drawing.CreateDrawViewFromModelView3(modelName, "*Isometric", regionCx, regionCy, 0) as View;
             if (iso == null) { Warn(result, "No se pudo crear la vista isométrica explosionada."); return; }
+            using (var com = new ComScope())
+            {
+            com.Track(iso);
             result.ViewsCreated++;
 
             try { if (iso.ShowExploded(true)) Decide("Vista isométrica mostrada explosionada."); } catch { }
@@ -526,15 +559,15 @@ namespace VeradeAddin.Services
             try
             {
                 model.ClearSelection2(true);
-                model.Extension.SelectByID2(iso.GetName2(), "DRAWINGVIEW", 0, 0, 0, false, 0, null, 0);
-                var opts = drawing.CreateAutoBalloonOptions();
+                com.Track(model.Extension).SelectByID2(iso.GetName2(), "DRAWINGVIEW", 0, 0, 0, false, 0, null, 0);
+                var opts = com.Track(drawing.CreateAutoBalloonOptions());
                 if (opts != null)
                 {
                     opts.Layout = (int)swBalloonLayoutType_e.swDetailingBalloonLayout_Circle;
                     opts.Style = (int)swBalloonStyle_e.swBS_Circular;
                     opts.IgnoreMultiple = false;
                     opts.ItemNumberStart = 1;
-                    var balloons = drawing.AutoBalloon5(opts) as object[];
+                    var balloons = com.TrackAll(drawing.AutoBalloon5(opts) as object[]);
                     if (balloons != null) result.BalloonsCreated += balloons.Length;
                 }
                 model.ClearSelection2(true);
@@ -546,11 +579,13 @@ namespace VeradeAddin.Services
             {
                 double tableX = BmMargin + BmUsableW;
                 double tableY = BmMargin + BmTitleBand;
-                iso.InsertWeldmentTable(false, tableX, tableY,
+                var table = iso.InsertWeldmentTable(false, tableX, tableY,
                     (int)swBOMConfigurationAnchorType_e.swBOMConfigurationAnchor_BottomRight, "", config ?? "");
+                com.Track(table);
                 Decide("Tabla de lista de corte insertada sobre el cajetín.");
             }
             catch (Exception ex) { Warn(result, "Tabla de lista de corte: " + ex.Message); }
+            }
         }
 
         private static int FitScaleDen(View v, double maxW, double maxH)
@@ -595,8 +630,11 @@ namespace VeradeAddin.Services
                 var names = drawing.GetSheetNames() as string[];
                 if (names == null || names.Length == 0) return null;
                 drawing.ActivateSheet(names[0]);
-                var sheet = drawing.GetCurrentSheet() as Sheet;
-                return sheet != null ? sheet.GetTemplateName() : null;
+                using (var com = new ComScope())
+                {
+                    var sheet = com.Track(drawing.GetCurrentSheet() as Sheet);
+                    return sheet != null ? sheet.GetTemplateName() : null;
+                }
             }
             catch { return null; }
         }
@@ -605,8 +643,11 @@ namespace VeradeAddin.Services
         {
             try
             {
-                var sheet = drawing.GetCurrentSheet() as Sheet;
-                return sheet != null ? sheet.GetName() : "?";
+                using (var com = new ComScope())
+                {
+                    var sheet = com.Track(drawing.GetCurrentSheet() as Sheet);
+                    return sheet != null ? sheet.GetName() : "?";
+                }
             }
             catch { return "?"; }
         }
@@ -615,12 +656,15 @@ namespace VeradeAddin.Services
         {
             try
             {
-                var note = model.InsertNote(text) as Note;
-                if (note != null)
+                using (var com = new ComScope())
                 {
-                    note.SetTextPoint(x, y, 0);
-                    var ann = note.GetAnnotation() as Annotation;
-                    if (ann != null) ann.SetPosition(x, y, 0);
+                    var note = com.Track(model.InsertNote(text) as Note);
+                    if (note != null)
+                    {
+                        note.SetTextPoint(x, y, 0);
+                        var ann = com.Track(note.GetAnnotation() as Annotation);
+                        if (ann != null) ann.SetPosition(x, y, 0);
+                    }
                 }
                 model.ClearSelection2(true);
             }

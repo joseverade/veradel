@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using SolidWorks.Interop.sldworks;
 using SolidWorks.Interop.swconst;
 using SolidWorks.Interop.swpublished;
+using VeradeAddin.Infrastructure;
 using VeradeAddin.Logging;
 
 namespace VeradeAddin.Services
@@ -77,12 +78,16 @@ namespace VeradeAddin.Services
             var model = _sw.IActiveDoc2 as IModelDoc2;
             if (model == null || model.GetType() != (int)swDocumentTypes_e.swDocASSEMBLY)
             {
+                ComRelease.Release(model);
                 return false;
             }
 
+            // Same wrapper seen through another interface, so this is ONE reference: it is held for the
+            // whole pick session and given back by DeactivatePick.
             var ev = model as DAssemblyDocEvents_Event;
             if (ev == null)
             {
+                ComRelease.Release(model);
                 return false;
             }
 
@@ -116,6 +121,9 @@ namespace VeradeAddin.Services
 
             HideCurrentCallout();
 
+            // _pickEvents is the same wrapper as _pickModel: release once, after unhooking.
+            ComRelease.Release(_pickModel);
+
             _pickEvents = null;
             _pickSelHandler = null;
             _pickDestroyHandler = null;
@@ -147,88 +155,109 @@ namespace VeradeAddin.Services
 
         // --- read current selection -> show/update callout ------------------------------------------
 
+        /// <summary>
+        /// Runs on EVERY selection change while pick-mode is on, so everything it touches is released
+        /// through <paramref name="com"/> — a click used to strand the selection manager, the picked
+        /// geometry and, through the measuring helpers, a reference per face of the body.
+        ///
+        /// Two references deliberately outlive the scope: the entity carrying the callout (kept in
+        /// <see cref="_calloutEntity"/> and released by <see cref="HideCurrentCallout"/>), and whatever
+        /// the deferred timers need — those take ownership via <c>com.Keep</c>.
+        /// </summary>
         private void RefreshCalloutFromSelection()
         {
             var model = _pickModel;
             if (model == null) return;
 
-            var selMgr = model.SelectionManager as ISelectionMgr;
-            if (selMgr == null) return;
-
-            IFace2 face = null;
-            IEdge edge = null;
-            Component2 comp = null;
-            int selIndex = -1;
-
-            int count = selMgr.GetSelectedObjectCount2(-1);
-            for (int i = 1; i <= count; i++)
+            using (var com = new ComScope())
             {
-                int t = selMgr.GetSelectedObjectType3(i, -1);
-                if (t == (int)swSelectType_e.swSelFACES)
+                var selMgr = com.Track(model.SelectionManager as ISelectionMgr);
+                if (selMgr == null) return;
+
+                IFace2 face = null;
+                IEdge edge = null;
+                Component2 comp = null;
+                int selIndex = -1;
+
+                int count = selMgr.GetSelectedObjectCount2(-1);
+                for (int i = 1; i <= count; i++)
                 {
-                    var f = selMgr.GetSelectedObject6(i, -1) as IFace2;
-                    // Cones count too: the conical face of a countersink (or of a countersunk screw
-                    // head) is what the user naturally clicks on.
-                    if (f != null && (IsCylindrical(f) || IsConical(f)))
+                    int t = selMgr.GetSelectedObjectType3(i, -1);
+                    if (t == (int)swSelectType_e.swSelFACES)
                     {
-                        face = f;
-                        comp = selMgr.GetSelectedObjectsComponent4(i, -1) as Component2;
-                        selIndex = i;
-                        break;
+                        var f = com.Track(selMgr.GetSelectedObject6(i, -1) as IFace2);
+                        // Cones count too: the conical face of a countersink (or of a countersunk screw
+                        // head) is what the user naturally clicks on.
+                        if (f != null && (IsCylindrical(f) || IsConical(f)))
+                        {
+                            face = f;
+                            comp = com.Track(selMgr.GetSelectedObjectsComponent4(i, -1) as Component2);
+                            selIndex = i;
+                            break;
+                        }
+                    }
+                    else if (t == (int)swSelectType_e.swSelEDGES)
+                    {
+                        var e = com.Track(selMgr.GetSelectedObject6(i, -1) as IEdge);
+                        if (e != null && IsCircular(e))
+                        {
+                            edge = e;
+                            comp = com.Track(selMgr.GetSelectedObjectsComponent4(i, -1) as Component2);
+                            selIndex = i;
+                            break;
+                        }
                     }
                 }
-                else if (t == (int)swSelectType_e.swSelEDGES)
+
+                if (face == null && edge == null)
                 {
-                    var e = selMgr.GetSelectedObject6(i, -1) as IEdge;
-                    if (e != null && IsCircular(e))
-                    {
-                        edge = e;
-                        comp = selMgr.GetSelectedObjectsComponent4(i, -1) as Component2;
-                        selIndex = i;
-                        break;
-                    }
+                    // Selection is not hole-like -> clear the last callout so nothing stale lingers.
+                    HideCurrentCallout();
+                    return;
                 }
-            }
 
-            if (face == null && edge == null)
-            {
-                // Selection is not hole-like -> clear the last callout so nothing stale lingers.
-                HideCurrentCallout();
-                return;
-            }
+                // If the same entity is already annotated, leave the live callout untouched. Rebuilding
+                // it on every NewSelectionNotify tears the callout down mid-drag, and SetCallout on the
+                // torn-down object crashes SolidWorks with an AccessViolationException.
+                //
+                // Releasing this click's reference is safe even here: _calloutEntity holds one of its
+                // own from the click that created it, and each acquisition is counted separately.
+                // selOwner is the tracked reference behind selEnt (casting an RCW to another interface
+                // hands back the same wrapper); keeping THAT is what stops the scope releasing it.
+                object selOwner = (object)edge ?? face;
+                IEntity selEnt = (edge as IEntity) ?? (face as IEntity);
+                if (_currentCallout != null && _calloutEntity != null && selEnt != null
+                    && SameCom(_calloutEntity, selEnt))
+                {
+                    return;
+                }
 
-            // If the same entity is already annotated, leave the live callout untouched. Rebuilding it
-            // on every NewSelectionNotify tears the callout down mid-drag, and SetCallout on the
-            // torn-down object crashes SolidWorks with an AccessViolationException.
-            IEntity selEnt = (edge as IEntity) ?? (face as IEntity);
-            if (_currentCallout != null && _calloutEntity != null && selEnt != null
-                && SameCom(_calloutEntity, selEnt))
-            {
-                return;
-            }
+                if (face == null)
+                {
+                    face = com.Track(HoleFaceOfEdge(edge));
+                }
 
-            if (face == null)
-            {
-                face = HoleFaceOfEdge(edge);
-            }
+                // A lightweight component exposes geometry but no feature tree, so the thread can never
+                // be read. Resolve it automatically (deferred — see ScheduleResolve) and annotate after.
+                if (IsComponentLightweight(comp))
+                {
+                    HideCurrentCallout();
+                    ScheduleResolve(com.Keep(comp), face); // ScheduleResolve owns comp from here on
+                    return;
+                }
 
-            // A lightweight component exposes geometry but no feature tree, so the thread can never be
-            // read. Resolve it automatically (deferred — see ScheduleResolve) and annotate afterwards.
-            if (IsComponentLightweight(comp))
-            {
-                HideCurrentCallout();
-                ScheduleResolve(comp, face);
-                return;
-            }
+                var desc = DescribeHole(com, face, edge, comp);
+                if (desc == null || desc.Lines.Count == 0)
+                {
+                    HideCurrentCallout();
+                    return;
+                }
 
-            var desc = DescribeHole(face, edge, comp);
-            if (desc == null || desc.Lines.Count == 0)
-            {
-                HideCurrentCallout();
-                return;
+                // The entity outlives this scope: it is compared against the next selection, and
+                // HideCurrentCallout gives the reference back when the callout is replaced.
+                com.Keep(selOwner);
+                ShowCallout(selMgr, selIndex, selEnt, desc);
             }
-
-            ShowCallout(selMgr, selIndex, selEnt, desc);
         }
 
         // ---- description ---------------------------------------------------------------------------
@@ -246,9 +275,9 @@ namespace VeradeAddin.Services
             }
         }
 
-        private HoleDescription DescribeHole(IFace2 face, IEdge edge, Component2 comp)
+        private HoleDescription DescribeHole(ComScope com, IFace2 face, IEdge edge, Component2 comp)
         {
-            var d = DescribeHoleCore(face, edge, comp);
+            var d = DescribeHoleCore(com, face, edge, comp);
 
             // A mirrored hole's face belongs to the mirror feature, not to the original Hole Wizard /
             // cosmetic thread, so everything we report about it is inferred from the source hole and may
@@ -260,15 +289,15 @@ namespace VeradeAddin.Services
             return d;
         }
 
-        private HoleDescription DescribeHoleCore(IFace2 face, IEdge edge, Component2 comp)
+        private HoleDescription DescribeHoleCore(ComScope com, IFace2 face, IEdge edge, Component2 comp)
         {
             var d = new HoleDescription();
 
-            IFeature feat = face != null ? face.GetFeature() as IFeature : null;
+            IFeature feat = com.Track(face != null ? face.GetFeature() as IFeature : null);
             object def = null;
             if (feat != null)
             {
-                try { def = feat.GetDefinition(); } catch { def = null; }
+                try { def = com.Track(feat.GetDefinition()); } catch { def = null; }
             }
 
             var wiz = def as IWizardHoleFeatureData2;
@@ -281,7 +310,7 @@ namespace VeradeAddin.Services
             var adv = def as IAdvancedHoleFeatureData;
             if (adv != null)
             {
-                FillFromAdvancedHole(d, feat, face, comp);
+                FillFromAdvancedHole(com, d, feat, face, comp);
                 if (d.Lines.Count > 0) return d;
             }
 
@@ -303,9 +332,12 @@ namespace VeradeAddin.Services
             var match = FindCosmeticThreadByDiameter(comp, boreDia);
             if (match != null)
             {
-                d.Title = !string.IsNullOrWhiteSpace(match.Callout) ? match.Callout : match.Size;
-                if (!string.IsNullOrWhiteSpace(match.Callout)) d.Add("Rosca", match.Callout);
-                else if (!string.IsNullOrWhiteSpace(match.Size)) d.Add("Rosca", match.Size);
+                string label = ThreadLabel(match);
+                d.Title = label;
+                // A tapped bore is cut at the tap drill, always NARROWER than the nominal diameter; a
+                // bore wider than nominal is clearance for a screw of that size, not the thread.
+                bool tapped = match.NominalDia <= 0 || boreDia <= match.NominalDia * 1.02;
+                if (label != null) d.Add(tapped ? "Rosca" : "Para rosca", label);
                 if (match.NominalDia > 0) d.Add("Ø nominal", Mm(match.NominalDia));
                 d.Add("Ø Agujero", Mm(boreDia));
                 return d;
@@ -334,9 +366,10 @@ namespace VeradeAddin.Services
             var match = FindCosmeticThreadByDiameter(comp, dMin);
             if (match != null)
             {
-                string label = !string.IsNullOrWhiteSpace(match.Callout) ? match.Callout : match.Size;
+                string label = ThreadLabel(match);
                 d.Title = label;
-                if (!string.IsNullOrWhiteSpace(label)) d.Add("Rosca", label);
+                // A cone is an avellanado: clearance for the head of the screw, never the thread itself.
+                if (label != null) d.Add("Para rosca", label);
                 if (match.NominalDia > 0) d.Add("Ø nominal", Mm(match.NominalDia));
             }
             else
@@ -382,8 +415,10 @@ namespace VeradeAddin.Services
             double csink = SafeD(() => w.CounterSinkDiameter);
             double depth = FirstPositive(SafeD(() => w.HoleDepth), SafeD(() => w.Depth));
 
-            bool threaded = IsThreadedHoleType(SafeI(() => w.Type))
-                            || SafeI(() => w.CosmeticThreadType) != (int)swWzdHoleCosmeticThreadTypes_e.swCosmeticThreadNone;
+            // The hole TYPE decides, and only an unknown type falls back to the cosmetic-thread setting.
+            bool? byType = ThreadedByHoleType(SafeI(() => w.Type));
+            bool threaded = byType
+                            ?? (SafeI(() => w.CosmeticThreadType) != (int)swWzdHoleCosmeticThreadTypes_e.swCosmeticThreadNone);
 
             d.Title = threaded && !string.IsNullOrWhiteSpace(fastener)
                       ? fastener
@@ -392,9 +427,9 @@ namespace VeradeAddin.Services
             if (!string.IsNullOrWhiteSpace(fastener))
             {
                 // Thread designation with its pitch (kept), without the tolerance class. A tapped hole
-                // IS the thread ("Rosca"); a clearance/counterbore hole is only sized for a screw of
-                // that size ("Para rosca de").
-                d.Add(threaded ? "Rosca" : "Para rosca de", fastener);
+                // IS the thread ("Rosca"); a refrentado / avellanado / taladro / ranura is only sized
+                // for a screw of that designation ("Para rosca").
+                d.Add(threaded ? "Rosca" : "Para rosca", fastener);
             }
             if (bore > 0) d.Add("Ø agujero (mín)", Mm(bore));
             if (csink > 0) d.Add("Ø avellanado (máx)", Mm(csink));
@@ -403,17 +438,33 @@ namespace VeradeAddin.Services
         }
 
         /// <summary>
-        /// True when a Hole Wizard <see cref="swWzdHoleTypes_e"/> is a tapped hole (straight or pipe
-        /// tap). Matched by enum NAME because the tap variants are scattered across the enum; the two
-        /// "swTapered*" values are conical DRILLED holes, not threads, so they are excluded.
+        /// Whether a Hole Wizard <see cref="swWzdHoleTypes_e"/> CUTS a thread. "Refrentado",
+        /// "Avellanado", "Taladro" and "Ranura" are clearance for a screw, so they read "Para rosca";
+        /// only the tap variants are the thread itself ("Rosca"). Matched by enum NAME because the tap
+        /// variants are scattered across the enum. Null when the value is not a known member, so the
+        /// caller can fall back to the cosmetic-thread setting.
         /// </summary>
-        private static bool IsThreadedHoleType(int wizardType)
+        private static bool? ThreadedByHoleType(int wizardType)
         {
             string name = null;
             try { name = Enum.GetName(typeof(swWzdHoleTypes_e), wizardType); } catch { }
-            if (string.IsNullOrEmpty(name)) return false;
-            if (name.StartsWith("swTapered", StringComparison.OrdinalIgnoreCase)) return false;
-            return name.IndexOf("Tap", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (string.IsNullOrEmpty(name)) return null;
+            return ContainsTap(name);
+        }
+
+        /// <summary>
+        /// "Tap" as a whole word: a "...TaperedTap" is a tap, a "...TaperedHole" is a conical DRILLED
+        /// hole and must not be read as one.
+        /// </summary>
+        private static bool ContainsTap(string name)
+        {
+            int i = 0;
+            while ((i = name.IndexOf("Tap", i, StringComparison.OrdinalIgnoreCase)) >= 0)
+            {
+                if (!name.Substring(i + 3).StartsWith("er", StringComparison.OrdinalIgnoreCase)) return true;
+                i += 3;
+            }
+            return false;
         }
 
         // ---- "Taladro avanzado" --------------------------------------------------------------------
@@ -485,12 +536,12 @@ namespace VeradeAddin.Services
         /// When the elements cannot be read the stretches are still described from the model alone,
         /// with the thread designations recovered from the feature's own cosmetic threads.
         /// </summary>
-        private void FillFromAdvancedHole(HoleDescription d, IFeature feat, IFace2 face, Component2 comp)
+        private void FillFromAdvancedHole(ComScope com, HoleDescription d, IFeature feat, IFace2 face, Component2 comp)
         {
             var segs = MeasureHoleStack(feat, face);
             if (segs.Count == 0) return;
 
-            var els = GetAdvancedElements(feat, face, comp);
+            var els = GetAdvancedElements(com, feat, face, comp);
             if (els.Count > 0)
             {
                 MatchElementsByPosition(segs, els);
@@ -694,8 +745,9 @@ namespace VeradeAddin.Services
             {
                 var cur = sub;
 
-                ICosmeticThreadFeatureData data = null;
-                try { data = cur.GetDefinition() as ICosmeticThreadFeatureData; } catch { }
+                object def = null;
+                try { def = cur.GetDefinition(); } catch { }
+                var data = def as ICosmeticThreadFeatureData;
                 if (data != null)
                 {
                     double nominal = SafeD(() => data.Diameter);
@@ -715,6 +767,8 @@ namespace VeradeAddin.Services
                 }
 
                 sub = Try(() => cur.GetNextSubFeature()) as IFeature;
+                ComRelease.Release(def);
+                ComRelease.Release(cur);
             }
         }
 
@@ -727,21 +781,24 @@ namespace VeradeAddin.Services
         /// <see cref="ScheduleAdvancedRead"/>, which pays for AccessSelections (it rolls the part back,
         /// drops the selection and tears the callout down) exactly once per hole and caches the result.
         /// </summary>
-        private List<AdvElement> GetAdvancedElements(IFeature feat, IFace2 face, Component2 comp)
+        private List<AdvElement> GetAdvancedElements(ComScope com, IFeature feat, IFace2 face, Component2 comp)
         {
             string key = AdvCacheKey(feat, comp);
             List<AdvElement> cached;
             if (key != null && _advElementCache.TryGetValue(key, out cached)) return cached;
 
-            var a = Try(() => feat.GetDefinition()) as IAdvancedHoleFeatureData;
-            var direct = ReadElements(a);
+            object def = Try(() => feat.GetDefinition());
+            List<AdvElement> direct;
+            try { direct = ReadElements(def as IAdvancedHoleFeatureData); }
+            finally { ComRelease.Release(def); }
+
             if (direct.Count > 0)
             {
                 LogElements(key, "lectura directa", direct);
                 return direct;
             }
 
-            ScheduleAdvancedRead(key, feat, face, comp);
+            ScheduleAdvancedRead(com, key, feat, face, comp);
             return direct;
         }
 
@@ -775,21 +832,28 @@ namespace VeradeAddin.Services
             var arr = raw as object[];
             if (arr == null) return;
 
-            int i = 0;
-            foreach (var o in arr)
+            // The elements are snapshotted into plain data right here, so none of them outlives this
+            // loop and every one is given back.
+            using (var com = new ComScope())
             {
-                var el = o as IAdvancedHoleElementData;
-                if (el == null) continue;
-                into.Add(new AdvElement
+                com.TrackAll(arr);
+
+                int i = 0;
+                foreach (var o in arr)
                 {
-                    Order = i++,
-                    FarSide = farSide,
-                    Type = SafeI(() => el.ElementType),
-                    Size = Safe(() => el.Size),
-                    Diameter = SafeD(() => el.Diameter),
-                    BlindDepth = SafeD(() => el.BlindDepth),
-                    EndCondition = SafeI(() => el.EndCondition)
-                });
+                    var el = o as IAdvancedHoleElementData;
+                    if (el == null) continue;
+                    into.Add(new AdvElement
+                    {
+                        Order = i++,
+                        FarSide = farSide,
+                        Type = SafeI(() => el.ElementType),
+                        Size = Safe(() => el.Size),
+                        Diameter = SafeD(() => el.Diameter),
+                        BlindDepth = SafeD(() => el.BlindDepth),
+                        EndCondition = SafeI(() => el.EndCondition)
+                    });
+                }
             }
         }
 
@@ -800,12 +864,17 @@ namespace VeradeAddin.Services
         /// never rolls the model back twice. The rollback DROPS THE SELECTION, so a point on the clicked
         /// face is captured beforehand and the face is selected again afterwards.
         /// </summary>
-        private void ScheduleAdvancedRead(string key, IFeature feat, IFace2 face, Component2 comp)
+        private void ScheduleAdvancedRead(ComScope com, string key, IFeature feat, IFace2 face, Component2 comp)
         {
             if (key == null || feat == null || _advReadPending) return;
 
             double[] pt = FacePoint(face);
             _advReadPending = true;
+
+            // The callback runs after the caller's scope is gone, so the two references it needs are
+            // taken out of that scope and released here instead.
+            com.Keep(feat);
+            com.Keep(comp);
 
             var timer = new System.Windows.Forms.Timer { Interval = 1 };
             timer.Tick += (s, e) =>
@@ -830,7 +899,12 @@ namespace VeradeAddin.Services
                     _log.Log("IdentificarRosca", "Assembly", LogOutcome.Error,
                         "Lectura de taladro avanzado falló", ex.ToString());
                 }
-                finally { _advReadPending = false; }
+                finally
+                {
+                    _advReadPending = false;
+                    ComRelease.Release(feat);
+                    ComRelease.Release(comp);
+                }
             };
             timer.Start();
         }
@@ -844,10 +918,18 @@ namespace VeradeAddin.Services
         private List<AdvElement> ReadAdvancedElementsNow(IFeature feat, Component2 comp)
         {
             var list = new List<AdvElement>();
-            var a = Try(() => feat.GetDefinition()) as IAdvancedHoleFeatureData;
-            if (a == null) return list;
+            object def = Try(() => feat.GetDefinition());
+            var a = def as IAdvancedHoleFeatureData;
+            if (a == null)
+            {
+                ComRelease.Release(def);
+                return list;
+            }
 
+            // _pickModel is the session's active document: it is NOT ours to release, so `part` is only
+            // given back when it is the component's own document.
             var part = comp != null ? comp.GetModelDoc2() as IModelDoc2 : _pickModel;
+            bool ownsPart = !ReferenceEquals(part, _pickModel);
             var view = _pickModel != null ? _pickModel.ActiveView as IModelView : null;
             var featMgr = part != null ? part.FeatureManager : null;
 
@@ -870,6 +952,10 @@ namespace VeradeAddin.Services
             {
                 try { if (featMgr != null) featMgr.EnableFeatureTree = tree; } catch { }
                 try { if (view != null) view.EnableGraphicsUpdate = graphics; } catch { }
+                ComRelease.Release(featMgr);
+                ComRelease.Release(view);
+                if (ownsPart) ComRelease.Release(part);
+                ComRelease.Release(def);
             }
 
             if (list.Count > 0)
@@ -1038,16 +1124,24 @@ namespace VeradeAddin.Services
             double[] axis = HoleAxis(face);
             if (axis == null) return segs;
 
-            foreach (var f in CoaxialFaces(face, axis))
+            var coaxial = CoaxialFaces(face, axis);
+            try
             {
-                // Same feature only: a different hole crossing this axis is not part of the stack.
-                if (feat != null && !SameCom(feat, Try(() => f.GetFeature()))) continue;
+                foreach (var f in coaxial)
+                {
+                    // Same feature only: a different hole crossing this axis is not part of the stack.
+                    var owner = Try(() => f.GetFeature());
+                    bool sameFeature = feat == null || SameCom(feat, owner);
+                    ComRelease.Release(owner);
+                    if (!sameFeature) continue;
 
-                var s = MeasureSegment(f, axis);
-                if (s == null) continue;
-                s.Clicked = SameCom(face, f);
-                segs.Add(s);
+                    var s = MeasureSegment(f, axis);
+                    if (s == null) continue;
+                    s.Clicked = SameCom(face, f);
+                    segs.Add(s);
+                }
             }
+            finally { ComRelease.ReleaseAll(coaxial); }
 
             segs.Sort((x, y) => x.TMin.CompareTo(y.TMin));
             return segs;
@@ -1098,8 +1192,13 @@ namespace VeradeAddin.Services
             {
                 var cur = sub;
                 var hit = ThreadOf(cur, boreDia) ?? FindThreadInFeature(cur, boreDia);
-                if (hit != null) return hit;
+                if (hit != null)
+                {
+                    ComRelease.Release(cur);
+                    return hit;
+                }
                 sub = Try(() => cur.GetNextSubFeature()) as IFeature;
+                ComRelease.Release(cur);
             }
             return null;
         }
@@ -1111,19 +1210,24 @@ namespace VeradeAddin.Services
         /// </summary>
         private static ThreadMatch ThreadOf(IFeature f, double boreDia)
         {
-            ICosmeticThreadFeatureData data = null;
-            try { data = f.GetDefinition() as ICosmeticThreadFeatureData; } catch { }
-            if (data == null) return null;
-
-            double nominal = SafeD(() => data.Diameter);
-            if (nominal <= 0 || Math.Abs(nominal - boreDia) > boreDia * 0.25 + 0.0005) return null;
-
-            return new ThreadMatch
+            object def = null;
+            try { def = f.GetDefinition(); } catch { }
+            try
             {
-                Callout = Safe(() => data.ThreadCallout),
-                Size = Safe(() => data.Size),
-                NominalDia = nominal
-            };
+                var data = def as ICosmeticThreadFeatureData;
+                if (data == null) return null;
+
+                double nominal = SafeD(() => data.Diameter);
+                if (nominal <= 0 || Math.Abs(nominal - boreDia) > boreDia * 0.25 + 0.0005) return null;
+
+                return new ThreadMatch
+                {
+                    Callout = Safe(() => data.ThreadCallout),
+                    Size = Safe(() => data.Size),
+                    NominalDia = nominal
+                };
+            }
+            finally { ComRelease.Release(def); }
         }
 
         // ---- sibling cosmetic-thread lookup by diameter --------------------------------------------
@@ -1151,32 +1255,40 @@ namespace VeradeAddin.Services
             ThreadMatch best = null;
             double bestDiff = double.MaxValue;
 
-            var f = part.FirstFeature() as IFeature;
-            while (f != null)
+            try
             {
-                var cur = f;
-                string type = null;
-                try { type = cur.GetTypeName2(); } catch { }
+                // Every feature walked is a reference of its own: released as soon as we step past it,
+                // otherwise a click on a hole in a big part strands the entire tree.
+                var f = part.FirstFeature() as IFeature;
+                while (f != null)
+                {
+                    var cur = f;
+                    string type = null;
+                    try { type = cur.GetTypeName2(); } catch { }
 
-                // Standalone cosmetic thread, or one buried inside a hole feature (a hole wizard and an
-                // advanced hole both keep the thread of their tapped element as a sub-feature).
-                ThreadMatch m = null;
-                if (!string.IsNullOrEmpty(type) && type.IndexOf("Thread", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    m = ThreadOf(cur, boreDia);
-                }
-                else if (!string.IsNullOrEmpty(type) && type.IndexOf("Hole", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    m = FindThreadInFeature(cur, boreDia);
-                }
+                    // Standalone cosmetic thread, or one buried inside a hole feature (a hole wizard and
+                    // an advanced hole both keep the thread of their tapped element as a sub-feature).
+                    ThreadMatch m = null;
+                    if (!string.IsNullOrEmpty(type) && type.IndexOf("Thread", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        m = ThreadOf(cur, boreDia);
+                    }
+                    else if (!string.IsNullOrEmpty(type) && type.IndexOf("Hole", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        m = FindThreadInFeature(cur, boreDia);
+                    }
 
-                if (m != null && m.NominalDia > 0)
-                {
-                    double diff = Math.Abs(m.NominalDia - boreDia);
-                    if (diff < bestDiff) { bestDiff = diff; best = m; }
+                    if (m != null && m.NominalDia > 0)
+                    {
+                        double diff = Math.Abs(m.NominalDia - boreDia);
+                        if (diff < bestDiff) { bestDiff = diff; best = m; }
+                    }
+                    f = cur.GetNextFeature() as IFeature;
+                    ComRelease.Release(cur);
                 }
-                f = cur.GetNextFeature() as IFeature;
             }
+            finally { ComRelease.Release(part); }
+
             return best;
         }
 
@@ -1190,10 +1302,14 @@ namespace VeradeAddin.Services
             if (face == null) return false;
             var feat = face.GetFeature() as IFeature;
             if (feat == null) return false;
-            string type = null;
-            try { type = feat.GetTypeName2(); } catch { }
-            return !string.IsNullOrEmpty(type)
-                && type.IndexOf("Mirror", StringComparison.OrdinalIgnoreCase) >= 0;
+            try
+            {
+                string type = null;
+                try { type = feat.GetTypeName2(); } catch { }
+                return !string.IsNullOrEmpty(type)
+                    && type.IndexOf("Mirror", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            finally { ComRelease.Release(feat); }
         }
 
         /// <summary>True when the component is loaded lightweight (feature/thread data unavailable).</summary>
@@ -1215,38 +1331,50 @@ namespace VeradeAddin.Services
         {
             if (face == null) return false;
             var surf = face.GetSurface() as ISurface;
-            return surf != null && surf.IsCylinder();
+            try { return surf != null && surf.IsCylinder(); }
+            finally { ComRelease.Release(surf); }
         }
 
         private static bool IsConical(IFace2 face)
         {
             if (face == null) return false;
             var surf = face.GetSurface() as ISurface;
-            return surf != null && surf.IsCone();
+            try { return surf != null && surf.IsCone(); }
+            finally { ComRelease.Release(surf); }
         }
 
         private static bool IsCircular(IEdge edge)
         {
             if (edge == null) return false;
             var curve = edge.GetCurve() as ICurve;
-            return curve != null && curve.IsCircle();
+            try { return curve != null && curve.IsCircle(); }
+            finally { ComRelease.Release(curve); }
         }
 
-        /// <summary>Cylindrical (preferred) or conical face adjacent to a circular edge.</summary>
+        /// <summary>
+        /// Cylindrical (preferred) or conical face adjacent to a circular edge. The face that is
+        /// returned is NOT released — the caller owns it — but the other one is.
+        /// </summary>
         private static IFace2 HoleFaceOfEdge(IEdge edge)
         {
             if (edge == null) return null;
             var faces = edge.GetTwoAdjacentFaces2() as object[];
             if (faces == null) return null;
-            IFace2 cone = null;
-            foreach (var o in faces)
+
+            using (var com = new ComScope())
             {
-                var f = o as IFace2;
-                if (f == null) continue;
-                if (IsCylindrical(f)) return f;
-                if (cone == null && IsConical(f)) cone = f;
+                com.TrackAll(faces);
+
+                IFace2 cone = null;
+                foreach (var o in faces)
+                {
+                    var f = o as IFace2;
+                    if (f == null) continue;
+                    if (IsCylindrical(f)) return com.Keep(f);
+                    if (cone == null && IsConical(f)) cone = f;
+                }
+                return com.Keep(cone);
             }
-            return cone;
         }
 
         /// <summary>Diameter (metres) of a cylindrical face, or 0 when the face is not a cylinder.</summary>
@@ -1254,10 +1382,14 @@ namespace VeradeAddin.Services
         {
             if (face == null) return 0;
             var surf = face.GetSurface() as ISurface;
-            if (surf == null || !surf.IsCylinder()) return 0;
-            var p = surf.CylinderParams as double[]; // [ox,oy,oz, ax,ay,az, radius]
-            if (p == null || p.Length < 7) return 0;
-            return p[6] * 2.0;
+            try
+            {
+                if (surf == null || !surf.IsCylinder()) return 0;
+                var p = surf.CylinderParams as double[]; // [ox,oy,oz, ax,ay,az, radius]
+                if (p == null || p.Length < 7) return 0;
+                return p[6] * 2.0;
+            }
+            finally { ComRelease.Release(surf); }
         }
 
         /// <summary>
@@ -1271,30 +1403,33 @@ namespace VeradeAddin.Services
             if (!IsConical(face)) return false;
 
             double min = double.MaxValue, max = 0;
-            var edges = face.GetEdges() as object[];
-            if (edges != null)
+            using (var com = new ComScope())
             {
-                foreach (var o in edges)
+                var edges = com.TrackAll(face.GetEdges() as object[]);
+                if (edges != null)
                 {
-                    var e = o as IEdge;
-                    if (e == null) continue;
-                    var curve = e.GetCurve() as ICurve;
-                    if (curve == null || !curve.IsCircle()) continue;
-                    var cp = curve.CircleParams as double[]; // [cx,cy,cz, ax,ay,az, radius]
-                    if (cp == null || cp.Length < 7) continue;
-                    double dia = cp[6] * 2.0;
-                    if (dia <= 0) continue;
-                    if (dia < min) min = dia;
-                    if (dia > max) max = dia;
+                    foreach (var o in edges)
+                    {
+                        var e = o as IEdge;
+                        if (e == null) continue;
+                        var curve = com.Track(e.GetCurve() as ICurve);
+                        if (curve == null || !curve.IsCircle()) continue;
+                        var cp = curve.CircleParams as double[]; // [cx,cy,cz, ax,ay,az, radius]
+                        if (cp == null || cp.Length < 7) continue;
+                        double dia = cp[6] * 2.0;
+                        if (dia <= 0) continue;
+                        if (dia < min) min = dia;
+                        if (dia > max) max = dia;
+                    }
                 }
-            }
 
-            if (max <= 0)
-            {
-                var surf = face.GetSurface() as ISurface;
-                var p = surf != null ? surf.ConeParams as double[] : null; // [ox,oy,oz, ax,ay,az, radius, halfAngle]
-                if (p == null || p.Length < 7 || p[6] <= 0) return false;
-                min = max = p[6] * 2.0;
+                if (max <= 0)
+                {
+                    var surf = com.Track(face.GetSurface() as ISurface);
+                    var p = surf != null ? surf.ConeParams as double[] : null; // [ox,oy,oz, ax,ay,az, radius, halfAngle]
+                    if (p == null || p.Length < 7 || p[6] <= 0) return false;
+                    min = max = p[6] * 2.0;
+                }
             }
 
             dMin = min == double.MaxValue ? max : min;
@@ -1306,10 +1441,14 @@ namespace VeradeAddin.Services
         private static double ConeIncludedAngleDeg(IFace2 face)
         {
             var surf = face != null ? face.GetSurface() as ISurface : null;
-            var p = surf != null && surf.IsCone() ? surf.ConeParams as double[] : null;
-            if (p == null || p.Length < 8) return 0;
-            double deg = Math.Abs(p[7]) * 2.0 * 180.0 / Math.PI;
-            return deg > 0 && deg < 180 ? deg : 0;
+            try
+            {
+                var p = surf != null && surf.IsCone() ? surf.ConeParams as double[] : null;
+                if (p == null || p.Length < 8) return 0;
+                double deg = Math.Abs(p[7]) * 2.0 * 180.0 / Math.PI;
+                return deg > 0 && deg < 180 ? deg : 0;
+            }
+            finally { ComRelease.Release(surf); }
         }
 
         /// <summary>
@@ -1321,15 +1460,18 @@ namespace VeradeAddin.Services
         {
             var surf = face != null ? face.GetSurface() as ISurface : null;
             if (surf == null) return null;
+            try
+            {
+                double[] p = null;
+                if (surf.IsCylinder()) p = surf.CylinderParams as double[];   // [ox,oy,oz, ax,ay,az, r]
+                else if (surf.IsCone()) p = surf.ConeParams as double[];      // [ox,oy,oz, ax,ay,az, r, halfAngle]
+                if (p == null || p.Length < 6) return null;
 
-            double[] p = null;
-            if (surf.IsCylinder()) p = surf.CylinderParams as double[];   // [ox,oy,oz, ax,ay,az, r]
-            else if (surf.IsCone()) p = surf.ConeParams as double[];      // [ox,oy,oz, ax,ay,az, r, halfAngle]
-            if (p == null || p.Length < 6) return null;
-
-            double len = Math.Sqrt(p[3] * p[3] + p[4] * p[4] + p[5] * p[5]);
-            if (len < 1e-12) return null;
-            return new[] { p[0], p[1], p[2], p[3] / len, p[4] / len, p[5] / len };
+                double len = Math.Sqrt(p[3] * p[3] + p[4] * p[4] + p[5] * p[5]);
+                if (len < 1e-12) return null;
+                return new[] { p[0], p[1], p[2], p[3] / len, p[4] / len, p[5] / len };
+            }
+            finally { ComRelease.Release(surf); }
         }
 
         /// <summary>Position of the face's bounding-box centre along <paramref name="axis"/> (metres).</summary>
@@ -1353,23 +1495,26 @@ namespace VeradeAddin.Services
             tMin = double.MaxValue;
             tMax = double.MinValue;
 
-            var edges = face != null ? face.GetEdges() as object[] : null;
-            if (edges == null) return false;
-
-            foreach (var o in edges)
+            using (var com = new ComScope())
             {
-                var e = o as IEdge;
-                if (e == null) continue;
+                var edges = com.TrackAll(face != null ? face.GetEdges() as object[] : null);
+                if (edges == null) return false;
 
-                var curve = Try(() => e.GetCurve()) as ICurve;
-                if (curve != null && curve.IsCircle())
+                foreach (var o in edges)
                 {
-                    Span(curve.CircleParams as double[], axis, ref tMin, ref tMax); // [cx,cy,cz, ...]
-                    continue;
-                }
+                    var e = o as IEdge;
+                    if (e == null) continue;
 
-                Span(VertexPoint(Try(() => e.GetStartVertex())), axis, ref tMin, ref tMax);
-                Span(VertexPoint(Try(() => e.GetEndVertex())), axis, ref tMin, ref tMax);
+                    var curve = com.Track(Try(() => e.GetCurve()) as ICurve);
+                    if (curve != null && curve.IsCircle())
+                    {
+                        Span(curve.CircleParams as double[], axis, ref tMin, ref tMax); // [cx,cy,cz, ...]
+                        continue;
+                    }
+
+                    Span(VertexPoint(com.Track(Try(() => e.GetStartVertex()))), axis, ref tMin, ref tMax);
+                    Span(VertexPoint(com.Track(Try(() => e.GetEndVertex()))), axis, ref tMin, ref tMax);
+                }
             }
             return tMax >= tMin;
         }
@@ -1391,24 +1536,42 @@ namespace VeradeAddin.Services
         /// <summary>
         /// Every cylindrical / conical face of the same body sharing <paramref name="axis"/> — i.e. the
         /// faces cut by the same coaxial hole, used to measure how deep the clicked face sits.
+        ///
+        /// Returns a LIST the caller must release (see <see cref="MeasureHoleStack"/>); the body and the
+        /// faces that did not match are released here. Walking a whole body means one reference per face,
+        /// so on a part with thousands of faces this is where pick-mode used to bleed on every click.
+        /// Releasing an element is always balanced: the array carries its own reference count, even for
+        /// the clicked face the caller already holds.
         /// </summary>
-        private static IEnumerable<IFace2> CoaxialFaces(IFace2 face, double[] axis)
+        private static List<IFace2> CoaxialFaces(IFace2 face, double[] axis)
         {
+            var hits = new List<IFace2>();
+
             var body = face != null ? face.GetBody() as IBody2 : null;
-            var faces = body != null ? body.GetFaces() as object[] : null;
-            if (faces == null) yield break;
+            if (body == null) return hits;
 
-            foreach (var o in faces)
+            try
             {
-                var f = o as IFace2;
-                if (f == null) continue;
+                var faces = body.GetFaces() as object[];
+                if (faces == null) return hits;
 
-                double[] fa = HoleAxis(f);
-                if (fa == null) continue;
-                if (Math.Abs(fa[3] * axis[3] + fa[4] * axis[4] + fa[5] * axis[5]) < 0.999) continue; // not parallel
-                if (AxisOffset(fa, axis) > 1e-5) continue;                                           // parallel but not the same line
-                yield return f;
+                foreach (var o in faces)
+                {
+                    var f = o as IFace2;
+                    if (f == null) { ComRelease.Release(o); continue; }
+
+                    double[] fa = HoleAxis(f);
+                    bool keep = fa != null
+                        // parallel, and on the same line rather than merely parallel to it
+                        && Math.Abs(fa[3] * axis[3] + fa[4] * axis[4] + fa[5] * axis[5]) >= 0.999
+                        && AxisOffset(fa, axis) <= 1e-5;
+
+                    if (keep) hits.Add(f);
+                    else ComRelease.Release(f);
+                }
+                return hits;
             }
+            finally { ComRelease.Release(body); }
         }
 
         /// <summary>Perpendicular distance from another axis' origin to the reference axis line.</summary>
@@ -1434,6 +1597,7 @@ namespace VeradeAddin.Services
             HideCurrentCallout();
 
             var lines = desc.Lines;
+            bool stored = false;
             try
             {
                 var handler = new HoleCalloutHandler();
@@ -1460,6 +1624,7 @@ namespace VeradeAddin.Services
                 _currentCallout = callout;
                 _currentCalloutHandler = handler;
                 _calloutEntity = entity;
+                stored = true;
 
                 try { _pickModel?.GraphicsRedraw2(); } catch { }
 
@@ -1472,6 +1637,12 @@ namespace VeradeAddin.Services
             catch (Exception ex)
             {
                 _log.Log("IdentificarRosca", "Assembly", LogOutcome.Error, "CreateCallout failed", ex.ToString());
+            }
+            finally
+            {
+                // The caller handed the entity over; if it did not end up in _calloutEntity nobody
+                // else will ever release it.
+                if (!stored) ComRelease.Release(entity);
             }
         }
 
@@ -1486,12 +1657,18 @@ namespace VeradeAddin.Services
         /// </summary>
         private void ScheduleResolve(Component2 comp, IFace2 face)
         {
-            if (comp == null || _resolvePending) return;
+            // Ownership of comp was handed over by the caller: every path from here must give it back.
+            if (comp == null) return;
+            if (_resolvePending) { ComRelease.Release(comp); return; }
 
             // One attempt per component: if resolving fails (missing file, read-only assembly...) the
             // component stays lightweight and retrying on every click would loop forever.
             string key = Safe(() => comp.Name2);
-            if (!string.IsNullOrEmpty(key) && !_resolveAttempted.Add(key)) return;
+            if (!string.IsNullOrEmpty(key) && !_resolveAttempted.Add(key))
+            {
+                ComRelease.Release(comp);
+                return;
+            }
 
             double[] pt = FacePoint(face);
             _resolvePending = true;
@@ -1515,7 +1692,11 @@ namespace VeradeAddin.Services
                 {
                     _log.Log("IdentificarRosca", "Assembly", LogOutcome.Error, "Resolver aligerado falló", ex.ToString());
                 }
-                finally { _resolvePending = false; }
+                finally
+                {
+                    _resolvePending = false;
+                    ComRelease.Release(comp);
+                }
             };
             timer.Start();
         }
@@ -1543,40 +1724,50 @@ namespace VeradeAddin.Services
         {
             if (pt == null || _pickModel == null) return false;
 
-            var selMgr = _pickModel.SelectionManager as ISelectionMgr;
-            if (selMgr == null) return false;
-
-            // Selection survived the reload: nothing to do.
-            if (selMgr.GetSelectedObjectCount2(-1) > 0) return false;
-
-            var body = comp.GetBody() as IBody2;
-            if (body == null) return false;
-
-            var faces = body.GetFaces() as object[];
-            if (faces == null) return false;
-
-            const double tol = 1e-6; // 0.001 mm
-            foreach (var o in faces)
+            using (var com = new ComScope())
             {
-                var f = o as IFace2;
-                if (f == null || !(IsCylindrical(f) || IsConical(f))) continue;
+                var selMgr = com.Track(_pickModel.SelectionManager as ISelectionMgr);
+                if (selMgr == null) return false;
 
-                double[] q = null;
-                try { q = f.GetClosestPointOn(pt[0], pt[1], pt[2]) as double[]; } catch { }
-                if (q == null || q.Length < 3) continue;
-                double dx = q[0] - pt[0], dy = q[1] - pt[1], dz = q[2] - pt[2];
-                if (dx * dx + dy * dy + dz * dz > tol * tol) continue;
+                // Selection survived the reload: nothing to do.
+                if (selMgr.GetSelectedObjectCount2(-1) > 0) return false;
 
-                var ent = f as IEntity;
-                if (ent != null && ent.Select4(false, null)) return true;
+                var body = com.Track(comp.GetBody() as IBody2);
+                if (body == null) return false;
+
+                var faces = com.TrackAll(body.GetFaces() as object[]);
+                if (faces == null) return false;
+
+                const double tol = 1e-6; // 0.001 mm
+                foreach (var o in faces)
+                {
+                    var f = o as IFace2;
+                    if (f == null || !(IsCylindrical(f) || IsConical(f))) continue;
+
+                    double[] q = null;
+                    try { q = f.GetClosestPointOn(pt[0], pt[1], pt[2]) as double[]; } catch { }
+                    if (q == null || q.Length < 3) continue;
+                    double dx = q[0] - pt[0], dy = q[1] - pt[1], dz = q[2] - pt[2];
+                    if (dx * dx + dy * dy + dz * dz > tol * tol) continue;
+
+                    var ent = f as IEntity;
+                    // Selecting fires NewSelectionNotify, which acquires its own reference to the face;
+                    // this one still belongs to the scope.
+                    if (ent != null && ent.Select4(false, null)) return true;
+                }
+                return false;
             }
-            return false;
         }
 
         private void HideCurrentCallout()
         {
             if (_currentCallout == null) return;
             try { _currentCallout.Display(false); } catch { }
+
+            // Both were handed over by ShowCallout and are ours to give back.
+            ComRelease.Release(_currentCallout);
+            ComRelease.Release(_calloutEntity);
+
             _currentCallout = null;
             _currentCalloutHandler = null;
             _calloutEntity = null;

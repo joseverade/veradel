@@ -1,7 +1,8 @@
-using SolidWorks.Interop.sldworks;
+﻿using SolidWorks.Interop.sldworks;
 using SolidWorks.Interop.swconst;
 using System;
 using System.Collections.Generic;
+using VeradeAddin.Infrastructure;
 using VeradeAddin.Logging;
 using VeradeAddin.Models;
 
@@ -44,6 +45,8 @@ namespace VeradeAddin.Services
             // Same application-level toggles as the bolt: no modal dimension boxes, no "make driven?"
             // prompt while the build adds dimensions. Always restored in the finally.
             bool drivenWas = _sw.GetUserPreferenceToggle((int)swUserPreferenceToggle_e.swAddDrivenDimensions);
+            // Declared out here so the finally can release it whichever way the build ends.
+            Feature shaftAxis = null;
             try
             {
                 _sw.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swInputDimValOnCreate, false);
@@ -83,7 +86,6 @@ namespace VeradeAddin.Services
                 // ring-anchored order: a keyway straddling a diameter boundary (overlap is blocked
                 // by validation, straddle is not) can eat the shoulder ring a later groove/undercut/
                 // fillet/chamfer anchors to — those operations then skip with a warning.
-                Feature shaftAxis = null;
                 var keyways = spec.Keyways ?? new List<ShaftKeyway>();
                 int keywaysOk = 0;
                 for (int k = 0; k < keyways.Count; k++)
@@ -186,6 +188,9 @@ namespace VeradeAddin.Services
                 _sw.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swInputDimValOnCreate, true);
                 _sw.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swAddDrivenDimensions, drivenWas);
                 model.ClearSelection2(true);
+                // shaftAxis is created lazily by the first keyway and reused by the rest.
+                ComRelease.Release(shaftAxis);
+                ComRelease.Release(model);
             }
         }
 
@@ -207,79 +212,84 @@ namespace VeradeAddin.Services
                 rMax = Math.Max(rMax, s.DiameterMm * mmToM / 2.0);
             }
 
-            var sketchMgr = model.SketchManager;
-            bool addToDbWas = sketchMgr.AddToDB, displayWas = sketchMgr.DisplayWhenAdded;
-            try
+            using (var com = new ComScope())
             {
-                model.ClearSelection2(true);
-                var frontPlane = FirstRefPlane(model);
-                if (frontPlane == null) return "No se encontró el plano frontal de la pieza.";
-                frontPlane.Select2(false, 0);
-                sketchMgr.InsertSketch(true);
-
-                sketchMgr.AddToDB = true;
-                sketchMgr.DisplayWhenAdded = false;
-
-                // Centreline OUTSIDE the profile (negative X, like the bolt) = axis of revolution.
-                var segCl = sketchMgr.CreateLine(0, 0, 0, -total, 0, 0);
-                segCl.ConstructionGeometry = true;
-
-                // Closed contour: left face up, each segment top (+ step wall between different
-                // diameters), right face down, back along the axis.
-                var segLeft = Line(sketchMgr, 0, 0, 0, segments[0].DiameterMm * mmToM / 2.0);
-                var topSegs = new List<SketchSegment>();
-                double x = 0;
-                for (int i = 0; i < segments.Count; i++)
+                var sketchMgr = com.Track(model.SketchManager);
+                bool addToDbWas = sketchMgr.AddToDB, displayWas = sketchMgr.DisplayWhenAdded;
+                try
                 {
-                    double r = segments[i].DiameterMm * mmToM / 2.0;
-                    double x2 = x + segments[i].LengthMm * mmToM;
-                    topSegs.Add(Line(sketchMgr, x, r, x2, r));
-                    if (i < segments.Count - 1)
+                    model.ClearSelection2(true);
+                    var frontPlane = com.Track(FirstRefPlane(model));
+                    if (frontPlane == null) return "No se encontró el plano frontal de la pieza.";
+                    frontPlane.Select2(false, 0);
+                    sketchMgr.InsertSketch(true);
+
+                    sketchMgr.AddToDB = true;
+                    sketchMgr.DisplayWhenAdded = false;
+
+                    // Centreline OUTSIDE the profile (negative X, like the bolt) = axis of revolution.
+                    var segCl = com.Track(sketchMgr.CreateLine(0, 0, 0, -total, 0, 0));
+                    segCl.ConstructionGeometry = true;
+
+                    // Closed contour: left face up, each segment top (+ step wall between different
+                    // diameters), right face down, back along the axis. Every segment created here is
+                    // a reference, including the ones the sketch keeps and we never name again.
+                    var segLeft = com.Track(Line(sketchMgr, 0, 0, 0, segments[0].DiameterMm * mmToM / 2.0));
+                    var topSegs = new List<SketchSegment>();
+                    double x = 0;
+                    for (int i = 0; i < segments.Count; i++)
                     {
-                        Line(sketchMgr, x2, r, x2, segments[i + 1].DiameterMm * mmToM / 2.0); // step wall
+                        double r = segments[i].DiameterMm * mmToM / 2.0;
+                        double x2 = x + segments[i].LengthMm * mmToM;
+                        topSegs.Add(com.Track(Line(sketchMgr, x, r, x2, r)));
+                        if (i < segments.Count - 1)
+                        {
+                            com.Track(Line(sketchMgr, x2, r, x2, segments[i + 1].DiameterMm * mmToM / 2.0)); // step wall
+                        }
+                        x = x2;
                     }
-                    x = x2;
+                    com.Track(Line(sketchMgr, total, segments[segments.Count - 1].DiameterMm * mmToM / 2.0, total, 0));
+                    com.Track(Line(sketchMgr, total, 0, 0, 0));
+
+                    ConstrainAll(sketchMgr);
+
+                    // Anchor to the part origin (ConstrainAll never relates outside the sketch).
+                    com.Track((SketchPoint)((SketchLine)segLeft).GetStartPoint2()).Select4(true, null);
+                    com.Track(model.Extension).SelectByID2(
+                        "", "EXTSKETCHPOINT", 0, 0, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
+                    model.SketchAddConstraints("sgCOINCIDENT");
+
+                    // Driving dimensions per segment: Ø below the axis (stacked so the texts don't pile
+                    // up; clearly past −r so SolidWorks reads a DIAMETER, not a radius), L above.
+                    const double off = 0.012;
+                    for (int i = 0; i < segments.Count; i++)
+                    {
+                        double xMid = (segments[i].StartMm + segments[i].LengthMm / 2.0) * mmToM;
+                        DiameterDim(model, topSegs[i], segCl, xMid, -(rMax + off * (i + 1)));
+                        LengthDim(model, topSegs[i], xMid, rMax + off * (i + 1));
+                    }
+
+                    model.ClearSelection2(true);
+                    sketchMgr.InsertSketch(true);
+
+                    var sketchFeature = com.Track(LastProfileFeature(model));
+                    if (sketchFeature == null) return "No se pudo crear el croquis del eje.";
+                    model.ClearSelection2(true);
+                    sketchFeature.Select2(false, 0);
+
+                    var revolve = com.Track(com.Track(model.FeatureManager).FeatureRevolve2(
+                        true, true, false, false, false, false,
+                        (int)swEndConditions_e.swEndCondBlind, (int)swEndConditions_e.swEndCondBlind,
+                        2.0 * Math.PI, 0.0, false, false, 0.0, 0.0,
+                        (int)swThinWallType_e.swThinWallOneDirection, 0.0, 0.0,
+                        true, false, false));
+                    if (revolve == null) return "SolidWorks no pudo crear la revolución del eje.";
+                    return null;
                 }
-                Line(sketchMgr, total, segments[segments.Count - 1].DiameterMm * mmToM / 2.0, total, 0);
-                Line(sketchMgr, total, 0, 0, 0);
-
-                ConstrainAll(sketchMgr);
-
-                // Anchor to the part origin (ConstrainAll never relates outside the sketch).
-                ((SketchPoint)((SketchLine)segLeft).GetStartPoint2()).Select4(true, null);
-                model.Extension.SelectByID2("", "EXTSKETCHPOINT", 0, 0, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
-                model.SketchAddConstraints("sgCOINCIDENT");
-
-                // Driving dimensions per segment: Ø below the axis (stacked so the texts don't pile
-                // up; clearly past −r so SolidWorks reads a DIAMETER, not a radius), L above.
-                const double off = 0.012;
-                for (int i = 0; i < segments.Count; i++)
+                finally
                 {
-                    double xMid = (segments[i].StartMm + segments[i].LengthMm / 2.0) * mmToM;
-                    DiameterDim(model, topSegs[i], segCl, xMid, -(rMax + off * (i + 1)));
-                    LengthDim(model, topSegs[i], xMid, rMax + off * (i + 1));
+                    RestoreSketch(sketchMgr, addToDbWas, displayWas);
                 }
-
-                model.ClearSelection2(true);
-                sketchMgr.InsertSketch(true);
-
-                var sketchFeature = LastProfileFeature(model);
-                if (sketchFeature == null) return "No se pudo crear el croquis del eje.";
-                model.ClearSelection2(true);
-                sketchFeature.Select2(false, 0);
-
-                var revolve = model.FeatureManager.FeatureRevolve2(
-                    true, true, false, false, false, false,
-                    (int)swEndConditions_e.swEndCondBlind, (int)swEndConditions_e.swEndCondBlind,
-                    2.0 * Math.PI, 0.0, false, false, 0.0, 0.0,
-                    (int)swThinWallType_e.swThinWallOneDirection, 0.0, 0.0,
-                    true, false, false);
-                if (revolve == null) return "SolidWorks no pudo crear la revolución del eje.";
-                return null;
-            }
-            finally
-            {
-                RestoreSketch(sketchMgr, addToDbWas, displayWas);
             }
         }
 
@@ -307,77 +317,82 @@ namespace VeradeAddin.Services
         /// </summary>
         private string InsertShaftSplitLine(IModelDoc2 model, double xCut, double radius, double faceX, double totalLength)
         {
-            var sketchMgr = model.SketchManager;
-            bool addToDbWas = sketchMgr.AddToDB, displayWas = sketchMgr.DisplayWhenAdded;
-            try
+            using (var com = new ComScope())
             {
-                model.ClearSelection2(true);
-                var frontPlane = FirstRefPlane(model);
-                if (frontPlane == null) return "No se encontró el plano frontal para la línea de división.";
-                frontPlane.Select2(false, 0);
-                sketchMgr.InsertSketch(true);
-
-                sketchMgr.AddToDB = true;
-                sketchMgr.DisplayWhenAdded = false;
-
-                var segAxis = sketchMgr.CreateLine(0, 0, 0, totalLength, 0, 0);
-                segAxis.ConstructionGeometry = true;
-                var segCut = Line(sketchMgr, xCut, radius, xCut, -radius);
-
-                model.ClearSelection2(true);
-                segAxis.Select4(false, null);
-                model.SketchAddConstraints("sgHORIZONTAL2D");
-                CoincidentToOrigin(model, StartPt(segAxis));
-
-                model.ClearSelection2(true);
-                segCut.Select4(false, null);
-                model.SketchAddConstraints("sgVERTICAL2D");
-
-                model.ClearSelection2(true);
-                StartPt(segCut).Select4(true, null);
-                EndPt(segCut).Select4(true, null);
-                segAxis.Select4(true, null);
-                model.SketchAddConstraints("sgSYMMETRIC");
-
-                CoincidentPointToSilhouetteEdge(model, StartPt(segCut), faceX, radius, 0);
-
-                // Position dim origin → line (drives the cut's X).
+                var sketchMgr = com.Track(model.SketchManager);
+                bool addToDbWas = sketchMgr.AddToDB, displayWas = sketchMgr.DisplayWhenAdded;
                 try
                 {
                     model.ClearSelection2(true);
-                    segCut.Select4(true, null);
-                    model.Extension.SelectByID2("", "EXTSKETCHPOINT", 0, 0, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
-                    model.AddHorizontalDimension2(xCut / 2.0, radius * 1.5, 0);
+                    var frontPlane = com.Track(FirstRefPlane(model));
+                    if (frontPlane == null) return "No se encontró el plano frontal para la línea de división.";
+                    frontPlane.Select2(false, 0);
+                    sketchMgr.InsertSketch(true);
+
+                    sketchMgr.AddToDB = true;
+                    sketchMgr.DisplayWhenAdded = false;
+
+                    var segAxis = com.Track(sketchMgr.CreateLine(0, 0, 0, totalLength, 0, 0));
+                    segAxis.ConstructionGeometry = true;
+                    var segCut = com.Track(Line(sketchMgr, xCut, radius, xCut, -radius));
+
+                    model.ClearSelection2(true);
+                    segAxis.Select4(false, null);
+                    model.SketchAddConstraints("sgHORIZONTAL2D");
+                    CoincidentToOrigin(model, com.Track(StartPt(segAxis)));
+
+                    model.ClearSelection2(true);
+                    segCut.Select4(false, null);
+                    model.SketchAddConstraints("sgVERTICAL2D");
+
+                    model.ClearSelection2(true);
+                    com.Track(StartPt(segCut)).Select4(true, null);
+                    com.Track(EndPt(segCut)).Select4(true, null);
+                    segAxis.Select4(true, null);
+                    model.SketchAddConstraints("sgSYMMETRIC");
+
+                    CoincidentPointToSilhouetteEdge(model, com.Track(StartPt(segCut)), faceX, radius, 0);
+
+                    // Position dim origin → line (drives the cut's X).
+                    try
+                    {
+                        model.ClearSelection2(true);
+                        segCut.Select4(true, null);
+                        com.Track(model.Extension).SelectByID2(
+                            "", "EXTSKETCHPOINT", 0, 0, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
+                        com.Track(model.AddHorizontalDimension2(xCut / 2.0, radius * 1.5, 0));
+                    }
+                    catch { }
+
+                    model.ClearSelection2(true);
+                    sketchMgr.InsertSketch(true);
                 }
-                catch { }
+                finally
+                {
+                    RestoreSketch(sketchMgr, addToDbWas, displayWas);
+                }
+
+                var sketchFeature = com.Track(LastProfileFeature(model));
+                if (sketchFeature == null) return "No se pudo crear el croquis de la línea de división.";
 
                 model.ClearSelection2(true);
-                sketchMgr.InsertSketch(true);
+                sketchFeature.Select2(false, 4);                       // mark 4 = sketch to project
+                var ext = com.Track(model.Extension);
+                bool gotFace = ext.SelectByID2(
+                    "", "FACE", faceX, 0, radius, true, 1, null,       // mark 1 = faces to split, FRONT point
+                    (int)swSelectOption_e.swSelectOptionDefault);
+                if (!gotFace) return "No se pudo seleccionar la cara cilíndrica para la línea de división.";
+
+                model.InsertSplitLineProject(false, false); // void: verify via the tree below
+
+                var last = com.Track(ext.GetLastFeatureAdded() as Feature);
+                if (last == null || last.GetTypeName2() != "PLine")
+                {
+                    return "SolidWorks no pudo crear la línea de división en x = " + (xCut * 1000.0) + " mm.";
+                }
+                model.ClearSelection2(true);
+                return null;
             }
-            finally
-            {
-                RestoreSketch(sketchMgr, addToDbWas, displayWas);
-            }
-
-            var sketchFeature = LastProfileFeature(model);
-            if (sketchFeature == null) return "No se pudo crear el croquis de la línea de división.";
-
-            model.ClearSelection2(true);
-            sketchFeature.Select2(false, 4);                       // mark 4 = sketch to project
-            bool gotFace = model.Extension.SelectByID2(
-                "", "FACE", faceX, 0, radius, true, 1, null,       // mark 1 = faces to split, FRONT point
-                (int)swSelectOption_e.swSelectOptionDefault);
-            if (!gotFace) return "No se pudo seleccionar la cara cilíndrica para la línea de división.";
-
-            model.InsertSplitLineProject(false, false); // void: verify via the tree below
-
-            var last = model.Extension.GetLastFeatureAdded() as Feature;
-            if (last == null || last.GetTypeName2() != "PLine")
-            {
-                return "SolidWorks no pudo crear la línea de división en x = " + (xCut * 1000.0) + " mm.";
-            }
-            model.ClearSelection2(true);
-            return null;
         }
 
         // ---- 3) keyways (chavetas, DIN 6885 form A) ------------------------------------------------
@@ -412,6 +427,17 @@ namespace VeradeAddin.Services
         /// </summary>
         private string CutKeyway(IModelDoc2 model, ShaftSpec spec, ShaftKeyway key, ref Feature shaftAxis)
         {
+            // Thin wrapper so the body below can acquire freely and still give everything back on any
+            // of its many early returns. shaftAxis is NOT tracked: it outlives the cut and is released
+            // once, by CreateShaft.
+            using (var com = new ComScope())
+            {
+                return CutKeywayCore(com, model, spec, key, ref shaftAxis);
+            }
+        }
+
+        private string CutKeywayCore(ComScope com, IModelDoc2 model, ShaftSpec spec, ShaftKeyway key, ref Feature shaftAxis)
+        {
             const double mmToM = 0.001;
             var xs = spec.BoundariesMm();
             double x1 = key.StartXMm(xs[key.EdgeIndex]) * mmToM;
@@ -430,7 +456,7 @@ namespace VeradeAddin.Services
             }
 
             // -- tangent plane --
-            var frontPlane = FirstRefPlane(model);
+            var frontPlane = com.Track(FirstRefPlane(model));
             if (frontPlane == null) return "no se encontró el plano frontal.";
             Feature offsetBase = frontPlane;
             if (hasAngle)
@@ -438,20 +464,20 @@ namespace VeradeAddin.Services
                 model.ClearSelection2(true);
                 ((Entity)frontPlane).Select4(true, null);
                 shaftAxis.Select2(true, 1);
-                var angled = model.FeatureManager.InsertRefPlane(
+                var angled = com.Track(com.Track(model.FeatureManager).InsertRefPlane(
                     (int)swRefPlaneReferenceConstraints_e.swRefPlaneReferenceConstraint_Angle, angleRad,
-                    (int)swRefPlaneReferenceConstraints_e.swRefPlaneReferenceConstraint_Coincident, 0, 0, 0) as Feature;
+                    (int)swRefPlaneReferenceConstraints_e.swRefPlaneReferenceConstraint_Coincident, 0, 0, 0) as Feature);
                 if (angled == null) return "SolidWorks no pudo crear el plano con ángulo.";
                 offsetBase = angled;
             }
             model.ClearSelection2(true);
             ((Entity)offsetBase).Select4(false, null);
-            var tangent = model.FeatureManager.InsertRefPlane(
-                (int)swRefPlaneReferenceConstraints_e.swRefPlaneReferenceConstraint_Distance, refRadius, 0, 0, 0, 0) as Feature;
+            var tangent = com.Track(com.Track(model.FeatureManager).InsertRefPlane(
+                (int)swRefPlaneReferenceConstraints_e.swRefPlaneReferenceConstraint_Distance, refRadius, 0, 0, 0, 0) as Feature);
             if (tangent == null) return "SolidWorks no pudo crear el plano tangente.";
 
             // -- slot sketch --
-            var sketchMgr = model.SketchManager;
+            var sketchMgr = com.Track(model.SketchManager);
             bool addToDbWas = sketchMgr.AddToDB, displayWas = sketchMgr.DisplayWhenAdded;
             try
             {
@@ -465,18 +491,19 @@ namespace VeradeAddin.Services
                 // for the geometry): overall extreme-to-extreme length = key.LengthMm. No auto-dims —
                 // they are anchored centre-to-centre; ours below measure what the user entered.
                 double halfB = key.WidthMm * mmToM / 2.0;
-                var slot = sketchMgr.CreateSketchSlot(
+                var slot = com.Track(sketchMgr.CreateSketchSlot(
                     (int)swSketchSlotCreationType_e.swSketchSlotCreationType_line,
                     (int)swSketchSlotLengthType_e.swSketchSlotLengthType_FullLength,
                     key.WidthMm * mmToM,
-                    x1 + halfB, 0, 0, x2 - halfB, 0, 0, 0, 0, 0, 1, false);
+                    x1 + halfB, 0, 0, x2 - halfB, 0, 0, 0, 0, 0, 1, false));
                 if (slot == null) return "no se pudo crear la ranura de la chaveta en el croquis.";
 
                 // The slot is exactly 2 lines + 2 arcs and it is alone in this sketch: enumerate the
                 // segments to reach them (ISketchSlot exposes no segment accessor).
                 SketchSegment lineA = null, lineB = null, arcLeft = null, arcRight = null;
                 SketchPoint arcLeftCenter = null, arcRightCenter = null;
-                var sketchObjs = sketchMgr.ActiveSketch == null ? null : sketchMgr.ActiveSketch.GetSketchSegments() as object[];
+                var activeSketch = com.Track(sketchMgr.ActiveSketch);
+                var sketchObjs = com.TrackAll(activeSketch == null ? null : activeSketch.GetSketchSegments() as object[]);
                 double bestLeft = double.MaxValue, bestRight = double.MinValue;
                 if (sketchObjs != null)
                 {
@@ -491,7 +518,7 @@ namespace VeradeAddin.Services
                         }
                         else if (seg.GetType() == (int)swSketchSegments_e.swSketchARC)
                         {
-                            var center = ((SketchArc)seg).GetCenterPoint2() as SketchPoint;
+                            var center = com.Track(((SketchArc)seg).GetCenterPoint2() as SketchPoint);
                             if (center == null) continue;
                             if (center.X < bestLeft) { bestLeft = center.X; arcLeft = seg; arcLeftCenter = center; }
                             if (center.X > bestRight) { bestRight = center.X; arcRight = seg; arcRightCenter = center; }
@@ -508,7 +535,7 @@ namespace VeradeAddin.Services
                     model.ClearSelection2(true);
                     lineA.Select4(true, null);
                     lineB.Select4(true, null);
-                    MakeDriving(model.AddVerticalDimension2(x1 - 0.008, 0, 0));
+                    MakeDriving(com.Track(model.AddVerticalDimension2(x1 - 0.008, 0, 0)));
                 }
                 // Length l — arc conditions per anchor mode: cota mode measures the outer extremes
                 // (Max/Max, tangency to tangency); a centre-anchored mode measures from the anchored
@@ -518,8 +545,8 @@ namespace VeradeAddin.Services
                     model.ClearSelection2(true);
                     arcLeft.Select4(true, null);
                     arcRight.Select4(true, null);
-                    var lenDim = model.AddHorizontalDimension2((x1 + x2) / 2.0, -(key.WidthMm * mmToM + 0.008), 0) as DisplayDimension;
-                    var len = lenDim == null ? null : lenDim.GetDimension2(0);
+                    var lenDim = com.Track(model.AddHorizontalDimension2((x1 + x2) / 2.0, -(key.WidthMm * mmToM + 0.008), 0)) as DisplayDimension;
+                    var len = com.Track(lenDim == null ? null : lenDim.GetDimension2(0)) as Dimension;
                     if (len != null)
                     {
                         len.SetArcEndCondition(0, key.CenterArc == 1
@@ -536,12 +563,12 @@ namespace VeradeAddin.Services
                 // dimensioned the slot still floats. Its CENTRE point (GetCenterPointHandle) pins Y —
                 // horizontal alignment centre ↔ sketch origin (the origin projects onto the axis on
                 // every tangent plane, straight or angled). X is pinned below per position mode.
-                var slotCenter = slot.GetCenterPointHandle();
+                var slotCenter = com.Track(slot.GetCenterPointHandle());
                 if (slotCenter != null && !SketchFullyDefined(sketchMgr))
                 {
                     model.ClearSelection2(true);
                     bool gotCenter = slotCenter.Select4(true, null);
-                    bool gotOrigin = model.Extension.SelectByID2(
+                    bool gotOrigin = com.Track(model.Extension).SelectByID2(
                         "", "EXTSKETCHPOINT", 0, 0, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
                     if (gotCenter && gotOrigin) AddConstraintGuarded(model, sketchMgr, "sgHORIZONTALPOINTS2D");
                 }
@@ -570,12 +597,12 @@ namespace VeradeAddin.Services
                     // UI cota (edge → left extreme). Min when the key is right of the edge, Max when
                     // it is left of (or straddles) it — both resolve to the LEFT extreme.
                     model.ClearSelection2(true);
-                    bool gotEdge = model.Extension.SelectByID2(
+                    bool gotEdge = com.Track(model.Extension).SelectByID2(
                         "", "EDGE", edgeX, rEdge, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
                     if (gotEdge && arcLeft != null && arcLeft.Select4(true, null))
                     {
-                        var posDim = model.AddHorizontalDimension2((edgeX + x1) / 2.0, refRadius * 2.5, 0) as DisplayDimension;
-                        var pos = posDim == null ? null : posDim.GetDimension2(0);
+                        var posDim = com.Track(model.AddHorizontalDimension2((edgeX + x1) / 2.0, refRadius * 2.5, 0)) as DisplayDimension;
+                        var pos = com.Track(posDim == null ? null : posDim.GetDimension2(0)) as Dimension;
                         if (pos != null)
                         {
                             pos.SetArcEndCondition(0, (int)swArcEndCondition_e.swArcEndConditionCenter);
@@ -594,9 +621,9 @@ namespace VeradeAddin.Services
                     // Fallback: dim origin → slot centre (value from the exact geometry).
                     model.ClearSelection2(true);
                     slotCenter.Select4(true, null);
-                    model.Extension.SelectByID2(
+                    com.Track(model.Extension).SelectByID2(
                         "", "EXTSKETCHPOINT", 0, 0, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
-                    MakeDriving(model.AddHorizontalDimension2((x1 + x2) / 2.0, refRadius * 3.0, 0));
+                    MakeDriving(com.Track(model.AddHorizontalDimension2((x1 + x2) / 2.0, refRadius * 3.0, 0)));
                 }
 
                 model.ClearSelection2(true);
@@ -608,7 +635,7 @@ namespace VeradeAddin.Services
             }
 
             // -- cut: dir1 blind (depth, into the shaft) + dir2 through-all (outward) --
-            var sketchFeature = LastProfileFeature(model);
+            var sketchFeature = com.Track(LastProfileFeature(model));
             if (sketchFeature == null) return "no se encontró el croquis de la chaveta.";
 
             // The width/length/position dims above are born DRIVEN while the
@@ -617,7 +644,7 @@ namespace VeradeAddin.Services
 
             model.ClearSelection2(true);
             sketchFeature.Select2(false, 0);
-            var cut = model.FeatureManager.FeatureCut4(
+            var cut = com.Track(com.Track(model.FeatureManager).FeatureCut4(
                 false, false, false,
                 (int)swEndConditions_e.swEndCondBlind,
                 (int)swEndConditions_e.swEndCondThroughAll,
@@ -625,7 +652,7 @@ namespace VeradeAddin.Services
                 false, false, false, false, 0, 0,
                 false, false, false, false,
                 false, false, true, false, false, false,
-                (int)swStartConditions_e.swStartSketchPlane, 0, false, false);
+                (int)swStartConditions_e.swStartSketchPlane, 0, false, false));
             if (cut == null) return "SolidWorks no pudo crear el corte de la chaveta.";
 
             // -- circular pattern --
@@ -634,8 +661,8 @@ namespace VeradeAddin.Services
                 model.ClearSelection2(true);
                 shaftAxis.Select2(false, 1);
                 cut.Select2(true, 4);
-                var pattern = model.FeatureManager.FeatureCircularPattern4(
-                    key.Count, 2.0 * Math.PI, false, "NULL", false, true, false);
+                var pattern = com.Track(com.Track(model.FeatureManager).FeatureCircularPattern4(
+                    key.Count, 2.0 * Math.PI, false, "NULL", false, true, false));
                 if (pattern == null) return "SolidWorks no pudo crear el patrón polar de la chaveta.";
             }
 
@@ -680,12 +707,13 @@ namespace VeradeAddin.Services
             double gapL = x1Mm - xs[levelIdx], gapR = xs[levelIdx + 1] - x2Mm;
             double probeX = (gapL >= gapR ? xs[levelIdx] + gapL / 2.0 : x2Mm + gapR / 2.0) * mmToM;
 
-            var sketchMgr = model.SketchManager;
+            var com = new ComScope();
+            var sketchMgr = com.Track(model.SketchManager);
             bool addToDbWas = sketchMgr.AddToDB, displayWas = sketchMgr.DisplayWhenAdded;
             try
             {
                 model.ClearSelection2(true);
-                var frontPlane = FirstRefPlane(model);
+                var frontPlane = com.Track(FirstRefPlane(model));
                 if (frontPlane == null) return "no se encontró el plano frontal.";
                 frontPlane.Select2(false, 0);
                 sketchMgr.InsertSketch(true);
@@ -694,20 +722,20 @@ namespace VeradeAddin.Services
                 sketchMgr.DisplayWhenAdded = false;
 
                 // Construction axis (for the diameter dimension) + the closed rectangle of the notch.
-                var segCl = sketchMgr.CreateLine(0, 0, 0, total, 0, 0);
+                var segCl = com.Track(sketchMgr.CreateLine(0, 0, 0, total, 0, 0));
                 segCl.ConstructionGeometry = true;
-                var segLeftWall = Line(sketchMgr, x1, rSurf, x1, r3);
-                var segBottom = Line(sketchMgr, x1, r3, x2, r3);
-                var segRightWall = Line(sketchMgr, x2, r3, x2, rSurf);
-                var segTop = Line(sketchMgr, x2, rSurf, x1, rSurf);
+                var segLeftWall = com.Track(Line(sketchMgr, x1, rSurf, x1, r3));
+                var segBottom = com.Track(Line(sketchMgr, x1, r3, x2, r3));
+                var segRightWall = com.Track(Line(sketchMgr, x2, r3, x2, rSurf));
+                var segTop = com.Track(Line(sketchMgr, x2, rSurf, x1, rSurf));
 
                 // In-sketch relations first, then anchor to the existing body: the rectangle TOP
                 // sits ON the level silhouette (outer Ø = level Ø), same as the bolt groove.
                 ConstrainAll(sketchMgr);
-                CoincidentToOrigin(model, StartPt(segCl));
-                CoincidentPointToEdge(model, EndPt(segCl), total, 0, 0);
-                CoincidentPointToSilhouetteEdge(model, StartPt(segTop), probeX, rSurf, 0);
-                CoincidentPointToEdge(model, EndPt(segTop), probeX, rSurf, 0);
+                CoincidentToOrigin(model, com.Track(StartPt(segCl)));
+                CoincidentPointToEdge(model, com.Track(EndPt(segCl)), total, 0, 0);
+                CoincidentPointToSilhouetteEdge(model, com.Track(StartPt(segTop)), probeX, rSurf, 0);
+                CoincidentPointToEdge(model, com.Track(EndPt(segTop)), probeX, rSurf, 0);
 
                 const double off = 0.012;
                 double xMid = (x1 + x2) / 2.0;
@@ -722,19 +750,19 @@ namespace VeradeAddin.Services
                 var posWall = groove.OffsetMm < 0 ? segRightWall : segLeftWall;
 
                 model.ClearSelection2(true);
-                bool gotEdge = model.Extension.SelectByID2(
+                bool gotEdge = com.Track(model.Extension).SelectByID2(
                     "", "EDGE", edgeX, rEdge, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
                 object posDim = null;
                 if (gotEdge && posWall.Select4(true, null))
                 {
-                    posDim = model.AddHorizontalDimension2((edgeX + xMid) / 2.0, rSurf + 2.0 * off, 0);
+                    posDim = com.Track(model.AddHorizontalDimension2((edgeX + xMid) / 2.0, rSurf + 2.0 * off, 0));
                 }
                 if (posDim == null)
                 {
                     model.ClearSelection2(true);
                     posWall.Select4(true, null);
-                    model.Extension.SelectByID2("", "EXTSKETCHPOINT", 0, 0, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
-                    model.AddHorizontalDimension2((edgeX + xMid) / 2.0, rSurf + 2.0 * off, 0);
+                    com.Track(model.Extension).SelectByID2("", "EXTSKETCHPOINT", 0, 0, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
+                    com.Track(model.AddHorizontalDimension2((edgeX + xMid) / 2.0, rSurf + 2.0 * off, 0));
                 }
 
                 LengthDim(model, segTop, xMid, rSurf + 3.0 * off);          // E1 (width)
@@ -743,7 +771,7 @@ namespace VeradeAddin.Services
                 model.ClearSelection2(true);
                 sketchMgr.InsertSketch(true);
 
-                var sketchFeature = LastProfileFeature(model);
+                var sketchFeature = com.Track(LastProfileFeature(model));
                 if (sketchFeature == null) return "no se pudo crear el croquis de la ranura.";
                 ForceDrivingDims(sketchFeature);
 
@@ -751,18 +779,19 @@ namespace VeradeAddin.Services
                 sketchFeature.Select2(false, 0);
 
                 // 360° cut-revolve (IsCut = true), merged — same call as the bolt groove.
-                var cut = model.FeatureManager.FeatureRevolve2(
+                var cut = com.Track(com.Track(model.FeatureManager).FeatureRevolve2(
                     true, true, false, true, false, true,
                     (int)swEndConditions_e.swEndCondBlind, (int)swEndConditions_e.swEndCondBlind,
                     2.0 * Math.PI, 0.0, false, false, 0.0, 0.0,
                     (int)swThinWallType_e.swThinWallOneDirection, 0.0, 0.0,
-                    true, false, true);
+                    true, false, true));
                 if (cut == null) return "SolidWorks no pudo crear el corte de la ranura.";
                 return null;
             }
             finally
             {
                 RestoreSketch(sketchMgr, addToDbWas, displayWas);
+                com.Dispose();
             }
         }
 
@@ -806,12 +835,13 @@ namespace VeradeAddin.Services
             // about to be) cut into it: other undercut zones and groove spans. Widest gap wins.
             double probeX = UndercutProbeXMm(spec, segStartMm, segEndMm) * mmToM;
 
-            var sketchMgr = model.SketchManager;
+            var com = new ComScope();
+            var sketchMgr = com.Track(model.SketchManager);
             bool addToDbWas = sketchMgr.AddToDB, displayWas = sketchMgr.DisplayWhenAdded;
             try
             {
                 model.ClearSelection2(true);
-                var frontPlane = FirstRefPlane(model);
+                var frontPlane = com.Track(FirstRefPlane(model));
                 if (frontPlane == null) return "no se encontró el plano frontal.";
                 frontPlane.Select2(false, 0);
                 sketchMgr.InsertSketch(true);
@@ -819,7 +849,7 @@ namespace VeradeAddin.Services
                 sketchMgr.AddToDB = true;
                 sketchMgr.DisplayWhenAdded = false;
 
-                var segCl = sketchMgr.CreateLine(0, 0, 0, total, 0, 0);
+                var segCl = com.Track(sketchMgr.CreateLine(0, 0, 0, total, 0, 0));
                 segCl.ConstructionGeometry = true;
 
                 // Straight lines only (rounds come later as a fillet feature on the bottom face):
@@ -833,41 +863,41 @@ namespace VeradeAddin.Services
                 double xD = xS - sign * t2;                 // bottom end (past the face when F)
                 double yExit = yBottom + t2 / Math.Tan(ShaftSpec.UndercutFaceRunOutDeg * Math.PI / 180.0);
 
-                var segSurf = Line(sketchMgr, xS, rs, x1, rs);
-                var segRamp = Line(sketchMgr, x1, rs, x2, yBottom);
-                var segBottom = Line(sketchMgr, x2, yBottom, xD, yBottom);
-                var segRamp8 = isF ? Line(sketchMgr, xD, yBottom, xS, yExit) : null;
-                var segFace = isF
+                var segSurf = com.Track(Line(sketchMgr, xS, rs, x1, rs));
+                var segRamp = com.Track(Line(sketchMgr, x1, rs, x2, yBottom));
+                var segBottom = com.Track(Line(sketchMgr, x2, yBottom, xD, yBottom));
+                var segRamp8 = isF ? com.Track(Line(sketchMgr, xD, yBottom, xS, yExit)) : null;
+                var segFace = com.Track(isF
                     ? Line(sketchMgr, xS, yExit, xS, rs)
-                    : Line(sketchMgr, xS, yBottom, xS, rs);
+                    : Line(sketchMgr, xS, yBottom, xS, rs));
 
                 ConstrainAll(sketchMgr);
-                CoincidentToOrigin(model, StartPt(segCl));
-                CoincidentPointToEdge(model, EndPt(segCl), total, 0, 0);
+                CoincidentToOrigin(model, com.Track(StartPt(segCl)));
+                CoincidentPointToEdge(model, com.Track(EndPt(segCl)), total, 0, 0);
                 // Shoulder corner = the smaller ring of the step edge, picked at its top point.
                 // This is the ONLY relation pinning the profile axially (the silhouette below fixes
                 // Y only), so pick it GUARDED: when SelectByID2 misses the ring the coincidence
                 // silently never sticks and the profile is left free to slide in X. If it did not
                 // stick, fall back to a horizontal position dimension origin → shoulder corner
                 // (value taken from the exact geometry) so X is pinned either way.
-                bool shoulderPinned = CoincidentPointToEdgeGuarded(model, sketchMgr, EndPt(segFace), xS, rs, 0);
-                CoincidentPointToSilhouetteEdge(model, EndPt(segSurf), probeX, rs, 0);
+                bool shoulderPinned = CoincidentPointToEdgeGuarded(model, sketchMgr, com.Track(EndPt(segFace)), xS, rs, 0);
+                CoincidentPointToSilhouetteEdge(model, com.Track(EndPt(segSurf)), probeX, rs, 0);
                 if (!shoulderPinned)
                 {
                     model.ClearSelection2(true);
-                    EndPt(segFace).Select4(true, null);
-                    model.Extension.SelectByID2("", "EXTSKETCHPOINT", 0, 0, 0, true, 0, null,
+                    com.Track(EndPt(segFace)).Select4(true, null);
+                    com.Track(model.Extension).SelectByID2("", "EXTSKETCHPOINT", 0, 0, 0, true, 0, null,
                         (int)swSelectOption_e.swSelectOptionDefault);
-                    MakeDriving(model.AddHorizontalDimension2(xS / 2.0, rs * 3.0, 0));
+                    MakeDriving(com.Track(model.AddHorizontalDimension2(xS / 2.0, rs * 3.0, 0)));
                     model.ClearSelection2(true);
                 }
 
                 const double off = 0.012;
                 // f: shoulder corner ↔ run-out end, mirroring the norm's width dimension.
                 model.ClearSelection2(true);
-                StartPt(segSurf).Select4(true, null);
-                EndPt(segSurf).Select4(true, null);
-                model.AddHorizontalDimension2((xS + x1) / 2.0, rs + 2.0 * off, 0);
+                com.Track(StartPt(segSurf)).Select4(true, null);
+                com.Track(EndPt(segSurf)).Select4(true, null);
+                com.Track(model.AddHorizontalDimension2((xS + x1) / 2.0, rs + 2.0 * off, 0));
                 DiameterDim(model, segBottom, segCl, (xS + x2) / 2.0, -yBottom);   // bottom Ø = d − 2·t1
                 // 15° run-out: angular dim ramp ↔ surface, text inside the acute wedge so
                 // SolidWorks measures the 15°, not the 165° sector. Best-effort like every dim.
@@ -876,7 +906,7 @@ namespace VeradeAddin.Services
                     model.ClearSelection2(true);
                     segRamp.Select4(true, null);
                     segSurf.Select4(true, null);
-                    model.AddDimension2((x1 + x2) / 2.0, rs - t1 * 0.25, 0);
+                    com.Track(model.AddDimension2((x1 + x2) / 2.0, rs - t1 * 0.25, 0));
                 }
                 catch { }
                 finally { model.ClearSelection2(true); }
@@ -887,13 +917,13 @@ namespace VeradeAddin.Services
                     try
                     {
                         model.ClearSelection2(true);
-                        EndPt(segBottom).Select4(true, null);
-                        StartPt(segFace).Select4(true, null);
-                        model.AddHorizontalDimension2((xS + xD) / 2.0, yBottom - 2.0 * off, 0);
+                        com.Track(EndPt(segBottom)).Select4(true, null);
+                        com.Track(StartPt(segFace)).Select4(true, null);
+                        com.Track(model.AddHorizontalDimension2((xS + xD) / 2.0, yBottom - 2.0 * off, 0));
                         model.ClearSelection2(true);
                         segRamp8.Select4(true, null);
                         segFace.Select4(true, null);
-                        model.AddDimension2(xS - sign * t2 * 0.3, yBottom + (yExit - yBottom) * 0.5, 0);
+                        com.Track(model.AddDimension2(xS - sign * t2 * 0.3, yBottom + (yExit - yBottom) * 0.5, 0));
                     }
                     catch { }
                     finally { model.ClearSelection2(true); }
@@ -902,7 +932,7 @@ namespace VeradeAddin.Services
                 model.ClearSelection2(true);
                 sketchMgr.InsertSketch(true);
 
-                var sketchFeature = LastProfileFeature(model);
+                var sketchFeature = com.Track(LastProfileFeature(model));
                 if (sketchFeature == null) return "no se pudo crear el croquis de la entalladura.";
                 ForceDrivingDims(sketchFeature);
 
@@ -910,12 +940,12 @@ namespace VeradeAddin.Services
                 sketchFeature.Select2(false, 0);
 
                 // 360° cut-revolve, same call as the grooves.
-                var cut = model.FeatureManager.FeatureRevolve2(
+                var cut = com.Track(com.Track(model.FeatureManager).FeatureRevolve2(
                     true, true, false, true, false, true,
                     (int)swEndConditions_e.swEndCondBlind, (int)swEndConditions_e.swEndCondBlind,
                     2.0 * Math.PI, 0.0, false, false, 0.0, 0.0,
                     (int)swThinWallType_e.swThinWallOneDirection, 0.0, 0.0,
-                    true, false, true);
+                    true, false, true));
                 if (cut == null) return "SolidWorks no pudo crear el corte de la entalladura.";
 
                 // Rounds r as ONE fillet feature on the BOTTOM FACE of the relief — the smallest-
@@ -932,6 +962,7 @@ namespace VeradeAddin.Services
             finally
             {
                 RestoreSketch(sketchMgr, addToDbWas, displayWas);
+                com.Dispose();
             }
         }
 
@@ -956,19 +987,22 @@ namespace VeradeAddin.Services
 
             // SelectByRay
 
-            model.Extension.SelectByRay(x, 0, 0, 0, 0, 1, 1,
-                (int)swSelectType_e.swSelFACES, false, 1, (int)swSelectOption_e.swSelectOptionDefault);
+            using (var com = new ComScope())
+            {
+                com.Track(model.Extension).SelectByRay(x, 0, 0, 0, 0, 1, 1,
+                    (int)swSelectType_e.swSelFACES, false, 1, (int)swSelectOption_e.swSelectOptionDefault);
 
-            var fillet = model.FeatureManager.FeatureFillet3(
-                (int)(swFeatureFilletOptions_e.swFeatureFilletPropagate
-                    | swFeatureFilletOptions_e.swFeatureFilletUniformRadius
-                    | swFeatureFilletOptions_e.swFeatureFilletAttachEdges
-                    | swFeatureFilletOptions_e.swFeatureFilletKeepFeatures),
-                radius, 0, 0,
-                (int)swFeatureFilletType_e.swFeatureFilletType_Simple, 0, 0,
-                null, null, null, null, null, null, null) as Feature;
-            model.ClearSelection2(true);
-            return fillet == null ? "SolidWorks no pudo crear el redondeo." : null;
+                var fillet = com.Track(com.Track(model.FeatureManager).FeatureFillet3(
+                    (int)(swFeatureFilletOptions_e.swFeatureFilletPropagate
+                        | swFeatureFilletOptions_e.swFeatureFilletUniformRadius
+                        | swFeatureFilletOptions_e.swFeatureFilletAttachEdges
+                        | swFeatureFilletOptions_e.swFeatureFilletKeepFeatures),
+                    radius, 0, 0,
+                    (int)swFeatureFilletType_e.swFeatureFilletType_Simple, 0, 0,
+                    null, null, null, null, null, null, null) as Feature);
+                model.ClearSelection2(true);
+                return fillet == null ? "SolidWorks no pudo crear el redondeo." : null;
+            }
         }
 
         /// <summary>
@@ -1027,16 +1061,19 @@ namespace VeradeAddin.Services
             string selErr = SelectCornerRings(model, spec, fillet.Corners, 1);
             if (selErr != null) return selErr;
 
-            var feature = model.FeatureManager.FeatureFillet3(
-                (int)(swFeatureFilletOptions_e.swFeatureFilletPropagate
-                    | swFeatureFilletOptions_e.swFeatureFilletUniformRadius
-                    | swFeatureFilletOptions_e.swFeatureFilletAttachEdges
-                    | swFeatureFilletOptions_e.swFeatureFilletKeepFeatures),
-                fillet.RadiusMm * 0.001, 0, 0,
-                (int)swFeatureFilletType_e.swFeatureFilletType_Simple, 0, 0,
-                null, null, null, null, null, null, null) as Feature;
-            model.ClearSelection2(true);
-            return feature == null ? "SolidWorks no pudo crear el redondeo." : null;
+            using (var com = new ComScope())
+            {
+                var feature = com.Track(com.Track(model.FeatureManager).FeatureFillet3(
+                    (int)(swFeatureFilletOptions_e.swFeatureFilletPropagate
+                        | swFeatureFilletOptions_e.swFeatureFilletUniformRadius
+                        | swFeatureFilletOptions_e.swFeatureFilletAttachEdges
+                        | swFeatureFilletOptions_e.swFeatureFilletKeepFeatures),
+                    fillet.RadiusMm * 0.001, 0, 0,
+                    (int)swFeatureFilletType_e.swFeatureFilletType_Simple, 0, 0,
+                    null, null, null, null, null, null, null) as Feature);
+                model.ClearSelection2(true);
+                return feature == null ? "SolidWorks no pudo crear el redondeo." : null;
+            }
         }
 
         /// <summary>
@@ -1052,12 +1089,15 @@ namespace VeradeAddin.Services
             string selErr = SelectCornerRings(model, spec, chamfer.Corners, 0);
             if (selErr != null) return selErr;
 
-            var feature = model.FeatureManager.InsertFeatureChamfer(
-                (int)swFeatureChamferOption_e.swFeatureChamferTangentPropagation,
-                (int)swChamferType_e.swChamferAngleDistance,
-                chamfer.LengthMm * 0.001, Math.PI / 4.0, 0, 0, 0, 0);
-            model.ClearSelection2(true);
-            return feature == null ? "SolidWorks no pudo crear el chaflán." : null;
+            using (var com = new ComScope())
+            {
+                var feature = com.Track(com.Track(model.FeatureManager).InsertFeatureChamfer(
+                    (int)swFeatureChamferOption_e.swFeatureChamferTangentPropagation,
+                    (int)swChamferType_e.swChamferAngleDistance,
+                    chamfer.LengthMm * 0.001, Math.PI / 4.0, 0, 0, 0, 0));
+                model.ClearSelection2(true);
+                return feature == null ? "SolidWorks no pudo crear el chaflán." : null;
+            }
         }
 
         /// <summary>
@@ -1071,33 +1111,36 @@ namespace VeradeAddin.Services
         private static string SelectCornerRings(IModelDoc2 model, ShaftSpec spec, List<int> corners, int mark)
         {
             model.ClearSelection2(true);
-            var selMgr = model.SelectionManager as ISelectionMgr;
-            if (selMgr == null) return "no se pudo acceder al gestor de selección.";
-            var selData = selMgr.CreateSelectData();
-            selData.Mark = mark;
-
-            var xs = spec.BoundariesMm();
-            foreach (int corner in corners)
+            using (var com = new ComScope())
             {
-                if (corner < 0 || corner > 2 * spec.Levels.Count - 1)
+                var selMgr = com.Track(model.SelectionManager as ISelectionMgr);
+                if (selMgr == null) return "no se pudo acceder al gestor de selección.";
+                var selData = com.Track(selMgr.CreateSelectData());
+                selData.Mark = mark;
+
+                var xs = spec.BoundariesMm();
+                foreach (int corner in corners)
                 {
-                    return "vértice no válido (¿cambiaste los niveles?).";
+                    if (corner < 0 || corner > 2 * spec.Levels.Count - 1)
+                    {
+                        return "vértice no válido (¿cambiaste los niveles?).";
+                    }
+                    double xMm = xs[ShaftSpec.CornerBoundary(corner)];
+                    double radius = spec.CornerRingDiameterMm(corner) * 0.001 / 2.0;
+                    var edge = com.Track(FindBodyCircularEdge(model, xMm * 0.001, radius));
+                    if (edge == null)
+                    {
+                        model.ClearSelection2(true);
+                        return "no se encontró la arista circular en x = " + xMm + " mm.";
+                    }
+                    if (!((Entity)edge).Select4(true, selData))
+                    {
+                        model.ClearSelection2(true);
+                        return "no se pudo seleccionar la arista en x = " + xMm + " mm.";
+                    }
                 }
-                double xMm = xs[ShaftSpec.CornerBoundary(corner)];
-                double radius = spec.CornerRingDiameterMm(corner) * 0.001 / 2.0;
-                var edge = FindBodyCircularEdge(model, xMm * 0.001, radius);
-                if (edge == null)
-                {
-                    model.ClearSelection2(true);
-                    return "no se encontró la arista circular en x = " + xMm + " mm.";
-                }
-                if (!((Entity)edge).Select4(true, selData))
-                {
-                    model.ClearSelection2(true);
-                    return "no se pudo seleccionar la arista en x = " + xMm + " mm.";
-                }
+                return null;
             }
-            return null;
         }
 
         // ---- 6) DIN 332 centre points (puntos de centrado) -----------------------------------------
@@ -1128,12 +1171,13 @@ namespace VeradeAddin.Services
             foreach (var p in profileMm) pts.Add(new[] { p[0] * mmToM, p[1] * mmToM });
             double arcRadius = arcRadiusMm * mmToM;
 
-            var sketchMgr = model.SketchManager;
+            var com = new ComScope();
+            var sketchMgr = com.Track(model.SketchManager);
             bool addToDbWas = sketchMgr.AddToDB, displayWas = sketchMgr.DisplayWhenAdded;
             try
             {
                 model.ClearSelection2(true);
-                var frontPlane = FirstRefPlane(model);
+                var frontPlane = com.Track(FirstRefPlane(model));
                 if (frontPlane == null) return "no se encontró el plano frontal.";
                 frontPlane.Select2(false, 0);
                 sketchMgr.InsertSketch(true);
@@ -1141,12 +1185,12 @@ namespace VeradeAddin.Services
                 sketchMgr.AddToDB = true;
                 sketchMgr.DisplayWhenAdded = false;
 
-                var segCl = sketchMgr.CreateLine(0, 0, 0, total, 0, 0);   // revolve axis
+                var segCl = com.Track(sketchMgr.CreateLine(0, 0, 0, total, 0, 0));   // revolve axis
                 segCl.ConstructionGeometry = true;
 
                 // Face segment: face centre (xf, 0) → mouth M.
                 double mx = xf + sign * pts[0][0];
-                var faceSeg = Line(sketchMgr, xf, 0, mx, pts[0][1]);
+                var faceSeg = com.Track(Line(sketchMgr, xf, 0, mx, pts[0][1]));
 
                 // Inner segments mouth → tip. Cylinder segments (equal, non-zero radius) get a driving
                 // Ø; the arc flank (R, DR) is a 3-point arc tangent to the seat/pilot cylinder. Along
@@ -1154,7 +1198,7 @@ namespace VeradeAddin.Services
                 // vertex, the slanted cone flanks and the arc.
                 var cylinders = new List<SketchSegment>();       // horizontal bores → Ø dims
                 var cylRadius = new List<double>();
-                var vertexPts = new List<SketchPoint> { EndPt(faceSeg) };   // vertexPts[k] ↔ pts[k]
+                var vertexPts = new List<SketchPoint> { com.Track(EndPt(faceSeg)) };   // vertexPts[k] ↔ pts[k]
                 var flanks = new List<SketchSegment>();          // slanted cones → angle dims
                 SketchSegment arcFlank = null;
                 for (int i = 1; i < pts.Count; i++)
@@ -1171,36 +1215,36 @@ namespace VeradeAddin.Services
                         double sx = ux / un + vx / vn, sy = uy / un + vy / vn;
                         double sn = Math.Sqrt(sx * sx + sy * sy);
                         double midX = cx + arcRadius * sx / sn, midY = cy + arcRadius * sy / sn;
-                        arcFlank = sketchMgr.Create3PointArc(xa, ya, 0, xb, yb, 0, midX, midY, 0);
+                        arcFlank = com.Track(sketchMgr.Create3PointArc(xa, ya, 0, xb, yb, 0, midX, midY, 0));
                         vertexPts.Add(null);                     // filled by the next line's start point
                     }
                     else
                     {
-                        var seg = Line(sketchMgr, xa, ya, xb, yb);
+                        var seg = com.Track(Line(sketchMgr, xa, ya, xb, yb));
                         if (Math.Abs(ya - yb) < 1e-9 && ya > 1e-9) { cylinders.Add(seg); cylRadius.Add(ya); }
                         else if (Math.Abs(xa - xb) > 1e-9 && Math.Abs(ya - yb) > 1e-9) flanks.Add(seg);
-                        if (vertexPts[i - 1] == null) vertexPts[i - 1] = StartPt(seg);
-                        vertexPts.Add(EndPt(seg));
+                        if (vertexPts[i - 1] == null) vertexPts[i - 1] = com.Track(StartPt(seg));
+                        vertexPts.Add(com.Track(EndPt(seg)));
                     }
                 }
                 // Axis segment: tip T → face centre, on the revolve axis.
                 double tx = xf + sign * pts[pts.Count - 1][0];
-                Line(sketchMgr, tx, pts[pts.Count - 1][1], xf, 0);
+                com.Track(Line(sketchMgr, tx, pts[pts.Count - 1][1], xf, 0));
 
                 ConstrainAll(sketchMgr);
-                CoincidentToOrigin(model, StartPt(segCl));
-                CoincidentPointToEdge(model, EndPt(segCl), total, 0, 0);
+                CoincidentToOrigin(model, com.Track(StartPt(segCl)));
+                CoincidentPointToEdge(model, com.Track(EndPt(segCl)), total, 0, 0);
                 // Pin the hole's face-centre point in X: the origin for the left end, the axis far
                 // endpoint (on the x = total face) for the right end.
                 if (hole.End == 0)
                 {
-                    CoincidentToOrigin(model, StartPt(faceSeg));
+                    CoincidentToOrigin(model, com.Track(StartPt(faceSeg)));
                 }
                 else
                 {
                     model.ClearSelection2(true);
-                    var oPt = StartPt(faceSeg);
-                    if (oPt != null && oPt.Select4(true, null) && EndPt(segCl).Select4(true, null))
+                    var oPt = com.Track(StartPt(faceSeg));
+                    if (oPt != null && oPt.Select4(true, null) && com.Track(EndPt(segCl)).Select4(true, null))
                     {
                         model.SketchAddConstraints("sgCOINCIDENT");
                     }
@@ -1213,7 +1257,7 @@ namespace VeradeAddin.Services
                 // vertex, depths from the face, cone angles, arc radius. TryDrivingDim flips each
                 // candidate to DRIVING on the spot and deletes it again if it over-defines or breaks
                 // the sketch, so the pass stops exactly when SolidWorks reports fully defined.
-                var fPt = StartPt(faceSeg);                     // face centre (xf, 0)
+                var fPt = com.Track(StartPt(faceSeg));                     // face centre (xf, 0)
                 double rMouth = pts[0][1];
                 int stack = 0;
                 bool defined = SketchFullyDefined(sketchMgr);
@@ -1222,7 +1266,7 @@ namespace VeradeAddin.Services
                 for (int i = 0; i < cylinders.Count && !defined; i++)
                 {
                     var cyl = cylinders[i];
-                    var cs = StartPt(cyl); var ce = EndPt(cyl);
+                    var cs = com.Track(StartPt(cyl)); var ce = com.Track(EndPt(cyl));
                     double xMid = cs != null && ce != null ? 0.5 * (cs.X + ce.X) : xf;
                     double dy = -(rMouth + 0.006 * (++stack));
                     defined = TryDrivingDim(model, sketchMgr,
@@ -1284,7 +1328,7 @@ namespace VeradeAddin.Services
                 {
                     if (defined) break;
                     var fl = flank;
-                    var pa = StartPt(fl); var pb = EndPt(fl);
+                    var pa = com.Track(StartPt(fl)); var pb = com.Track(EndPt(fl));
                     if (pa == null || pb == null) continue;
                     if (Math.Min(Math.Abs(pa.Y), Math.Abs(pb.Y)) > 1e-9) continue;   // not the tip
                     double atx = (pa.X + pb.X) / 2.0, aty = (pa.Y + pb.Y) / 4.0;
@@ -1313,19 +1357,19 @@ namespace VeradeAddin.Services
                 model.ClearSelection2(true);
                 sketchMgr.InsertSketch(true);
 
-                var sketchFeature = LastProfileFeature(model);
+                var sketchFeature = com.Track(LastProfileFeature(model));
                 if (sketchFeature == null) return "no se pudo crear el croquis del punto de centrado.";
                 ForceDrivingDims(sketchFeature);
 
                 model.ClearSelection2(true);
                 sketchFeature.Select2(false, 0);
 
-                var cut = model.FeatureManager.FeatureRevolve2(
+                var cut = com.Track(com.Track(model.FeatureManager).FeatureRevolve2(
                     true, true, false, true, false, true,
                     (int)swEndConditions_e.swEndCondBlind, (int)swEndConditions_e.swEndCondBlind,
                     2.0 * Math.PI, 0.0, false, false, 0.0, 0.0,
                     (int)swThinWallType_e.swThinWallOneDirection, 0.0, 0.0,
-                    true, false, true);
+                    true, false, true));
                 if (cut == null) return "SolidWorks no pudo crear el corte del punto de centrado.";
 
                 // IS 2540:2008 / DIN 332-2 Fig. 1: t1 (useful thread) is measured FROM THE END FACE,
@@ -1343,13 +1387,13 @@ namespace VeradeAddin.Services
                     string callout = "M" + hole.D1Mm.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
                     model.ClearSelection2(true);
                     Feature thread = null;
-                    var threadEdge = FindCircularEdge(cut, xEdge, rCore);
+                    var threadEdge = com.Track(FindCircularEdge(cut, xEdge, rCore));
                     if (threadEdge != null && ((Entity)threadEdge).Select4(false, null))
                     {
-                        thread = model.FeatureManager.InsertCosmeticThread3(
+                        thread = com.Track(com.Track(model.FeatureManager).InsertCosmeticThread3(
                             0, "", "", hole.D1Mm * mmToM,
                             (int)swCosmeticThreadType_e.swApplyCosmeticThread_Blind,
-                            (hole.T1Mm - hole.T3Mm) * mmToM, callout);
+                            (hole.T1Mm - hole.T3Mm) * mmToM, callout));
                     }
                     model.ClearSelection2(true);
                     if (thread == null) return "punto creado, pero sin la rosca cosmética " + callout + ".";
@@ -1359,6 +1403,7 @@ namespace VeradeAddin.Services
             finally
             {
                 RestoreSketch(sketchMgr, addToDbWas, displayWas);
+                com.Dispose();
             }
         }
 
@@ -1400,22 +1445,25 @@ namespace VeradeAddin.Services
                 thread.PitchMm.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
 
             model.ClearSelection2(true);
-            var edge = FindBodyCircularEdge(model, xEdgeMm * mmToM, level.DiameterMm * mmToM / 2.0);
-            if (edge == null)
+            using (var com = new ComScope())
             {
-                return "no se encontró la arista circular de arranque en x = " + xEdgeMm +
-                       " mm (¿una entalladura o chaveta eliminó ese borde?).";
+                var edge = com.Track(FindBodyCircularEdge(model, xEdgeMm * mmToM, level.DiameterMm * mmToM / 2.0));
+                if (edge == null)
+                {
+                    return "no se encontró la arista circular de arranque en x = " + xEdgeMm +
+                           " mm (¿una entalladura o chaveta eliminó ese borde?).";
+                }
+                Feature feature = null;
+                if (((Entity)edge).Select4(false, null))
+                {
+                    feature = com.Track(com.Track(model.FeatureManager).InsertCosmeticThread3(
+                        0, "", "", minor * mmToM,
+                        (int)swCosmeticThreadType_e.swApplyCosmeticThread_Blind,
+                        depthMm * mmToM, callout));
+                }
+                model.ClearSelection2(true);
+                return feature == null ? "SolidWorks no insertó la rosca cosmética " + callout + "." : null;
             }
-            Feature feature = null;
-            if (((Entity)edge).Select4(false, null))
-            {
-                feature = model.FeatureManager.InsertCosmeticThread3(
-                    0, "", "", minor * mmToM,
-                    (int)swCosmeticThreadType_e.swApplyCosmeticThread_Blind,
-                    depthMm * mmToM, callout);
-            }
-            model.ClearSelection2(true);
-            return feature == null ? "SolidWorks no insertó la rosca cosmética " + callout + "." : null;
         }
 
         /// <summary>
@@ -1426,37 +1474,42 @@ namespace VeradeAddin.Services
         private static Edge FindBodyCircularEdge(IModelDoc2 model, double x, double radius)
         {
             const double tol = 1e-6;
-            var part = model as PartDoc;
-            var bodies = part == null ? null : part.GetBodies2((int)swBodyType_e.swSolidBody, true) as object[];
-            if (bodies == null) return null;
-            foreach (object bodyObj in bodies)
+            // Whole-body walk: one reference per body, face, surface, edge and curve. The matching
+            // edge is handed to the caller; everything else goes back when the scope closes.
+            using (var com = new ComScope())
             {
-                var body = bodyObj as Body2;
-                var faces = body == null ? null : body.GetFaces() as object[];
-                if (faces == null) continue;
-                foreach (object faceObj in faces)
+                var part = model as PartDoc;
+                var bodies = com.TrackAll(part == null ? null : part.GetBodies2((int)swBodyType_e.swSolidBody, true) as object[]);
+                if (bodies == null) return null;
+                foreach (object bodyObj in bodies)
                 {
-                    var face = faceObj as Face2;
-                    var surface = face == null ? null : face.GetSurface() as Surface;
-                    if (surface == null || !surface.IsCylinder()) continue;
-                    var cylinder = surface.CylinderParams as double[];   // origin(3), axis(3), radius
-                    if (cylinder == null || Math.Abs(cylinder[6] - radius) > tol) continue;
-                    var edges = face.GetEdges() as object[];
-                    if (edges == null) continue;
-                    foreach (object edgeObj in edges)
+                    var body = bodyObj as Body2;
+                    var faces = com.TrackAll(body == null ? null : body.GetFaces() as object[]);
+                    if (faces == null) continue;
+                    foreach (object faceObj in faces)
                     {
-                        var edge = edgeObj as Edge;
-                        var curve = edge == null ? null : edge.GetCurve() as Curve;
-                        if (curve == null || !curve.IsCircle()) continue;
-                        var circle = curve.CircleParams as double[];     // center(3), axis(3), radius
-                        if (circle != null && Math.Abs(circle[0] - x) < 1e-5 && Math.Abs(circle[6] - radius) < tol)
+                        var face = faceObj as Face2;
+                        var surface = com.Track(face == null ? null : face.GetSurface() as Surface);
+                        if (surface == null || !surface.IsCylinder()) continue;
+                        var cylinder = surface.CylinderParams as double[];   // origin(3), axis(3), radius
+                        if (cylinder == null || Math.Abs(cylinder[6] - radius) > tol) continue;
+                        var edges = com.TrackAll(face.GetEdges() as object[]);
+                        if (edges == null) continue;
+                        foreach (object edgeObj in edges)
                         {
-                            return edge;
+                            var edge = edgeObj as Edge;
+                            var curve = com.Track(edge == null ? null : edge.GetCurve() as Curve);
+                            if (curve == null || !curve.IsCircle()) continue;
+                            var circle = curve.CircleParams as double[];     // center(3), axis(3), radius
+                            if (circle != null && Math.Abs(circle[0] - x) < 1e-5 && Math.Abs(circle[6] - radius) < tol)
+                            {
+                                return com.Keep(edge);
+                            }
                         }
                     }
                 }
+                return null;
             }
-            return null;
         }
 
         /// <summary>
@@ -1468,30 +1521,33 @@ namespace VeradeAddin.Services
         private static Edge FindCircularEdge(Feature feature, double x, double radius)
         {
             const double tol = 1e-6;
-            var faces = feature.GetFaces() as object[];
-            if (faces == null) return null;
-            foreach (object faceObj in faces)
+            using (var com = new ComScope())
             {
-                var face = faceObj as Face2;
-                var surface = face == null ? null : face.GetSurface() as Surface;
-                if (surface == null || !surface.IsCylinder()) continue;
-                var cylinder = surface.CylinderParams as double[];   // origin(3), axis(3), radius
-                if (cylinder == null || Math.Abs(cylinder[6] - radius) > tol) continue;
-                var edges = face.GetEdges() as object[];
-                if (edges == null) continue;
-                foreach (object edgeObj in edges)
+                var faces = com.TrackAll(feature.GetFaces() as object[]);
+                if (faces == null) return null;
+                foreach (object faceObj in faces)
                 {
-                    var edge = edgeObj as Edge;
-                    var curve = edge == null ? null : edge.GetCurve() as Curve;
-                    if (curve == null || !curve.IsCircle()) continue;
-                    var circle = curve.CircleParams as double[];     // center(3), axis(3), radius
-                    if (circle != null && Math.Abs(circle[0] - x) < 1e-5 && Math.Abs(circle[6] - radius) < tol)
+                    var face = faceObj as Face2;
+                    var surface = com.Track(face == null ? null : face.GetSurface() as Surface);
+                    if (surface == null || !surface.IsCylinder()) continue;
+                    var cylinder = surface.CylinderParams as double[];   // origin(3), axis(3), radius
+                    if (cylinder == null || Math.Abs(cylinder[6] - radius) > tol) continue;
+                    var edges = com.TrackAll(face.GetEdges() as object[]);
+                    if (edges == null) continue;
+                    foreach (object edgeObj in edges)
                     {
-                        return edge;
+                        var edge = edgeObj as Edge;
+                        var curve = com.Track(edge == null ? null : edge.GetCurve() as Curve);
+                        if (curve == null || !curve.IsCircle()) continue;
+                        var circle = curve.CircleParams as double[];     // center(3), axis(3), radius
+                        if (circle != null && Math.Abs(circle[0] - x) < 1e-5 && Math.Abs(circle[6] - radius) < tol)
+                        {
+                            return com.Keep(edge);
+                        }
                     }
                 }
+                return null;
             }
-            return null;
         }
 
         // ---- sketch solve status + guarded relations -----------------------------------------------
@@ -1504,14 +1560,16 @@ namespace VeradeAddin.Services
         /// </summary>
         private static int SketchStatus(SketchManager sketchMgr)
         {
+            Sketch sketch = null;
             try
             {
-                var sketch = sketchMgr.ActiveSketch;
+                sketch = sketchMgr.ActiveSketch;
                 return sketch == null
                     ? (int)swConstrainedStatus_e.swUnknownConstraint
                     : sketch.GetConstrainedStatus();
             }
             catch { return (int)swConstrainedStatus_e.swUnknownConstraint; }
+            finally { ComRelease.Release(sketch); }
         }
 
         private static bool SketchFullyDefined(SketchManager sketchMgr)
@@ -1535,27 +1593,30 @@ namespace VeradeAddin.Services
         /// </summary>
         private static bool AddConstraintGuarded(IModelDoc2 model, SketchManager sketchMgr, string constraint)
         {
-            var sketch = sketchMgr.ActiveSketch;
-            var relMgr = sketch == null ? null : sketch.RelationManager;
-            int before = -1;
-            try { if (relMgr != null) before = relMgr.GetRelationsCount(0); } catch { }
-
-            model.SketchAddConstraints(constraint);
-            if (!SketchBroken(sketchMgr)) return true;
-
-            try
+            using (var com = new ComScope())
             {
-                var rels = relMgr == null ? null : relMgr.GetRelations(0) as object[];
-                if (rels != null && before >= 0)
+                var sketch = com.Track(sketchMgr.ActiveSketch);
+                var relMgr = com.Track(sketch == null ? null : sketch.RelationManager);
+                int before = -1;
+                try { if (relMgr != null) before = relMgr.GetRelationsCount(0); } catch { }
+
+                model.SketchAddConstraints(constraint);
+                if (!SketchBroken(sketchMgr)) return true;
+
+                try
                 {
-                    for (int i = rels.Length - 1; i >= before; i--)
+                    var rels = com.TrackAll(relMgr == null ? null : relMgr.GetRelations(0) as object[]);
+                    if (rels != null && before >= 0)
                     {
-                        relMgr.DeleteRelation(rels[i] as SketchRelation);
+                        for (int i = rels.Length - 1; i >= before; i--)
+                        {
+                            relMgr.DeleteRelation(rels[i] as SketchRelation);
+                        }
                     }
                 }
+                catch { }
+                return false;
             }
-            catch { }
-            return false;
         }
 
         /// <summary>
@@ -1567,19 +1628,22 @@ namespace VeradeAddin.Services
             IModelDoc2 model, SketchManager sketchMgr, SketchPoint pt, double fx, double fy, double fz)
         {
             if (pt == null) return false;
-            try
+            using (var com = new ComScope())
             {
-                model.ClearSelection2(true);
-                if (!pt.Select4(false, null)) return false;
-                if (!model.Extension.SelectByID2("", "EDGE", fx, fy, fz, true, 0, null,
-                    (int)swSelectOption_e.swSelectOptionDefault))
+                try
                 {
-                    return false;
+                    model.ClearSelection2(true);
+                    if (!pt.Select4(false, null)) return false;
+                    if (!com.Track(model.Extension).SelectByID2("", "EDGE", fx, fy, fz, true, 0, null,
+                        (int)swSelectOption_e.swSelectOptionDefault))
+                    {
+                        return false;
+                    }
+                    return AddConstraintGuarded(model, sketchMgr, "sgCOINCIDENT");
                 }
-                return AddConstraintGuarded(model, sketchMgr, "sgCOINCIDENT");
+                catch { return false; }
+                finally { model.ClearSelection2(true); }
             }
-            catch { return false; }
-            finally { model.ClearSelection2(true); }
         }
 
         /// <summary>
@@ -1613,14 +1677,18 @@ namespace VeradeAddin.Services
             try { dim = add(); } catch { }
             model.ClearSelection2(true);
             if (dim == null) return SketchFullyDefined(sketchMgr);
-            MakeDriving(dim);
-            int status = SketchStatus(sketchMgr);
-            if (status != (int)swConstrainedStatus_e.swFullyConstrained &&
-                status != (int)swConstrainedStatus_e.swUnderConstrained)
+            try
             {
-                DeleteDisplayDim(model, dim);
+                MakeDriving(dim);
+                int status = SketchStatus(sketchMgr);
+                if (status != (int)swConstrainedStatus_e.swFullyConstrained &&
+                    status != (int)swConstrainedStatus_e.swUnderConstrained)
+                {
+                    DeleteDisplayDim(model, dim);
+                }
+                return SketchFullyDefined(sketchMgr);
             }
-            return SketchFullyDefined(sketchMgr);
+            finally { ComRelease.Release(dim); }
         }
 
         /// <summary>
@@ -1630,16 +1698,19 @@ namespace VeradeAddin.Services
         /// </summary>
         private static void DeleteDisplayDim(IModelDoc2 model, object displayDimension)
         {
+            object annotation = null;
             try
             {
                 var display = displayDimension as DisplayDimension;
-                var annotation = display == null ? null : display.GetAnnotation() as Annotation;
-                if (annotation == null) return;
+                annotation = display == null ? null : display.GetAnnotation();
+                var ann = annotation as Annotation;
+                if (ann == null) return;
                 model.ClearSelection2(true);
-                if (annotation.Select3(false, null)) model.EditDelete();
+                if (ann.Select3(false, null)) model.EditDelete();
                 model.ClearSelection2(true);
             }
             catch { }
+            finally { ComRelease.Release(annotation); }
         }
 
         /// <summary>
@@ -1649,16 +1720,19 @@ namespace VeradeAddin.Services
         /// </summary>
         private static void MakeDriving(object displayDimension)
         {
+            object dim = null;
             try
             {
                 var dispDim = displayDimension as DisplayDimension;
-                var dim = dispDim == null ? null : dispDim.GetDimension2(0);
-                if (dim != null && dim.DrivenState == (int)swDimensionDrivenState_e.swDimensionDriven)
+                dim = dispDim == null ? null : dispDim.GetDimension2(0);
+                var d = dim as Dimension;
+                if (d != null && d.DrivenState == (int)swDimensionDrivenState_e.swDimensionDriven)
                 {
-                    dim.DrivenState = (int)swDimensionDrivenState_e.swDimensionDriving;
+                    d.DrivenState = (int)swDimensionDrivenState_e.swDimensionDriving;
                 }
             }
             catch { }
+            finally { ComRelease.Release(dim); }
         }
 
         /// <summary>
@@ -1668,15 +1742,19 @@ namespace VeradeAddin.Services
         /// </summary>
         private static void ForceDrivingDims(Feature sketchFeature)
         {
-            var dispDim = sketchFeature.GetFirstDisplayDimension() as DisplayDimension;
-            while (dispDim != null)
+            using (var com = new ComScope())
             {
-                var dim = dispDim.GetDimension2(0);
-                if (dim != null && dim.DrivenState == (int)swDimensionDrivenState_e.swDimensionDriven)
+                var dispDim = com.Track(sketchFeature.GetFirstDisplayDimension() as DisplayDimension);
+                while (dispDim != null)
                 {
-                    dim.DrivenState = (int)swDimensionDrivenState_e.swDimensionDriving;
+                    var dim = com.Track(dispDim.GetDimension2(0)) as Dimension;
+                    if (dim != null && dim.DrivenState == (int)swDimensionDrivenState_e.swDimensionDriven)
+                    {
+                        dim.DrivenState = (int)swDimensionDrivenState_e.swDimensionDriving;
+                    }
+                    // GetNextDisplayDimension consumes nothing: dispDim is still ours to give back.
+                    dispDim = com.Track(sketchFeature.GetNextDisplayDimension(dispDim) as DisplayDimension);
                 }
-                dispDim = sketchFeature.GetNextDisplayDimension(dispDim) as DisplayDimension;
             }
         }
 
@@ -1686,38 +1764,51 @@ namespace VeradeAddin.Services
         /// </summary>
         private string EnsureShaftAxis(IModelDoc2 model, out Feature axis)
         {
-            axis = FindLastFeatureOfType(model, "RefAxis");
+            axis = FindLastFeatureOfType(model, "RefAxis"); // caller owns the axis
             if (axis != null) return null;
 
-            Feature first = null, second = null;
-            var feature = model.FirstFeature() as Feature;
-            while (feature != null && second == null)
+            using (var com = new ComScope())
             {
-                if (feature.GetTypeName2() == "RefPlane")
+                Feature first = null, second = null;
+                var feature = com.Track(model.FirstFeature() as Feature);
+                while (feature != null && second == null)
                 {
-                    if (first == null) first = feature;
-                    else second = feature;
+                    if (feature.GetTypeName2() == "RefPlane")
+                    {
+                        if (first == null) first = feature;
+                        else second = feature;
+                    }
+                    feature = com.Track(feature.GetNextFeature() as Feature);
                 }
-                feature = feature.GetNextFeature() as Feature;
-            }
-            if (first == null || second == null) return "no se encontraron los planos para crear el eje de referencia.";
+                if (first == null || second == null) return "no se encontraron los planos para crear el eje de referencia.";
 
-            model.ClearSelection2(true);
-            ((Entity)first).Select4(true, null);
-            ((Entity)second).Select4(true, null);
-            model.InsertAxis2(true);
+                model.ClearSelection2(true);
+                ((Entity)first).Select4(true, null);
+                ((Entity)second).Select4(true, null);
+                model.InsertAxis2(true);
+            }
+
             axis = FindLastFeatureOfType(model, "RefAxis");
             return axis == null ? "SolidWorks no pudo crear el eje de referencia." : null;
         }
 
+        /// <summary>Last feature of the given type; the match is handed to the caller, the rest released.</summary>
         private static Feature FindLastFeatureOfType(IModelDoc2 model, string typeName)
         {
             Feature found = null;
             var feature = model.FirstFeature() as Feature;
             while (feature != null)
             {
-                if (feature.GetTypeName2() == typeName) found = feature;
-                feature = feature.GetNextFeature() as Feature;
+                bool match = feature.GetTypeName2() == typeName;
+                if (match)
+                {
+                    ComRelease.Release(found);
+                    found = feature;
+                }
+
+                var next = feature.GetNextFeature() as Feature;
+                if (!match) ComRelease.Release(feature);
+                feature = next;
             }
             return found;
         }

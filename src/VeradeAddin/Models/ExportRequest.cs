@@ -18,5 +18,11 @@ namespace VeradeAddin.Models
 
         /// <summary>Text placed after the base file name (empty = none).</summary>
         public string Suffix { get; set; }
+
+        /// <summary>
+        /// When true an already existing output file is replaced; when false that format is skipped
+        /// and reported as "ya existe".
+        /// </summary>
+        public bool Overwrite { get; set; }
     }
 }
