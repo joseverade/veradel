@@ -50,6 +50,8 @@ namespace VeradeAddin.Services
         private bool _advReadPending;
         // Holes already reported to the log, so the diagnostic is written once per hole, not per click.
         private readonly HashSet<string> _advLogged = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Same, for the cosmetic threads found under a cut feature.
+        private readonly HashSet<string> _threadLogged = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         public bool IsHolePickModeActive()
         {
@@ -132,6 +134,7 @@ namespace VeradeAddin.Services
             _resolveAttempted.Clear();
             _advElementCache.Clear();
             _advLogged.Clear();
+            _threadLogged.Clear();
             _advReadPending = false;
         }
 
@@ -321,15 +324,24 @@ namespace VeradeAddin.Services
                 if (d.Lines.Count > 0) return d;
             }
 
+            double boreDia = CylinderDiameter(face); // metres, 0 when not a cylinder
+
+            // A cosmetic thread added by hand to a plain cut hangs UNDER that cut in the tree, so it is
+            // looked up from the clicked face's OWN feature and tied back to that face. `plain` comes
+            // back true when the feature's threads were all identified and NONE of them is this hole's:
+            // the hole is then genuinely unthreaded, and the part-wide scan must not run and lend it the
+            // thread of the hole next to it.
+            bool plain;
+            var scoped = FindThreadOnFace(feat, face, boreDia, out plain);
+
             // Fallback: measure the cylinder and try to recover a thread callout from a sibling
             // cosmetic-thread feature whose nominal diameter matches the bore.
-            double boreDia = CylinderDiameter(face); // metres, 0 when not a cylinder
             if (boreDia <= 0)
             {
-                return DescribeCone(face, comp);
+                return DescribeCone(face, comp, scoped, plain);
             }
 
-            var match = FindCosmeticThreadByDiameter(comp, boreDia);
+            var match = scoped ?? (plain ? null : FindCosmeticThreadByDiameter(comp, boreDia));
             if (match != null)
             {
                 string label = ThreadLabel(match);
@@ -340,6 +352,9 @@ namespace VeradeAddin.Services
                 if (label != null) d.Add(tapped ? "Rosca" : "Para rosca", label);
                 if (match.NominalDia > 0) d.Add("Ø nominal", Mm(match.NominalDia));
                 d.Add("Ø Agujero", Mm(boreDia));
+                // Only the threaded bore has a thread depth; on a clearance hole it would be the depth
+                // of somebody else's thread.
+                if (tapped && match.Depth > 0) d.Add("Profundidad", Mm(match.Depth));
                 return d;
             }
 
@@ -352,9 +367,11 @@ namespace VeradeAddin.Services
         /// <summary>
         /// Conical face with no feature data behind it: a countersink cut by hand, or the head of a
         /// countersunk screw. Both extreme diameters plus the included angle are reported, and the
-        /// small end (= shank Ø on a screw) is used to look for a matching cosmetic thread.
+        /// small end (= shank Ø on a screw) is used to look for a matching cosmetic thread — unless
+        /// <paramref name="scoped"/> already carries the thread of the face's own feature, or
+        /// <paramref name="plain"/> says that feature's threads belong to other holes of the same cut.
         /// </summary>
-        private HoleDescription DescribeCone(IFace2 face, Component2 comp)
+        private HoleDescription DescribeCone(IFace2 face, Component2 comp, ThreadMatch scoped, bool plain)
         {
             double dMin, dMax;
             if (!ConeDiameters(face, out dMin, out dMax))
@@ -363,7 +380,7 @@ namespace VeradeAddin.Services
             }
 
             var d = new HoleDescription();
-            var match = FindCosmeticThreadByDiameter(comp, dMin);
+            var match = scoped ?? (plain ? null : FindCosmeticThreadByDiameter(comp, dMin));
             if (match != null)
             {
                 string label = ThreadLabel(match);
@@ -1224,10 +1241,240 @@ namespace VeradeAddin.Services
                 {
                     Callout = Safe(() => data.ThreadCallout),
                     Size = Safe(() => data.Size),
-                    NominalDia = nominal
+                    NominalDia = nominal,
+                    Depth = SafeD(() => data.BlindDepth)
                 };
             }
             finally { ComRelease.Release(def); }
+        }
+
+        // ---- cosmetic thread of the clicked face's own feature -------------------------------------
+
+        // How sure we are that a cosmetic thread is the CLICKED face's, best first.
+        private const int RankOnFace = 0;     // its edge touches this face
+        private const int RankCoaxial = 1;    // its edge is coaxial with this face
+        private const int RankOtherHole = 2;  // its edge was read, and it is somewhere else
+        private const int RankUnknown = 3;    // its edge could not be read: no evidence either way
+
+        /// <summary>A cosmetic thread found under the clicked face's feature, with how sure we are.</summary>
+        private sealed class ScopedThread
+        {
+            public ThreadMatch Match;
+            public int Rank;
+        }
+
+        /// <summary>
+        /// The cosmetic thread of the face the user clicked, read from that face's OWN feature instead
+        /// of by scanning the part for a thread of a similar diameter. This is the case of a thread
+        /// added by hand to a plain cut: SolidWorks nests it under the cut, so
+        /// <see cref="IFeature.GetFirstSubFeature"/> from the face's owner finds it.
+        ///
+        /// One cut can bore SEVERAL holes and carry one thread per hole, so every thread is collected
+        /// and tied back to the clicked face through <see cref="ICosmeticThreadFeatureData.Edge"/> (see
+        /// <see cref="RankThreadEdge"/>) — the whole point being that the thread of the hole NEXT TO
+        /// the clicked one is not reported on it.
+        ///
+        /// <paramref name="plain"/> comes back true when every thread of the feature was located and
+        /// none of them is on this face: the hole is then unthreaded as a matter of fact, and the caller
+        /// must NOT fall back to the part-wide diameter scan — that scan has no idea which hole is which
+        /// and would hand back the sibling's thread again.
+        /// </summary>
+        private ThreadMatch FindThreadOnFace(IFeature feat, IFace2 face, double bore, out bool plain)
+        {
+            plain = false;
+            if (feat == null || face == null) return null;
+
+            var found = new List<ScopedThread>();
+            CollectScopedThreads(found, feat, face, HoleAxis(face), 0);
+            if (found.Count == 0) return null;
+
+            LogScopedThreads(feat, found);
+
+            // Best evidence wins; between equally-evidenced threads the nearest nominal diameter does.
+            ScopedThread best = null;
+            foreach (var t in found)
+            {
+                if (t.Rank > RankCoaxial) continue;
+                if (best == null || t.Rank < best.Rank
+                    || (t.Rank == best.Rank && DiaCost(t, bore) < DiaCost(best, bore)))
+                {
+                    best = t;
+                }
+            }
+            if (best != null) return best.Match;
+
+            // Nothing is on this face. Every thread accounted for -> the hole is plain, full stop.
+            bool blind = false;
+            foreach (var t in found)
+            {
+                if (t.Rank == RankUnknown) { blind = true; break; }
+            }
+            if (!blind)
+            {
+                plain = true;
+                return null;
+            }
+
+            // Some edge could not be read, so absence of a match proves nothing: fall back to the
+            // diameter, with the same tolerance the part-wide scan uses, but still restricted to the
+            // threads of THIS feature. Anything wider than nominal is clearance, not a thread.
+            foreach (var t in found)
+            {
+                if (t.Rank != RankUnknown || t.Match.NominalDia <= 0 || bore <= 0) continue;
+                if (Math.Abs(t.Match.NominalDia - bore) > bore * 0.25 + 0.0005) continue;
+                if (best == null || DiaCost(t, bore) < DiaCost(best, bore)) best = t;
+            }
+            return best != null ? best.Match : null;
+        }
+
+        /// <summary>
+        /// Writes what the scoped search had to work with, once per feature: which threads hang under it
+        /// and — the part that decides everything — whether their edge could be read at all. An
+        /// unreadable edge is the one case where the search cannot tell a plain hole from a threaded one.
+        /// </summary>
+        private void LogScopedThreads(IFeature feat, List<ScopedThread> found)
+        {
+            string name = Safe(() => feat.Name);
+            if (string.IsNullOrEmpty(name) || !_threadLogged.Add(name)) return;
+
+            var parts = new List<string>();
+            foreach (var t in found)
+            {
+                parts.Add((ThreadLabel(t.Match) ?? "?") + " Ø" + Mm(t.Match.NominalDia) +
+                          (t.Rank == RankUnknown ? " (arista ilegible)" : " (arista legible)"));
+            }
+            _log.Log("IdentificarRosca", "Assembly", LogOutcome.Success,
+                "Roscas cosméticas bajo " + name + ": " + found.Count, string.Join(" | ", parts));
+        }
+
+        private static double DiaCost(ScopedThread t, double bore)
+        {
+            if (bore <= 0 || t.Match.NominalDia <= 0) return 0;
+            return Math.Abs(t.Match.NominalDia - bore);
+        }
+
+        /// <summary>
+        /// Every cosmetic thread under <paramref name="feat"/>, ranked against the clicked face. The
+        /// sub-tree is walked (the thread can hang one or two levels down) and each sub-feature is
+        /// probed by CAST rather than by <c>GetTypeName2</c>: the name is not reliable, and the cast
+        /// costs the same. Mirrors <see cref="CollectThreadsInto"/>, including its release order.
+        /// </summary>
+        private static void CollectScopedThreads(List<ScopedThread> into, IFeature feat, IFace2 face, double[] axis, int depth)
+        {
+            if (feat == null || depth > 4) return;
+
+            var sub = Try(() => feat.GetFirstSubFeature()) as IFeature;
+            while (sub != null)
+            {
+                var cur = sub;
+
+                object def = Try(() => cur.GetDefinition());
+                var data = def as ICosmeticThreadFeatureData;
+                if (data != null)
+                {
+                    double nominal = SafeD(() => data.Diameter);
+                    if (nominal > 0)
+                    {
+                        into.Add(new ScopedThread
+                        {
+                            Rank = RankThreadEdge(data, face, axis),
+                            Match = new ThreadMatch
+                            {
+                                Callout = Safe(() => data.ThreadCallout),
+                                Size = Safe(() => data.Size),
+                                NominalDia = nominal,
+                                Depth = SafeD(() => data.BlindDepth)
+                            }
+                        });
+                    }
+                }
+                else
+                {
+                    CollectScopedThreads(into, cur, face, axis, depth + 1);
+                }
+
+                sub = Try(() => cur.GetNextSubFeature()) as IFeature;
+                ComRelease.Release(def);
+                ComRelease.Release(cur);
+            }
+        }
+
+        /// <summary>
+        /// How strongly a cosmetic thread belongs to the clicked face, from the edge it was applied to.
+        ///
+        /// The edge's two adjacent faces are the direct answer, but they only work when the thread sits
+        /// on the mouth of the bore itself: chamfer a tapped hole and the thread's edge is shared by the
+        /// top face and the CHAMFER, not by the bore, so the clicked cylinder is not adjacent to it.
+        /// A non-match therefore never rejects the thread — it falls back to comparing the edge's own
+        /// axis with the face's, which survives chamfers and still tells two holes of the same cut
+        /// apart.
+        ///
+        /// <see cref="ICosmeticThreadFeatureData.Edge"/> may also come back null, because feature-data
+        /// properties that return entities normally need <c>AccessSelections</c> first — which rolls the
+        /// model back and drops the selection, so it is NEVER called here (see
+        /// <see cref="ScheduleAdvancedRead"/> for what that costs). Unreadable edge = no evidence.
+        /// </summary>
+        private static int RankThreadEdge(ICosmeticThreadFeatureData data, IFace2 face, double[] axis)
+        {
+            using (var com = new ComScope())
+            {
+                var edge = com.Track(Try(() => data.Edge) as IEdge);
+                if (edge == null) return RankUnknown;
+
+                // Both faces are released even when one of them IS the clicked face: the array carries
+                // its own reference count, separate from the caller's.
+                var faces = com.TrackAll(Try(() => edge.GetTwoAdjacentFaces2()) as object[]);
+                if (faces != null)
+                {
+                    foreach (var o in faces)
+                    {
+                        var f = o as IFace2;
+                        if (f != null && SameFace(face, f)) return RankOnFace;
+                    }
+                }
+
+                return AxisVerdict(edge, axis);
+            }
+        }
+
+        /// <summary>
+        /// Whether the thread's edge runs along the clicked face's own axis — the same test
+        /// <see cref="CoaxialFaces"/> applies to faces. A NEGATIVE answer is what tells one hole of a
+        /// multi-hole cut from another, so it is only given when the comparison could really be made:
+        /// no axis, no circular edge and no usable parameters all report
+        /// <see cref="RankUnknown"/> instead of pretending the thread is somebody else's.
+        /// </summary>
+        private static int AxisVerdict(IEdge edge, double[] axis)
+        {
+            if (axis == null) return RankUnknown;
+
+            using (var com = new ComScope())
+            {
+                var curve = com.Track(Try(() => edge.GetCurve()) as ICurve);
+                if (curve == null || !curve.IsCircle()) return RankUnknown;
+
+                var cp = curve.CircleParams as double[]; // [cx,cy,cz, ax,ay,az, radius]
+                if (cp == null || cp.Length < 6) return RankUnknown;
+
+                double len = Math.Sqrt(cp[3] * cp[3] + cp[4] * cp[4] + cp[5] * cp[5]);
+                if (len < 1e-12) return RankUnknown;
+
+                var other = new[] { cp[0], cp[1], cp[2], cp[3] / len, cp[4] / len, cp[5] / len };
+                bool coaxial = Math.Abs(other[3] * axis[3] + other[4] * axis[4] + other[5] * axis[5]) >= 0.999
+                    && AxisOffset(other, axis) <= 1e-5;
+                return coaxial ? RankCoaxial : RankOtherHole;
+            }
+        }
+
+        /// <summary>
+        /// Same face? <see cref="IFace2.IsSame"/> is the API's own answer, but it is asked SECOND: the
+        /// pointer comparison already used across this file is free and cannot throw.
+        /// </summary>
+        private static bool SameFace(IFace2 a, IFace2 b)
+        {
+            if (a == null || b == null) return false;
+            if (SameCom(a, b)) return true;
+            try { return a.IsSame(b); } catch { return false; }
         }
 
         // ---- sibling cosmetic-thread lookup by diameter --------------------------------------------
@@ -1237,6 +1484,7 @@ namespace VeradeAddin.Services
             public string Callout;
             public string Size;
             public double NominalDia; // metres
+            public double Depth;      // metres, 0 when through / unknown
         }
 
         /// <summary>
