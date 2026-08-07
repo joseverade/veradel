@@ -52,6 +52,8 @@ namespace VeradeAddin.Services
         private readonly HashSet<string> _advLogged = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         // Same, for the cosmetic threads found under a cut feature.
         private readonly HashSet<string> _threadLogged = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Same, for the seed operation recovered from a matriz (pattern / mirror) feature.
+        private readonly HashSet<string> _seedLogged = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         public bool IsHolePickModeActive()
         {
@@ -135,6 +137,7 @@ namespace VeradeAddin.Services
             _advElementCache.Clear();
             _advLogged.Clear();
             _threadLogged.Clear();
+            _seedLogged.Clear();
             _advReadPending = false;
         }
 
@@ -278,29 +281,47 @@ namespace VeradeAddin.Services
             }
         }
 
+        /// <summary>
+        /// Decides WHICH feature holds the hole's data before describing it.
+        ///
+        /// A matriz (pattern) or a simetría repeats a hole, and every instance it creates belongs to the
+        /// MATRIZ: the clicked face's owner is "MatrizLineal1", whose definition is not a hole of any
+        /// kind, so the thread would be lost and only the measured bore reported — an M8 tapped hole
+        /// reading "Ø8". The seed operation the matriz absorbed is recovered (see
+        /// <see cref="SeedHoleFeature"/>) and used as the source of the data, while the OWNER stays the
+        /// reference for everything measured off the model: the instance in front of the user is what
+        /// carries the real geometry.
+        /// </summary>
         private HoleDescription DescribeHole(ComScope com, IFace2 face, IEdge edge, Component2 comp)
         {
-            var d = DescribeHoleCore(com, face, edge, comp);
+            IFeature owner = com.Track(face != null ? face.GetFeature() as IFeature : null);
+            string ownerType = owner != null ? Safe(() => owner.GetTypeName2()) : null;
+            bool patterned = IsPatternType(ownerType);
+            IFeature seed = patterned ? com.Track(SeedHoleFeature(owner, face)) : null;
 
-            // A mirrored hole's face belongs to the mirror feature, not to the original Hole Wizard /
-            // cosmetic thread, so everything we report about it is inferred from the source hole and may
-            // not match reality. Flag it so the user does not trust the numbers blindly.
-            if (d != null && d.Lines.Count > 0 && IsMirroredFeature(face))
+            var d = DescribeHoleCore(com, face, edge, comp, owner, seed ?? owner, patterned);
+            if (d == null || d.Lines.Count == 0) return d;
+
+            if (patterned)
             {
-                d.Add("Simétrica", "datos no reales");
+                bool mirror = ownerType.IndexOf("Mirror", StringComparison.OrdinalIgnoreCase) >= 0;
+                // Where the data came from, so the user can tell it apart from what was measured. With
+                // no seed everything is inferred from the geometry alone and must not be trusted blindly.
+                if (seed != null) d.Add(mirror ? "Simetría de" : "Matriz de", Safe(() => seed.Name) ?? "?");
+                else d.Add(mirror ? "Simétrica" : "Matriz", mirror ? "datos no reales" : "datos inferidos");
             }
             return d;
         }
 
-        private HoleDescription DescribeHoleCore(ComScope com, IFace2 face, IEdge edge, Component2 comp)
+        private HoleDescription DescribeHoleCore(ComScope com, IFace2 face, IEdge edge, Component2 comp,
+                                                 IFeature owner, IFeature data, bool patterned)
         {
             var d = new HoleDescription();
 
-            IFeature feat = com.Track(face != null ? face.GetFeature() as IFeature : null);
             object def = null;
-            if (feat != null)
+            if (data != null)
             {
-                try { def = com.Track(feat.GetDefinition()); } catch { def = null; }
+                try { def = com.Track(data.GetDefinition()); } catch { def = null; }
             }
 
             var wiz = def as IWizardHoleFeatureData2;
@@ -313,7 +334,7 @@ namespace VeradeAddin.Services
             var adv = def as IAdvancedHoleFeatureData;
             if (adv != null)
             {
-                FillFromAdvancedHole(com, d, feat, face, comp);
+                FillFromAdvancedHole(com, d, owner, data, face, comp);
                 if (d.Lines.Count > 0) return d;
             }
 
@@ -332,7 +353,7 @@ namespace VeradeAddin.Services
             // the hole is then genuinely unthreaded, and the part-wide scan must not run and lend it the
             // thread of the hole next to it.
             bool plain;
-            var scoped = FindThreadOnFace(feat, face, boreDia, out plain);
+            var scoped = FindThreadOnFace(data, face, boreDia, patterned, out plain);
 
             // Fallback: measure the cylinder and try to recover a thread callout from a sibling
             // cosmetic-thread feature whose nominal diameter matches the bore.
@@ -553,12 +574,16 @@ namespace VeradeAddin.Services
         /// When the elements cannot be read the stretches are still described from the model alone,
         /// with the thread designations recovered from the feature's own cosmetic threads.
         /// </summary>
-        private void FillFromAdvancedHole(ComScope com, HoleDescription d, IFeature feat, IFace2 face, Component2 comp)
+        private void FillFromAdvancedHole(ComScope com, HoleDescription d, IFeature owner, IFeature data,
+                                          IFace2 face, Component2 comp)
         {
-            var segs = MeasureHoleStack(feat, face);
+            // Measured against the face's OWN feature (the matriz, on a patterned instance) and read from
+            // the feature that defines the hole (its seed): the stretches in front of the user belong to
+            // the instance, the element stack only exists on the original.
+            var segs = MeasureHoleStack(owner, face);
             if (segs.Count == 0) return;
 
-            var els = GetAdvancedElements(com, feat, face, comp);
+            var els = GetAdvancedElements(com, data, face, comp);
             if (els.Count > 0)
             {
                 MatchElementsByPosition(segs, els);
@@ -568,7 +593,7 @@ namespace VeradeAddin.Services
                 OrderWidestFirst(segs);
             }
 
-            MatchThreadsToSegments(segs, CollectThreads(feat));
+            MatchThreadsToSegments(segs, CollectThreads(data));
             ClassifySegments(segs);
 
             HoleSegment hit = null;
@@ -1278,14 +1303,20 @@ namespace VeradeAddin.Services
         /// none of them is on this face: the hole is then unthreaded as a matter of fact, and the caller
         /// must NOT fall back to the part-wide diameter scan — that scan has no idea which hole is which
         /// and would hand back the sibling's thread again.
+        ///
+        /// <paramref name="patterned"/> switches that evidence OFF: on an instance of a matriz the
+        /// threads hang from the SEED operation, so their edges sit on the original hole and the test
+        /// would reject every one of them as "somebody else's" — declaring a tapped instance plain. The
+        /// axis is then deliberately NOT handed on, which is what makes <see cref="RankThreadEdge"/>
+        /// report "no evidence" and leaves the threads to be matched by diameter, all a copy can say.
         /// </summary>
-        private ThreadMatch FindThreadOnFace(IFeature feat, IFace2 face, double bore, out bool plain)
+        private ThreadMatch FindThreadOnFace(IFeature feat, IFace2 face, double bore, bool patterned, out bool plain)
         {
             plain = false;
             if (feat == null || face == null) return null;
 
             var found = new List<ScopedThread>();
-            CollectScopedThreads(found, feat, face, HoleAxis(face), 0);
+            CollectScopedThreads(found, feat, face, patterned ? null : HoleAxis(face), 0);
             if (found.Count == 0) return null;
 
             LogScopedThreads(feat, found);
@@ -1540,24 +1571,157 @@ namespace VeradeAddin.Services
             return best;
         }
 
+        // ---- matrices y simetrías --------------------------------------------------------------------
+
         /// <summary>
-        /// True when the face is produced by a mirror feature — either a mirrored body ("por sólido")
-        /// or a mirrored feature ("por operación"). Both cases give the face a mirror-type owning
-        /// feature ("Mirror...") instead of the real hole/thread feature.
+        /// Whether the owning feature is a matriz — every repetition SolidWorks knows carries "Pattern"
+        /// in its type name ("LPattern", "CirPattern", "CurvePattern", "TablePattern", "FillPattern",
+        /// "Derived...") — or a simetría ("MirrorPattern" for a mirrored operation, "MirrorSolid" for a
+        /// mirrored body). A face owned by one of these is a COPY: the hole itself is defined elsewhere.
+        ///
+        /// Sheet metal's "FlatPattern" is the one type that carries the word without repeating anything,
+        /// so it is excluded: its faces are the unfolded body's own.
         /// </summary>
-        private static bool IsMirroredFeature(IFace2 face)
+        private static bool IsPatternType(string type)
         {
-            if (face == null) return false;
-            var feat = face.GetFeature() as IFeature;
-            if (feat == null) return false;
+            if (string.IsNullOrEmpty(type)) return false;
+            if (type.IndexOf("FlatPattern", StringComparison.OrdinalIgnoreCase) >= 0) return false;
+            return type.IndexOf("Pattern", StringComparison.OrdinalIgnoreCase) >= 0
+                || type.IndexOf("Mirror", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        /// <summary>
+        /// The operation a matriz repeats. A pattern ABSORBS what it patterns, so the seed hangs from it
+        /// in the tree and <see cref="IFeature.GetFirstSubFeature"/> reaches it — no
+        /// <c>AccessSelections</c>, so the model is never rolled back and the live callout survives (see
+        /// <see cref="ScheduleAdvancedRead"/> for what that would cost). A matriz of a matriz is walked
+        /// through, and when several operations are repeated at once the one whose OWN geometry has a
+        /// face of the clicked diameter wins, so a matriz of "taladro + saliente" still answers about
+        /// the hole. The returned reference belongs to the CALLER; null when nothing hole-like hangs
+        /// from the matriz (a mirrored body, typically, which absorbs no operation at all).
+        /// </summary>
+        private IFeature SeedHoleFeature(IFeature pattern, IFace2 face)
+        {
+            var seeds = new List<IFeature>();
+            CollectSeedHoles(seeds, pattern, 0);
+
+            IFeature best = null;
+            double bestCost = double.MaxValue;
+            double dia = FaceDiameter(face);
+            foreach (var f in seeds)
+            {
+                double cost = SeedCost(f, dia);
+                if (cost >= bestCost) continue;
+                bestCost = cost;
+                best = f;
+            }
+
+            // Only the winner outlives this call.
+            foreach (var f in seeds)
+            {
+                if (!ReferenceEquals(f, best)) ComRelease.Release(f);
+            }
+
+            LogSeed(pattern, best, seeds.Count);
+            return best;
+        }
+
+        /// <summary>
+        /// Every operation under <paramref name="feat"/> that can define a hole. Kept features are handed
+        /// to the caller; the rest are released as the walk steps past them, exactly like
+        /// <see cref="CollectThreadsInto"/>.
+        /// </summary>
+        private static void CollectSeedHoles(List<IFeature> into, IFeature feat, int depth)
+        {
+            if (feat == null || depth > 4) return;
+
+            var sub = Try(() => feat.GetFirstSubFeature()) as IFeature;
+            while (sub != null)
+            {
+                var cur = sub;
+
+                bool keep = IsHoleSource(cur);
+                if (keep) into.Add(cur);
+                else CollectSeedHoles(into, cur, depth + 1); // a nested matriz, or a cut wrapping a thread
+
+                sub = Try(() => cur.GetNextSubFeature()) as IFeature;
+                if (!keep) ComRelease.Release(cur);
+            }
+        }
+
+        /// <summary>
+        /// Whether the feature defines a hole: a hole wizard, an advanced hole or a cosmetic thread by
+        /// its data, or — the manually drilled and tapped case — any cut carrying a cosmetic thread
+        /// underneath. The CUT is what gets kept there, not the thread it holds, so an instance is
+        /// described through the very same path as the seed hole the user could click instead.
+        /// </summary>
+        private static bool IsHoleSource(IFeature f)
+        {
+            object def = Try(() => f.GetDefinition());
             try
             {
-                string type = null;
-                try { type = feat.GetTypeName2(); } catch { }
-                return !string.IsNullOrEmpty(type)
-                    && type.IndexOf("Mirror", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (def is IWizardHoleFeatureData2 || def is IAdvancedHoleFeatureData
+                    || def is ICosmeticThreadFeatureData)
+                {
+                    return true;
+                }
             }
-            finally { ComRelease.Release(feat); }
+            finally { ComRelease.Release(def); }
+
+            return CollectThreads(f).Count > 0;
+        }
+
+        /// <summary>
+        /// How far a candidate's own geometry is from the clicked instance's: the smallest difference
+        /// between the diameter of any cylindrical / conical face the operation cut and
+        /// <paramref name="dia"/>. Measured instead of read, so it works the same for a wizard, an
+        /// advanced hole or a plain cut. Candidates with no geometry to compare (a standalone cosmetic
+        /// thread) score a small constant: usable, but beaten by any real match.
+        /// </summary>
+        private static double SeedCost(IFeature seed, double dia)
+        {
+            if (dia <= 0) return 0.001;
+
+            double best = double.MaxValue;
+            using (var com = new ComScope())
+            {
+                var faces = com.TrackAll(Try(() => seed.GetFaces()) as object[]);
+                if (faces != null)
+                {
+                    foreach (var o in faces)
+                    {
+                        double d = FaceDiameter(o as IFace2);
+                        if (d <= 0) continue;
+                        double cost = Math.Abs(d - dia);
+                        if (cost < best) best = cost;
+                    }
+                }
+            }
+            return best == double.MaxValue ? 0.001 : best;
+        }
+
+        /// <summary>Diameter of a cylindrical face, widest diameter of a conical one, or 0.</summary>
+        private static double FaceDiameter(IFace2 f)
+        {
+            double dia = CylinderDiameter(f);
+            if (dia > 0) return dia;
+
+            double dMin, dMax;
+            return ConeDiameters(f, out dMin, out dMax) ? dMax : 0;
+        }
+
+        /// <summary>Which operation a matriz was read through, once per matriz.</summary>
+        private void LogSeed(IFeature pattern, IFeature seed, int candidates)
+        {
+            string name = Safe(() => pattern.Name);
+            if (string.IsNullOrEmpty(name) || !_seedLogged.Add(name)) return;
+
+            _log.Log("IdentificarRosca", "Assembly",
+                seed != null ? LogOutcome.Success : LogOutcome.Cancel,
+                seed != null
+                    ? "Matriz " + name + ": datos leídos de " + (Safe(() => seed.Name) ?? "?")
+                    : "Matriz " + name + ": sin operación de origen legible",
+                candidates + " candidata(s)");
         }
 
         /// <summary>True when the component is loaded lightweight (feature/thread data unavailable).</summary>
