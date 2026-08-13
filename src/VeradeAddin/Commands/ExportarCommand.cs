@@ -90,15 +90,15 @@ namespace VeradeAddin.Commands
             int ok = 0, fail = 0;
             foreach (var item in result.Items)
             {
-                if (item.Success)
+                sb.AppendLine(item.Format + " -> " + Describe(item));
+
+                if (item.Status == ExportStatus.Ok)
                 {
                     ok++;
-                    sb.AppendLine("[OK] " + item.Format + " → " + item.Path);
                 }
-                else
+                else if (item.Status != ExportStatus.NotSelected)
                 {
                     fail++;
-                    sb.AppendLine("[ERROR] " + item.Format + ": " + item.Error);
                     if (errorDetail.Length > 0) errorDetail.Append(" | ");
                     errorDetail.Append(item.Format + ": " + item.Error);
                 }
@@ -115,6 +115,33 @@ namespace VeradeAddin.Commands
             }
 
             _dialog.ShowMessage(Name, sb.ToString());
+        }
+
+        /// <summary>One short line per format, the reason included when it did not work.</summary>
+        private static string Describe(ExportItem item)
+        {
+            switch (item.Status)
+            {
+                case ExportStatus.Ok:
+                    return "OK";
+
+                case ExportStatus.NotSelected:
+                    return "No seleccionado";
+
+                case ExportStatus.AlreadyExists:
+                    return "Ya existe (no se reemplazó)";
+
+                case ExportStatus.ReplaceFailed:
+                    return "No se pudo reemplazar" + Reason(item);
+
+                default:
+                    return "Error" + Reason(item);
+            }
+        }
+
+        private static string Reason(ExportItem item)
+        {
+            return string.IsNullOrEmpty(item.Error) ? string.Empty : ": " + item.Error;
         }
     }
 }

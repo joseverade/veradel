@@ -5,19 +5,22 @@ using VeradeAddin.Models;
 namespace VeradeAddin.UI
 {
     /// <summary>
-    /// "Exportar" step 1: a modal dialog with one checkbox per format (PDF / DWG / STEP). STEP is
-    /// disabled — with the reason shown — when the referenced model can't be exported safely
-    /// (no model, or an assembly with more than 10 components).
+    /// "Exportar" step 1: a modal dialog with one checkbox per format (PDF / DWG / STEP), plus the
+    /// "replace existing files" switch. STEP is disabled — with the reason shown — when the
+    /// referenced model can't be exported safely (no model, or an assembly with more than 10
+    /// components).
     /// </summary>
     internal sealed class ExportOptionsDialog : Form
     {
         private readonly CheckBox _pdf;
         private readonly CheckBox _dwg;
         private readonly CheckBox _step;
+        private readonly CheckBox _overwrite;
 
         public bool Pdf { get { return _pdf.Checked; } }
         public bool Dwg { get { return _dwg.Checked; } }
         public bool Step { get { return _step.Checked && _step.Enabled; } }
+        public bool Overwrite { get { return _overwrite.Checked; } }
 
         public ExportOptionsDialog(DrawingExportInfo info)
         {
@@ -29,7 +32,7 @@ namespace VeradeAddin.UI
             ShowIcon = false;
             ShowInTaskbar = false;
             TopMost = true;
-            ClientSize = new Size(420, 250);
+            ClientSize = new Size(420, 300);
 
             var header = new Label
             {
@@ -68,18 +71,42 @@ namespace VeradeAddin.UI
                 Size = new Size(360, 34)
             };
 
+            var separator = new Label
+            {
+                BorderStyle = BorderStyle.Fixed3D,
+                Location = new Point(16, 172),
+                Size = new Size(388, 2)
+            };
+
+            _overwrite = new CheckBox
+            {
+                Text = "Reemplazar los archivos que ya existan",
+                AutoSize = true,
+                Checked = true,
+                Location = new Point(24, 186)
+            };
+
+            var overwriteNote = new Label
+            {
+                Text = "Si se desmarca, los formatos cuyo archivo ya exista se omiten.",
+                AutoSize = false,
+                ForeColor = Color.DimGray,
+                Location = new Point(44, 210),
+                Size = new Size(360, 18)
+            };
+
             var ok = new Button
             {
                 Text = "Siguiente",
                 DialogResult = DialogResult.OK,
-                Location = new Point(228, 206),
+                Location = new Point(228, 256),
                 Size = new Size(85, 28)
             };
             var cancel = new Button
             {
                 Text = "Cancelar",
                 DialogResult = DialogResult.Cancel,
-                Location = new Point(319, 206),
+                Location = new Point(319, 256),
                 Size = new Size(85, 28)
             };
 
@@ -98,6 +125,9 @@ namespace VeradeAddin.UI
             Controls.Add(_dwg);
             Controls.Add(_step);
             Controls.Add(stepNote);
+            Controls.Add(separator);
+            Controls.Add(_overwrite);
+            Controls.Add(overwriteNote);
             Controls.Add(ok);
             Controls.Add(cancel);
 

@@ -1,6 +1,7 @@
 using SolidWorks.Interop.sldworks;
 using SolidWorks.Interop.swconst;
 using System.Collections.Generic;
+using VeradeAddin.Infrastructure;
 using VeradeAddin.Models;
 
 namespace VeradeAddin.Services
@@ -17,98 +18,105 @@ namespace VeradeAddin.Services
     {
         public bool IsActivePartEmpty()
         {
-            var model = _sw.IActiveDoc2 as IModelDoc2;
-            if (model == null || model.GetType() != (int)swDocumentTypes_e.swDocPART)
+            using (var com = new ComScope())
             {
-                return false;
-            }
-
-            // "Empty" = no geometry yet. We test for the two things that mean the user already
-            // started modelling: any body (solid/surface/wire/...) or any sketch in the tree. This is
-            // robust across SolidWorks versions/languages, unlike whitelisting default feature names
-            // (a fresh part carries many version-specific default features that would falsely count).
-            var part = model as PartDoc;
-            if (part != null)
-            {
-                var bodies = part.GetBodies2((int)swBodyType_e.swAllBodies, false) as object[];
-                if (bodies != null && bodies.Length > 0)
+                var model = com.Track(_sw.IActiveDoc2 as IModelDoc2);
+                if (model == null || model.GetType() != (int)swDocumentTypes_e.swDocPART)
                 {
                     return false;
                 }
-            }
 
-            var feature = model.FirstFeature() as Feature;
-            while (feature != null)
-            {
-                if (feature.GetTypeName2() == "ProfileFeature") // a sketch
+                // "Empty" = no geometry yet. We test for the two things that mean the user already
+                // started modelling: any body (solid/surface/wire/...) or any sketch in the tree. This is
+                // robust across SolidWorks versions/languages, unlike whitelisting default feature names
+                // (a fresh part carries many version-specific default features that would falsely count).
+                var part = model as PartDoc;
+                if (part != null)
                 {
-                    return false;
+                    var bodies = com.TrackAll(part.GetBodies2((int)swBodyType_e.swAllBodies, false) as object[]);
+                    if (bodies != null && bodies.Length > 0)
+                    {
+                        return false;
+                    }
                 }
-                feature = feature.GetNextFeature() as Feature;
+
+                var feature = com.Track(model.FirstFeature() as Feature);
+                while (feature != null)
+                {
+                    if (feature.GetTypeName2() == "ProfileFeature") // a sketch
+                    {
+                        return false;
+                    }
+                    feature = com.Track(feature.GetNextFeature() as Feature);
+                }
+                return true;
             }
-            return true;
         }
 
         public string ClearActivePart()
         {
-            var model = _sw.IActiveDoc2 as IModelDoc2;
-            if (model == null || model.GetType() != (int)swDocumentTypes_e.swDocPART)
+            using (var com = new ComScope())
             {
-                return "No hay una pieza activa.";
-            }
-
-            // In a part tree every default feature (folders, planes, origin) comes BEFORE the origin
-            // or is the origin itself; all user modelling comes after it. So "clear" = delete every
-            // top-level feature past the origin, letting the delete absorb children (sketches inside
-            // revolves, etc.). Type-based, so it works whatever the UI language is.
-            var toDelete = new List<Feature>();
-            bool pastOrigin = false;
-            var feature = model.FirstFeature() as Feature;
-            while (feature != null)
-            {
-                if (pastOrigin)
+                var model = com.Track(_sw.IActiveDoc2 as IModelDoc2);
+                if (model == null || model.GetType() != (int)swDocumentTypes_e.swDocPART)
                 {
-                    toDelete.Add(feature);
+                    return "No hay una pieza activa.";
                 }
-                else if (feature.GetTypeName2() == "OriginProfileFeature")
-                {
-                    pastOrigin = true;
-                }
-                feature = feature.GetNextFeature() as Feature;
-            }
-            if (!pastOrigin)
-            {
-                return "No se encontró el origen de la pieza.";
-            }
-            if (toDelete.Count == 0)
-            {
-                return null; // already empty
-            }
 
-            model.ClearSelection2(true);
-            bool anySelected = false;
-            foreach (var f in toDelete)
-            {
-                anySelected |= f.Select2(true, 0);
-            }
-            if (!anySelected)
-            {
+                // In a part tree every default feature (folders, planes, origin) comes BEFORE the origin
+                // or is the origin itself; all user modelling comes after it. So "clear" = delete every
+                // top-level feature past the origin, letting the delete absorb children (sketches inside
+                // revolves, etc.). Type-based, so it works whatever the UI language is.
+                var toDelete = new List<Feature>();
+                bool pastOrigin = false;
+                var feature = com.Track(model.FirstFeature() as Feature);
+                while (feature != null)
+                {
+                    if (pastOrigin)
+                    {
+                        toDelete.Add(feature);
+                    }
+                    else if (feature.GetTypeName2() == "OriginProfileFeature")
+                    {
+                        pastOrigin = true;
+                    }
+                    feature = com.Track(feature.GetNextFeature() as Feature);
+                }
+                if (!pastOrigin)
+                {
+                    return "No se encontró el origen de la pieza.";
+                }
+                if (toDelete.Count == 0)
+                {
+                    return null; // already empty
+                }
+
                 model.ClearSelection2(true);
-                return "No se pudieron seleccionar las operaciones a eliminar.";
-            }
+                bool anySelected = false;
+                foreach (var f in toDelete)
+                {
+                    anySelected |= f.Select2(true, 0);
+                }
+                if (!anySelected)
+                {
+                    model.ClearSelection2(true);
+                    return "No se pudieron seleccionar las operaciones a eliminar.";
+                }
 
-            bool deleted = model.Extension.DeleteSelection2(
-                (int)(swDeleteSelectionOptions_e.swDelete_Absorbed | swDeleteSelectionOptions_e.swDelete_Children));
-            model.ClearSelection2(true);
-            model.EditRebuild3();
+                var ext = com.Track(model.Extension);
+                bool deleted = ext.DeleteSelection2(
+                    (int)(swDeleteSelectionOptions_e.swDelete_Absorbed | swDeleteSelectionOptions_e.swDelete_Children));
+                model.ClearSelection2(true);
+                model.EditRebuild3();
 
-            if (!deleted)
-            {
-                return "SolidWorks no pudo eliminar las operaciones existentes.";
+                if (!deleted)
+                {
+                    return "SolidWorks no pudo eliminar las operaciones existentes.";
+                }
+                return IsActivePartEmpty()
+                    ? null
+                    : "La pieza no quedó vacía tras eliminar las operaciones.";
             }
-            return IsActivePartEmpty()
-                ? null
-                : "La pieza no quedó vacía tras eliminar las operaciones.";
         }
 
         // ---- shared sketch/dimension helpers (used by the shaft builder) ---------------------------
@@ -125,12 +133,14 @@ namespace VeradeAddin.Services
         // one shot — the documented partner of AddToDB=true. Best-effort: never aborts the build.
         private static void ConstrainAll(SketchManager sketchMgr)
         {
+            Sketch sketch = null;
             try
             {
-                var sketch = sketchMgr.ActiveSketch;
+                sketch = sketchMgr.ActiveSketch;
                 if (sketch != null) sketch.ConstrainAll();
             }
             catch { }
+            finally { ComRelease.Release(sketch); }
         }
 
         private static SketchPoint StartPt(SketchSegment seg)
@@ -150,73 +160,78 @@ namespace VeradeAddin.Services
         private static void CoincidentToOrigin(IModelDoc2 model, SketchPoint pt)
         {
             if (pt == null) return;
-            try
+            using (var com = new ComScope())
             {
-                model.ClearSelection2(true);
-                var startpoint = pt.Select4(false, null);
-                var origin = model.Extension.SelectByID2("", "EXTSKETCHPOINT", 0, 0, 0, true, 0, null, 0);
-                if (origin && startpoint)
+                try
                 {
-                    model.SketchAddConstraints("sgCOINCIDENT");
+                    model.ClearSelection2(true);
+                    var startpoint = pt.Select4(false, null);
+                    var origin = com.Track(model.Extension)
+                        .SelectByID2("", "EXTSKETCHPOINT", 0, 0, 0, true, 0, null, 0);
+                    if (origin && startpoint)
+                    {
+                        model.SketchAddConstraints("sgCOINCIDENT");
+                    }
                 }
+                catch { }
+                finally { model.ClearSelection2(true); }
             }
-            catch { }
-            finally { model.ClearSelection2(true); }
         }
 
         // Coincident (point-on-face) between a sketch point and a model face picked by coordinate.
         // Anchors a cut sketch to the already-built body (end face, cylindrical face).
         private static void CoincidentPointToEdge(IModelDoc2 model, SketchPoint pt, double fx, double fy, double fz)
         {
-            if (pt == null) return;
-            try
-            {
-                model.ClearSelection2(true);
-                pt.Select4(false, null);
-                bool gotEdge = model.Extension.SelectByID2(
-                    "", "EDGE", fx, fy, fz, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
-                if (gotEdge)
-                {
-                    model.SketchAddConstraints("sgCOINCIDENT");
-                }
-            }
-            catch { }
-            finally { model.ClearSelection2(true); }
+            SelectPointToEntity(model, pt, "EDGE", fx, fy, fz);
         }
 
         private static void CoincidentPointToSilhouetteEdge(IModelDoc2 model, SketchPoint pt, double fx, double fy, double fz)
         {
+            SelectPointToEntity(model, pt, "SILHOUETTE", fx, fy, fz);
+        }
+
+        private static void SelectPointToEntity(
+            IModelDoc2 model, SketchPoint pt, string entityType, double fx, double fy, double fz)
+        {
             if (pt == null) return;
-            try
+            using (var com = new ComScope())
             {
-                model.ClearSelection2(true);
-                pt.Select4(false, null);
-                bool gotEdge = model.Extension.SelectByID2(
-                    "", "SILHOUETTE", fx, fy, fz, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
-                if (gotEdge)
+                try
                 {
-                    model.SketchAddConstraints("sgCOINCIDENT");
+                    model.ClearSelection2(true);
+                    pt.Select4(false, null);
+                    bool gotEdge = com.Track(model.Extension).SelectByID2(
+                        "", entityType, fx, fy, fz, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
+                    if (gotEdge)
+                    {
+                        model.SketchAddConstraints("sgCOINCIDENT");
+                    }
                 }
+                catch { }
+                finally { model.ClearSelection2(true); }
             }
-            catch { }
-            finally { model.ClearSelection2(true); }
         }
 
         private static void RestoreSketch(SketchManager sketchMgr, bool addToDbWas, bool displayWas)
         {
             // Never leave a sketch open and always restore the DB flags, even on error.
+            Sketch open = null;
             try
             {
                 sketchMgr.AddToDB = addToDbWas;
                 sketchMgr.DisplayWhenAdded = displayWas;
-                if (sketchMgr.ActiveSketch != null)
+                open = sketchMgr.ActiveSketch;
+                if (open != null)
                 {
                     sketchMgr.InsertSketch(true);
                 }
             }
             catch { }
+            finally { ComRelease.Release(open); }
         }
 
+        // Both walks below hand the match back to the caller, who owns it; every feature stepped past
+        // is released on the way so scanning the tree does not cost a reference per feature.
         private static Feature FirstRefPlane(IModelDoc2 model)
         {
             var feature = model.FirstFeature() as Feature;
@@ -226,7 +241,9 @@ namespace VeradeAddin.Services
                 {
                     return feature;
                 }
-                feature = feature.GetNextFeature() as Feature;
+                var next = feature.GetNextFeature() as Feature;
+                ComRelease.Release(feature);
+                feature = next;
             }
             return null;
         }
@@ -237,11 +254,16 @@ namespace VeradeAddin.Services
             var feature = model.FirstFeature() as Feature;
             while (feature != null)
             {
-                if (feature.GetTypeName2() == "ProfileFeature")
+                bool isSketch = feature.GetTypeName2() == "ProfileFeature";
+                if (isSketch)
                 {
+                    ComRelease.Release(found);
                     found = feature; // keep walking; we want the most recently added sketch
                 }
-                feature = feature.GetNextFeature() as Feature;
+
+                var next = feature.GetNextFeature() as Feature;
+                if (!isSketch) ComRelease.Release(feature);
+                feature = next;
             }
             return found;
         }
@@ -251,19 +273,25 @@ namespace VeradeAddin.Services
         private static void LengthDim(IModelDoc2 model, SketchSegment seg, double x, double y)
         {
             if (seg == null) return;
+            object dim = null;
             try
             {
                 model.ClearSelection2(true);
                 seg.Select4(false, null);
-                model.AddHorizontalDimension2(x, y, 0); // horizontal length, like the reference console
+                dim = model.AddHorizontalDimension2(x, y, 0); // horizontal length, like the reference console
             }
             catch { }
-            finally { model.ClearSelection2(true); }
+            finally
+            {
+                ComRelease.Release(dim);
+                model.ClearSelection2(true);
+            }
         }
 
         private static void DiameterDim(IModelDoc2 model, SketchSegment line, SketchSegment axis, double x, double y)
         {
             if (line == null || axis == null) return;
+            DisplayDimension display = null;
             try
             {
                 model.ClearSelection2(true);
@@ -271,11 +299,15 @@ namespace VeradeAddin.Services
                 // reference console). Reversed, AddDiameterDimension2 falls back to a radius.
                 line.Select4(true, null);
                 axis.Select4(true, null);    // line + centreline ⇒ AddDiameterDimension2 makes it a Ø dim
-                DisplayDimension display = (DisplayDimension)model.AddDiameterDimension2(x, y, 0); // was AddDimension2, which produced a radius
+                display = (DisplayDimension)model.AddDiameterDimension2(x, y, 0); // was AddDimension2, which produced a radius
                 display.Diametric = true;
             }
             catch { }
-            finally { model.ClearSelection2(true); }
+            finally
+            {
+                ComRelease.Release(display);
+                model.ClearSelection2(true);
+            }
         }
 
         // Horizontal distance from a body edge (selected by coordinate) to a sketch segment — used
@@ -283,16 +315,19 @@ namespace VeradeAddin.Services
         private void EdgeToSegDim(IModelDoc2 model, double edgeX, double edgeY, SketchSegment seg, double x, double y)
         {
             if (seg == null) return;
-            try
+            using (var com = new ComScope())
             {
-                model.ClearSelection2(true);
-                model.Extension.SelectByID2(
-                    "", "EDGE", edgeX, edgeY, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
-                seg.Select4(true, null);
-                model.AddHorizontalDimension2(x, y, 0); // horizontal position from the step edge
+                try
+                {
+                    model.ClearSelection2(true);
+                    com.Track(model.Extension).SelectByID2(
+                        "", "EDGE", edgeX, edgeY, 0, true, 0, null, (int)swSelectOption_e.swSelectOptionDefault);
+                    seg.Select4(true, null);
+                    com.Track(model.AddHorizontalDimension2(x, y, 0)); // horizontal position from the step edge
+                }
+                catch { }
+                finally { model.ClearSelection2(true); }
             }
-            catch { }
-            finally { model.ClearSelection2(true); }
         }
     }
 }

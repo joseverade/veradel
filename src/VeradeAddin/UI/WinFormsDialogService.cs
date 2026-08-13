@@ -51,7 +51,13 @@ namespace VeradeAddin.UI
                 {
                     return null;
                 }
-                return new ExportRequest { Pdf = dialog.Pdf, Dwg = dialog.Dwg, Step = dialog.Step };
+                return new ExportRequest
+                {
+                    Pdf = dialog.Pdf,
+                    Dwg = dialog.Dwg,
+                    Step = dialog.Step,
+                    Overwrite = dialog.Overwrite
+                };
             }
         }
 
