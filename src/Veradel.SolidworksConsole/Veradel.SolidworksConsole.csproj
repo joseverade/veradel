@@ -59,6 +59,7 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Boilmaker\Boilermaker.cs" />
     <Compile Include="EdgeColoringDebug.cs" />
     <Compile Include="PartCreation\BoltCreation.cs" />
     <Compile Include="PartCreation\ChompCreator.cs" />

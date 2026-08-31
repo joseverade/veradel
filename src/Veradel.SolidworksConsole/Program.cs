@@ -1,6 +1,7 @@
 ﻿using SolidWorks.Interop.sldworks;
 using System.Dynamic;
 using System.Runtime.InteropServices;
+using Veradel.SolidworksConsole.Boilmaker;
 using Veradel.SolidworksConsole.PartCreation;
 
 namespace Veradel.SolidworksConsole
@@ -11,6 +12,8 @@ namespace Veradel.SolidworksConsole
         {
             SldWorks swApp = GetSolidWorksApplication();
 
+            /*
+             
             // Default action: debug "Colorear aristas". Select the offending edge(s) in the drawing view
             // first, then run this. Pass "chomp" as an argument to run the old part-creation demo instead.
             if (args != null && args.Length > 0 &&
@@ -20,7 +23,10 @@ namespace Veradel.SolidworksConsole
                 return;
             }
 
-            new EdgeColoringDebug(swApp).Run();
+             */
+            //new EdgeColoringDebug(swApp).Run();
+
+            new Boilermaker(swApp).Run();
         }
 
         private static void RunChompDemo(SldWorks swApp)
