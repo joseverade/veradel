@@ -20,11 +20,6 @@ namespace Veradel.SolidworksConsole.Boilmaker
         {
             _swApp = swApp;
 
-
-
-
-
-
         }
 
         public void Run()
@@ -96,7 +91,8 @@ namespace Veradel.SolidworksConsole.Boilmaker
                 Face2 nextFace = principalFace.GetNextFace();               // cara secundaria
                 swSurfaceTypes_e surType = (swSurfaceTypes_e)((Surface)nextFace.GetSurface()).Identity();
 
-
+                BoilermakerDebug.PrintNormalValues(principalFace);
+                BoilermakerDebug.PrintNormalValues(nextFace);
 
                 //View vista = drawing.CreateDrawViewFromModelView3(referencedDrawingPathName, "*Izquierda", 0, 0, 0);
 
@@ -111,9 +107,7 @@ namespace Veradel.SolidworksConsole.Boilmaker
                 seldata2.Mark = 2;
                 bool append2 = sel.AddSelectionListObject(nextFace, seldata2);
 
-               
-
-                View vista = drawing.CreateRelativeView(referencedDrawingPathName, 0,0, (int)swRelativeViewCreationDirection_e.swRelativeViewCreationDirection_FRONT, (int)swRelativeViewCreationDirection_e.swRelativeViewCreationDirection_RIGHT);
+                View vista = drawing.CreateRelativeView(referencedDrawingPathName, 0, 0, (int)swRelativeViewCreationDirection_e.swRelativeViewCreationDirection_FRONT, (int)swRelativeViewCreationDirection_e.swRelativeViewCreationDirection_RIGHT);
 
 
                 DispatchWrapper[] bodyWrappers = new DispatchWrapper[1];
@@ -128,10 +122,8 @@ namespace Veradel.SolidworksConsole.Boilmaker
                 sel.ResumeSelectionList2(false);
                 modelDrawing.ClearSelection2(true);
 
+
             }
-
-
-
 
 
         }
@@ -182,14 +174,14 @@ namespace Veradel.SolidworksConsole.Boilmaker
             return bodies;
         }
 
-
-
         private Face2 GetOrientationVector(Body2 Body)
         {
             object[] oFaces = Body.GetFaces();
 
 
             Face2 actualFace = (Face2)oFaces[0];
+
+
 
 
             for (int i = 1; i < oFaces?.Length; i++)
@@ -210,7 +202,13 @@ namespace Veradel.SolidworksConsole.Boilmaker
                 }
 
 
-                if (actualFace.GetArea() < faceToCompare.GetArea())
+                double actualArea = actualFace.GetArea();
+                double faceToCompareArea = faceToCompare.GetArea();
+
+                Console.WriteLine($"actualArea: {actualArea}, faceToCompare: {faceToCompareArea}");
+
+
+                if (actualArea < faceToCompareArea)
                 {
                     var temp = actualFace;
                     actualFace = faceToCompare;
@@ -220,9 +218,12 @@ namespace Veradel.SolidworksConsole.Boilmaker
                 {
                     Marshal.ReleaseComObject(faceToCompare);
                 }
+
+
+              
             }
 
-
+            Console.WriteLine($"Area mas grande: {actualFace.GetArea()}");
             return actualFace;
 
         }
@@ -248,4 +249,20 @@ namespace Veradel.SolidworksConsole.Boilmaker
 
 
     }
+
+
+
+    public static class BoilermakerDebug
+    {
+
+        public static void PrintNormalValues(Face2 face)
+        {
+            double[] normal = face.Normal;
+
+            Console.WriteLine($"Valores de la normal: ({normal?[0]},{normal?[1]},{normal?[2]})");
+
+        }
+
+    }
+
 }
