@@ -262,6 +262,9 @@ namespace Veradel.SolidworksConsole.Boilmaker
 
                 Edge edge = oEdge as Edge;
 
+
+
+
                 if (edge == null)
                 {
                     Marshal.ReleaseComObject(oEdge);
@@ -270,6 +273,9 @@ namespace Veradel.SolidworksConsole.Boilmaker
 
 
                 object[] oFaces = edge.GetTwoAdjacentFaces2();
+
+
+                // Caso casquillo, solo 1 edge y 2 caras,
 
                 foreach (object oFace in oFaces)
                 {
@@ -295,7 +301,7 @@ namespace Veradel.SolidworksConsole.Boilmaker
                         continue;
                     }
 
-                    if (sur.Identity() != (int)swSurfaceTypes_e.PLANE_TYPE)
+                    if (sur.Identity() != (int)swSurfaceTypes_e.PLANE_TYPE && )
                     {
                         Marshal.ReleaseComObject(oFace);
                         Marshal.ReleaseComObject(sur);
@@ -307,7 +313,7 @@ namespace Veradel.SolidworksConsole.Boilmaker
 
                     double[] candidateNormal = face.Normal;
 
-
+                    if (candidateNormal[0] == 0) {
 
 
 
