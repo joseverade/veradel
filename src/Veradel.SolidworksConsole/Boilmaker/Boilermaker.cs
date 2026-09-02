@@ -94,7 +94,7 @@ namespace Veradel.SolidworksConsole.Boilmaker
                 BoilermakerDebug.PrintNormalValues(principalFace);
                 BoilermakerDebug.PrintNormalValues(nextFace);
 
-                //View vista = drawing.CreateDrawViewFromModelView3(referencedDrawingPathName, "*Izquierda", 0, 0, 0);
+
 
                 modelDrawing.ClearSelection2(true);
                 sel.SuspendSelectionList();
@@ -220,7 +220,7 @@ namespace Veradel.SolidworksConsole.Boilmaker
                 }
 
 
-              
+
             }
 
             Console.WriteLine($"Area mas grande: {actualFace.GetArea()}");
@@ -248,21 +248,108 @@ namespace Veradel.SolidworksConsole.Boilmaker
         }
 
 
-    }
 
-
-
-    public static class BoilermakerDebug
-    {
-
-        public static void PrintNormalValues(Face2 face)
+        private Face2 GetRightFace(Face2 SelectedFace)
         {
-            double[] normal = face.Normal;
 
-            Console.WriteLine($"Valores de la normal: ({normal?[0]},{normal?[1]},{normal?[2]})");
+            object[] oEdges = SelectedFace.GetEdges();
+
+
+            // buscamos una cara que tenga el vector X positivo y que no sea la misma cara grande
+
+            foreach (object oEdge in oEdges)
+            {
+
+                Edge edge = oEdge as Edge;
+
+                if (edge == null)
+                {
+                    Marshal.ReleaseComObject(oEdge);
+                    continue;
+                }
+
+
+                object[] oFaces = edge.GetTwoAdjacentFaces2();
+
+                foreach (object oFace in oFaces)
+                {
+                    Face2 face = oFace as Face2;
+                    if (face == null)
+                    {
+                        Marshal.ReleaseComObject(oFace);
+                        continue;
+                    }
+
+                    if (face.IsSame(SelectedFace))
+                    {
+                        Marshal.ReleaseComObject(oFace);
+                        continue;
+                    }
+
+
+                    Surface sur = face.GetSurface() as Surface;
+                    if (sur == null)
+                    {
+                        Marshal.ReleaseComObject(oFace);
+                        Marshal.ReleaseComObject(sur);
+                        continue;
+                    }
+
+                    if (sur.Identity() != (int)swSurfaceTypes_e.PLANE_TYPE)
+                    {
+                        Marshal.ReleaseComObject(oFace);
+                        Marshal.ReleaseComObject(sur);
+                        continue;
+                    }
+
+
+                    // here we calculate the candidate face:
+
+                    double[] candidateNormal = face.Normal;
+
+
+
+
+
+                }
+
+
+
+            }
+
+
+
+        }
+
+
+        public static class VeraDelMathClass
+        {
+            public static double DotProduct(double[] v1, double[] v2)
+            {
+                if (v1.Length != v2.Length || (v1.Length != 3 && v1.Length != 3)) throw new Exception("Vector length not equal");
+
+
+                double x = v1[0] * v2[0];
+                double y = v1[1] * v2[1];
+                double z = v1[2] * v2[2];
+                return x + y + z;
+
+            }
+
+        }
+
+
+        public static class BoilermakerDebug
+        {
+
+            public static void PrintNormalValues(Face2 face)
+            {
+                double[] normal = face.Normal;
+
+                Console.WriteLine($"Valores de la normal: ({normal?[0]},{normal?[1]},{normal?[2]})");
+
+            }
 
         }
 
     }
-
-}
