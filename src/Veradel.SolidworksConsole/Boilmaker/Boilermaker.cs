@@ -255,15 +255,16 @@ namespace Veradel.SolidworksConsole.Boilmaker
             object[] oEdges = SelectedFace.GetEdges();
 
 
-            // buscamos una cara que tenga el vector X positivo y que no sea la misma cara grande
+            // objetivo: buscar un edge que tenga los vectores canonicos y que NO sea pararelo a la normal de la cara
+
+
+            bool encontrado = false;
+
 
             foreach (object oEdge in oEdges)
             {
 
                 Edge edge = oEdge as Edge;
-
-
-
 
                 if (edge == null)
                 {
@@ -272,90 +273,107 @@ namespace Veradel.SolidworksConsole.Boilmaker
                 }
 
 
-                object[] oFaces = edge.GetTwoAdjacentFaces2();
+                // obtenemos el tipo de curva:
 
+                Curve curva = null;
+                curva = edge.GetCurve();
 
-                // Caso casquillo, solo 1 edge y 2 caras,
-
-                foreach (object oFace in oFaces)
+                if (curva == null)
                 {
-                    Face2 face = oFace as Face2;
-                    if (face == null)
-                    {
-                        Marshal.ReleaseComObject(oFace);
-                        continue;
-                    }
-
-                    if (face.IsSame(SelectedFace))
-                    {
-                        Marshal.ReleaseComObject(oFace);
-                        continue;
-                    }
-
-
-                    Surface sur = face.GetSurface() as Surface;
-                    if (sur == null)
-                    {
-                        Marshal.ReleaseComObject(oFace);
-                        Marshal.ReleaseComObject(sur);
-                        continue;
-                    }
-
-                    if (sur.Identity() != (int)swSurfaceTypes_e.PLANE_TYPE && )
-                    {
-                        Marshal.ReleaseComObject(oFace);
-                        Marshal.ReleaseComObject(sur);
-                        continue;
-                    }
-
-
-                    // here we calculate the candidate face:
-
-                    double[] candidateNormal = face.Normal;
-
-                    if (candidateNormal[0] == 0) {
-
-
-
+                    Marshal.ReleaseComObject(edge);
+                    Marshal.ReleaseComObject(oEdge);
+                    continue;
                 }
 
+                int tipoCurva = curva.Identity();
+
+                // Si el edge no es una linea
+                if (tipoCurva != (int)swCurveTypes_e.LINE_TYPE)
+                {
+                    Marshal.ReleaseComObject(edge);
+                    Marshal.ReleaseComObject(oEdge);
+                    Marshal.ReleaseComObject(curva);
+                    continue;
+                }
+
+                // liberamos la curva
+                Marshal.ReleaseComObject(curva);
+
+
+
+¡
+                // Si el edge es una linea, buscar si tiene direccion de vectores canonicos y que no sea paralelo a la normal de la cara grande
+
+                Vertex vertex1 = null, vertex2 = null;
+
+                vertex1 = edge.GetStartVertex();
+                vertex2 = edge.GetEndVertex();
+
+                double[] point1 = vertex1.GetPoint();
+                double[] point2 = vertex2.GetPoint();
+
+
+                // formamos el vector
+                double[] vectorEdge = new double[3];
+                vectorEdge[0] = point2[0] - point1[0];
+                vectorEdge[1] = point2[1] - point1[1];
+                vectorEdge[2] = point2[2] - point1[2];
+
+                // calculamos si el vector es canonico
+
+
+
 
 
             }
-
 
 
         }
 
 
-        public static class VeraDelMathClass
+
+    }
+
+
+    public static class VeraDelMathClass
+    {
+        public static double DotProduct(double[] v1, double[] v2)
         {
-            public static double DotProduct(double[] v1, double[] v2)
-            {
-                if (v1.Length != v2.Length || (v1.Length != 3 && v1.Length != 3)) throw new Exception("Vector length not equal");
+            if (v1.Length != v2.Length || (v1.Length != 3 && v1.Length != 3)) throw new Exception("Vector length not equal");
 
 
-                double x = v1[0] * v2[0];
-                double y = v1[1] * v2[1];
-                double z = v1[2] * v2[2];
-                return x + y + z;
-
-            }
+            double x = v1[0] * v2[0];
+            double y = v1[1] * v2[1];
+            double z = v1[2] * v2[2];
+            return x + y + z;
 
         }
 
 
-        public static class BoilermakerDebug
+        public static double[] CrossProduct(double[] v1, double[] v2)
         {
 
-            public static void PrintNormalValues(Face2 face)
-            {
-                double[] normal = face.Normal;
+            double x = v1[1] * v2[2] - v2[1] * v1[2];
+            double y = v1[0] * v2[2] - v2[0] * v1[2];
+            double z = v1[0] * v2[1] - v2[0] * v1[1];
 
-                Console.WriteLine($"Valores de la normal: ({normal?[0]},{normal?[1]},{normal?[2]})");
+            return new double[] { x, y, z };
+        }
 
-            }
+    }
+
+
+    public static class BoilermakerDebug
+    {
+
+        public static void PrintNormalValues(Face2 face)
+        {
+            double[] normal = face.Normal;
+
+            Console.WriteLine($"Valores de la normal: ({normal?[0]},{normal?[1]},{normal?[2]})");
 
         }
 
     }
+
+}
