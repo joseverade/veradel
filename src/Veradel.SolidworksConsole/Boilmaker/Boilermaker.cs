@@ -260,7 +260,7 @@ namespace Veradel.SolidworksConsole.Boilmaker
 
             bool encontrado = false;
 
-
+            /*
             foreach (object oEdge in oEdges)
             {
 
@@ -325,7 +325,18 @@ namespace Veradel.SolidworksConsole.Boilmaker
 
 
 
+                // Si no se encuentra vector canonico entros regresar null
+
             }
+             */
+
+
+            // El plan es encontrar unas aristas que formen 90 grados 
+
+            
+
+
+
 
 
         }
