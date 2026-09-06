@@ -173,19 +173,107 @@ activa no fuera la nueva el despiece iría a parar a la de partida.
 La hoja se crea **después** de volver al dibujo con `ActivateDoc3` (abrir la pieza cambia el documento
 activo), y el ancho/alto que usa el reparto se releen de la hoja nueva.
 
-### 8. Distribución en la hoja — `PlaceViewGroup`
+### 8. Rejilla, escala y paginación
 
-Antes todas las vistas se colocaban en `-outline`, apiladas unas sobre otras. Ahora la unidad de reparto es
-el **bloque de tres vistas**, no la vista suelta: se mide el hueco que ocupan el alzado más los márgenes
-laterales (`sideSpace`) y verticales (`stackSpace`), y con eso se recorre la hoja de izquierda a derecha,
-saltando de fila al llegar al borde. Así dos cuerpos no se pisan.
+El reparto es una **rejilla fija** `GridColumns × GridRows` (3×2), no un empaquetado libre. Con escalas
+distintas por pieza el flujo libre deja filas dentadas y rompe la correspondencia con la lista de cortes;
+la rejilla da celda de tamaño fijo, orden respetado y reparto determinista: el cuerpo `n` cae siempre en
+la hoja `n / (cols·filas)` y en la celda `n % (cols·filas)`.
 
-Primero se mueve el alzado al centro de su celda; las hijas lo siguen por la alineación, pero se les fija
-la posición explícitamente después de un `GraphicsRedraw2()`: sobre el eje alineado manda SolidWorks y
-sobre el eje libre manda el valor que se pasa, así que la llamada es idempotente.
+#### Área útil
+
+Márgenes constantes; el inferior reserva la banda del cajetín.
+
+| Constante | Valor | Para qué |
+|---|---|---|
+| `MarginLeft` / `MarginRight` / `MarginTop` | 0.015 m | borde de la hoja |
+| `MarginBottom` | 0.060 m | banda del cajetín |
+| `CellPadding` | 0.005 m | aire entre bloque y borde de celda |
+
+`cellW = (sheetW − MarginLeft − MarginRight) / GridColumns`, ídem en alto. El área donde se mete el
+bloque es la celda menos `2·CellPadding` por lado.
+
+#### Tres fases
+
+La escala no se puede decidir antes de crear las vistas: el tamaño del bloque solo se conoce con las
+vistas hechas. De ahí el orden:
+
+1. **Crear y medir** — se recorren las hojas; en cada una se crean hasta `cols·filas` bloques y se mide
+   cada uno a 1:1. Los cuerpos sin par de caras válido se descartan **antes** de paginar (`printable`),
+   si no dejarían huecos en la rejilla.
+2. **Escalar** — una sola pasada sobre todo el despiece, porque el modo uniforme necesita conocer la
+   pieza más exigente antes de fijar nada.
+3. **Colocar** — `PlaceInCell` con el tamaño definitivo de cada vista.
+
+#### Medida a 1:1 — `MeasureBlock`
+
+`GetOutline` devuelve el contorno **ya escalado**, en metros de papel. El tamaño real sale de dividir por
+`IView::ScaleDecimal`. (`IBody2::GetBodyBox` no sirve: da la caja en ejes del modelo, no en los de la
+vista.)
+
+#### Elección de la escala — `FitScale` + `SnapDown`
+
+```
+needW = frontW1:1 + profileW1:1        freeW = innerW − (hay perfil ? ViewGap : 0)
+needH = frontH1:1 + planH1:1           freeH = innerH − (hay planta ? ViewGap : 0)
+fit   = min(freeW / needW, freeH / needH)
+```
+
+Los huecos entre vistas van en unidades de papel y **no** escalan con la pieza, por eso se restan antes
+de dividir. El valor en crudo (1:6.37) no se lee ni se acota, así que `SnapDown` baja al escalón
+normalizado inmediatamente inferior de la serie ISO 5455:
+
+`50:1 · 20:1 · 10:1 · 5:1 · 2:1 · 1:1 · 1:2 · 1:5 · 1:10 · 1:20 · 1:50 · 1:100 · 1:200 · 1:500 · 1:1000`
+
+Siempre **hacia abajo**, para que la pieza quepa de verdad. Si ni la menor de la serie basta, se avisa
+por consola y se usa esa.
+
+#### Modos de escala — `DespieceScaleMode`
+
+| Modo | Qué hace |
+|---|---|
+| `PerBody` (por defecto) | cada cuerpo, la mayor escala normalizada que cabe en su celda |
+| `Uniform` | una sola escala para todo el despiece: la que exige la pieza más grande |
+
+Lo elige quien llama (`new Boilermaker(swApp, modo)` o la propiedad `ScaleMode`). En la consola de
+pruebas, el argumento `uniforme` selecciona el segundo.
+
+`PerBody` aprovecha la hoja; `Uniform` deja comparar tamaños a ojo a costa de que las piezas pequeñas se
+queden diminutas.
+
+La escala se fija **solo en el alzado**: `IView::UseSheetScale = 0` (ojo, es `int`, no `bool`) y
+`IView::ScaleRatio = new double[] { num, den }`. Perfil y planta llevan `UseParentScale = true` y la
+heredan. Efecto lateral útil: al no usar la escala de hoja, SolidWorks rotula solo `ESCALA 1:5` bajo
+cada vista.
+
+#### Colocación — `PlaceInCell`
+
+El alzado **no** va al centro de la celda: hay que descontar el hueco que ocupan perfil y planta a su
+lado, que es lo que centra el conjunto.
+
+```
+frontCenterX = cellCenterX − (rightPad − leftPad) / 2
+frontCenterY = cellCenterY − (topPad − bottomPad) / 2
+```
+
+`leftPad`/`rightPad` y `topPad`/`bottomPad` salen de `ProfileSign` y `PlanSign`, así que el centrado
+sigue el diedro sin condicionales sueltos. Fila 0 arriba: `cellCenterY = sheetH − MarginTop − (fila+0.5)·cellH`.
+
+Primero se mueve el alzado; las hijas lo siguen por la alineación, pero se les fija la posición
+explícitamente después de un `GraphicsRedraw2()`: sobre el eje alineado manda SolidWorks y sobre el eje
+libre manda el valor que se pasa, así que la llamada es idempotente.
 
 `IView::Position` es el centro de la vista, así que el desplazamiento se calcula contra el centro del
-outline actual (`MoveViewCenterTo`).
+outline actual (`MoveViewCenterTo`). Si aun así el bloque se sale de su celda, se avisa por consola.
+
+#### Paginación
+
+Al llenarse la rejilla se crea otra hoja con `CreateDespieceSheet`, y `UniqueSheetName` la numera:
+`despiece - veradel 2`, `3`… Tope de seguridad `MaxSheets = 50`; por encima se avisa y se recorta.
+
+Sobre el caso de "500 piezas": `GetBodiesCutList` coge `oBodies[0]` de cada `CutListFolder`, o sea **un
+representante por ítem de lista de cortes**, no por cuerpo. 500 cuerpos en una estructura suelen ser
+15-30 ítems distintos. Falta añadir la **cantidad** de cada carpeta al rótulo.
 
 ## Correcciones de álgebra lineal
 
@@ -214,7 +302,19 @@ HorizontalCenter=2, VerticalCenter=3, HorizontalOrigin=4, VerticalOrigin=5) ·
 `ISheet::GetTemplateName()` · `ISheet::SetProperties(int PaperSize, int Template, double Scale1,
 double Scale2, bool FirstAngle, double Width, double Height)` (fija el orden de `GetProperties2`) ·
 `swDwgTemplates_e` (A4=6, A3=8, A2=9, A1=10, A0=11, Custom=12, None=13) ·
-`swDwgPaperSizes_e` (A4size=6, A3size=8, UserDefined=12).
+`swDwgPaperSizes_e` (A4size=6, A3size=8, UserDefined=12) ·
+`IView::UseSheetScale` (**int**, get/set) · `IView::ScaleRatio` (`object`, `double[2]`) ·
+`IView::ScaleDecimal` (double) · `IView::UseParentScale` (**bool**, get/set) ·
+`IBody2::GetBodyBox()` (caja en ejes del modelo: no sirve para medir el bloque de vistas).
+
+Verificadas pero **no usadas** hoy, por si vuelve el ajuste automático de papel:
+`IBody2::GetExtremePoint(double X, double Y, double Z, out double Outx, out double Outy, out double Outz)` → `bool`
+(extent exacto en cualquier dirección, también en cilindros) ·
+`ISheet::SetSize(int Size, double Width, double Height)` → `bool` ·
+`ISheet::SetProperties2(int PaperSz, int Templ, double Scale1, double Scale2, bool FirstAngle,
+double Width, double Height, bool SameCustomPropAsSheetInDocProp)` ·
+`ISheet::ReloadTemplate(bool KeepNoteChanges)` → `int` ·
+`swDwgTemplates_e`/`swDwgPaperSizes_e` comparten valor para el mismo tamaño (A4=6, A3=8, A2=9, A1=10, A0=11).
 
 Ojo: `IView::AlignDrawingView` usa otro enum, `swAlignDrawingViewTypes_e` (giro respecto a la hoja);
 no es el de la alineación padre-hija.
@@ -223,5 +323,11 @@ Ojo: `GetSurface()`, `GetCurve()`, `GetViews()`, `GetPoint()` devuelven `System.
 
 ## Pendiente
 
-- Escala de las vistas: se deja la de la hoja; piezas grandes pueden salirse.
+- Cantidad de cada ítem de la lista de cortes en el rótulo de la vista.
+- Rejilla y márgenes son constantes pensadas para A3: revisar en A4 y A2.
+- Ajuste automático de papel A4–A0 según lo que mida el despiece: se implementó y se retiró.
+  La API está verificada (ver arriba) y el criterio que funcionaba era escala mínima admisible
+  (1:10) + rejilla adaptativa; el fallback tiene que ser "menor número de hojas que da la mayor
+  escala alcanzable", nunca `MaxSheets`.
+- Elección del modo de escala desde la interfaz del add-in, no solo por argumento de consola.
 - Portar a `SolidWorksService.Boilermaking.cs` cuando las pruebas de consola cuadren.
