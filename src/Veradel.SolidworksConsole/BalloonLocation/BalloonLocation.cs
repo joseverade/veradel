@@ -49,46 +49,50 @@ namespace Veradel.SolidworksConsole.BalloonLocation
                 {
                     object[] oNotes =  view.GetNotes();
 
+
                     foreach (Note balloon in oNotes)
                     {
                         if (balloon == null || !balloon.HasBalloon()) continue; // note's a ballooon                        
-                        balloons.Add(GetBallonWrapper(balloon, sheetCount));
+                        balloons.Add(GetBallonWrapper(balloon, sheetCount, view.Name, activeSheet));
 
+                        // TODO: Se debe verificar que la nota no salga del tamaño de la hoja
                     }
 
                 }
 
                 sheetCount += 1;
 
-                foreach (BalloonWrapper BW in balloons)
-                {
-                    Console.WriteLine($"Texto: {BW.Text}, ({Math.Round(BW.PosX * 1000, 2)}, {Math.Round(BW.PosY * 1000, 2)}, ZONA: {activeSheet.GetDrawingZone(BW.PosX, BW.PosY)})");
-                }
-
             }
 
 
-       
-
 
         }
+
+
+
+        private void GetBalloons()
+        {
+
+        }
+
 
         private string[] GetSheetNames()
         {
             return drawingDoc.GetSheetNames();
         }
 
-        private BalloonWrapper GetBallonWrapper(Note note, int sheetCount)
+        private BalloonWrapper GetBallonWrapper(Note Note, int SheetCount, string viewName, Sheet activeSheet)
         {
 
             BalloonWrapper balloon = new BalloonWrapper();
-            balloon.Text = note.GetText();
+            balloon.Text = Note.GetText();
 
-            double[] info = note.GetBalloonInfo();
+            double[] info = Note.GetBalloonInfo();
             balloon.PosX = info[0];
             balloon.PosY = info[1];
-            balloon.Page = sheetCount;
-
+            balloon.Page = SheetCount;
+            balloon.ViewName = viewName;
+            balloon.Zone = activeSheet.GetDrawingZone(balloon.PosX, balloon.PosY);
 
             return balloon;
         }
@@ -105,7 +109,9 @@ namespace Veradel.SolidworksConsole.BalloonLocation
         public double PosX;
         public double PosY;
         public string Text;
+        public string ViewName;
 
+        public string Zone;
 
         public void GetValues()
         {
