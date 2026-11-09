@@ -3,6 +3,7 @@ using System.Dynamic;
 using System.Runtime.InteropServices;
 using Veradel.SolidworksConsole.Boilmaker;
 using Veradel.SolidworksConsole.PartCreation;
+using Veradel.SolidworksConsole.BalloonLocation;
 
 namespace Veradel.SolidworksConsole
 {
@@ -25,7 +26,8 @@ namespace Veradel.SolidworksConsole
 
              */
             //new EdgeColoringDebug(swApp).Run();
-
+            /*
+             
             // "uniforme" => una sola escala para todo el despiece; por defecto, una por cuerpo
             DespieceScaleMode scaleMode =
                 args != null && args.Length > 0 &&
@@ -34,6 +36,13 @@ namespace Veradel.SolidworksConsole
                     : DespieceScaleMode.PerBody;
 
             new Boilermaker(swApp, scaleMode).Run();
+             
+             */
+
+            BalloonLocation.BalloonLocation a = new BalloonLocation.BalloonLocation(swApp.ActiveDoc);
+            a.Execute();
+
+
         }
 
         private static void RunChompDemo(SldWorks swApp)
