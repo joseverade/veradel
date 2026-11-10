@@ -2,6 +2,8 @@
 using SolidWorks.Interop.swconst;
 using System;
 using System.Collections.Generic;
+using System.Reflection.Emit;
+using System.Xml.Linq;
 
 namespace Veradel.SolidworksConsole.BalloonLocation
 {
@@ -31,72 +33,36 @@ namespace Veradel.SolidworksConsole.BalloonLocation
         {
             if (drawingDoc == null) return;
 
-            List<BalloonWrapper> balloons = new List<BalloonWrapper>();
+            List<SheetWrapper> sheet = SetSheetWrappers();
 
-            int sheetCount = 1;
-
-            foreach (string name in GetSheetNames())
+            foreach (SheetWrapper sheetWrapper in sheet)
             {
-                
-                drawingDoc.ActivateSheet(name);
+                // seteamos los globos 
+                sheetWrapper.SetBalloons(drawingDoc);
 
-                Sheet activeSheet = drawingDoc.Sheet[name];
+                // seteamos las zonas
+                sheetWrapper.SetZones();
+            }
 
-                object[] oView = (object[])activeSheet.GetViews(); 
-
-
-                foreach (View view in oView)
-                {
-                    object[] oNotes =  view.GetNotes();
+        }
 
 
-                    foreach (Note balloon in oNotes)
-                    {
-                        if (balloon == null || !balloon.HasBalloon()) continue; // note's a ballooon                        
-                        balloons.Add(GetBallonWrapper(balloon, sheetCount, view.Name, activeSheet));
+        private List<SheetWrapper> SetSheetWrappers()
+        {
 
-                        // TODO: Se debe verificar que la nota no salga del tamaño de la hoja
-                    }
+            List<SheetWrapper> sheets = new List<SheetWrapper>();
 
-                }
+            string[] names = drawingDoc.GetSheetNames();
 
-                sheetCount += 1;
-
+            for (int i = 0; i < names.Length; i++)
+            {
+                Sheet sheet = drawingDoc.Sheet[names[i]];
+                sheets.Add(new SheetWrapper(sheet, i + 1));
             }
 
 
-
+            return sheets;
         }
-
-
-
-        private void GetBalloons()
-        {
-
-        }
-
-
-        private string[] GetSheetNames()
-        {
-            return drawingDoc.GetSheetNames();
-        }
-
-        private BalloonWrapper GetBallonWrapper(Note Note, int SheetCount, string viewName, Sheet activeSheet)
-        {
-
-            BalloonWrapper balloon = new BalloonWrapper();
-            balloon.Text = Note.GetText();
-
-            double[] info = Note.GetBalloonInfo();
-            balloon.PosX = info[0];
-            balloon.PosY = info[1];
-            balloon.Page = SheetCount;
-            balloon.ViewName = viewName;
-            balloon.Zone = activeSheet.GetDrawingZone(balloon.PosX, balloon.PosY);
-
-            return balloon;
-        }
-
 
 
     }
@@ -110,15 +76,134 @@ namespace Veradel.SolidworksConsole.BalloonLocation
         public double PosY;
         public string Text;
         public string ViewName;
-
         public string Zone;
 
-        public void GetValues()
+
+        public BalloonWrapper(int Page, double PosX, double PosY, string Text, string Zone)
         {
-            // format: page - 
+            this.Page = Page;
+            this.PosX = PosX;
+            this.PosY = PosY;
+            this.Text = Text;
+            this.Zone = Zone;
 
         }
 
+
     }
+
+
+    public class SheetWrapper
+    {
+        public List<BalloonWrapper> Balloons;
+        public List<double> LineY;
+        public List<double> LineX;
+        public string SheetName;
+        public int SheetIndex;
+        public int Width = 0;
+        public int Height = 0;
+
+
+
+        private Sheet SheetSw;
+        private object[] Views;
+
+
+        public SheetWrapper(Sheet SheetSw, int SheetIndex)
+        {
+            this.SheetSw = SheetSw;
+
+            // Se llena el nombre automaticamente
+            SheetName = SheetSw.GetName();
+            this.SheetIndex = SheetIndex;
+
+        }
+
+
+        public void SetBalloons(DrawingDoc doc)
+        {
+            Balloons = new List<BalloonWrapper>();
+            doc.ActivateSheet(SheetName);
+
+            if (Views == null)
+                SetView();
+
+            foreach (View view in Views)
+            {
+
+                object[] oNotes = view.GetNotes();
+                foreach (Note balloon in oNotes)
+                {
+                    if (balloon == null || !balloon.HasBalloon()) continue;
+
+                    // Se rellena los globos
+
+                    double[] info = balloon.GetBalloonInfo();
+                    Balloons.Add(new BalloonWrapper(SheetIndex, info[0], info[1], balloon.GetText(), SheetSw.GetDrawingZone(info[0], info[1])));
+                }
+            }
+        }
+
+
+
+        // TODO: Set the lines and the views 
+        public void SetZones()
+        {
+
+            SheetSw.GetSize(Width, Height);
+
+
+            double step = 20 / 1000.0;
+
+            string firstZone = SheetSw.GetDrawingZone(0, 0);
+
+
+            string zoneToReview = SheetSw.GetDrawingZone(0, 0);
+
+
+
+
+
+
+            for (int i = 0; i< Width; i++)
+            {
+
+                // Cambio de zona
+                if (zoneToReview != SheetSw.GetDrawingZone(i, 0))
+                {
+                    double lowerLimit = i - step;
+                    double upperLimit = i;
+
+                    while (true)
+                    {
+                        double mean = (lowerLimit + upperLimit);
+
+                        if (zoneToReview == )
+
+                                
+                    }
+
+                }
+
+
+
+
+
+            }
+
+
+
+
+
+        }
+
+
+        private void SetView()
+        {
+            Views = (object[])SheetSw.GetViews();
+        }
+
+    }
+
 
 }
