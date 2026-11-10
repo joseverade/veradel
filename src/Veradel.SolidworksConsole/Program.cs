@@ -39,8 +39,7 @@ namespace Veradel.SolidworksConsole
              
              */
 
-            BalloonLocation.BalloonLocation a = new BalloonLocation.BalloonLocation(swApp.ActiveDoc);
-            a.Execute();
+            new BalloonLocation.BalloonLocation(swApp).Execute();
 
 
         }

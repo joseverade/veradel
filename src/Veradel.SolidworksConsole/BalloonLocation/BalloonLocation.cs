@@ -2,8 +2,8 @@
 using SolidWorks.Interop.swconst;
 using System;
 using System.Collections.Generic;
-using System.Reflection.Emit;
-using System.Xml.Linq;
+using System.IO;
+using System.Linq;
 
 namespace Veradel.SolidworksConsole.BalloonLocation
 {
@@ -13,37 +13,73 @@ namespace Veradel.SolidworksConsole.BalloonLocation
 
         /*
          * PROBLEMA: Nativamente en solidoworks no hay forma de identificar la posicion de los globos en base a la LDM
-         * Solucion: Identificar todos los globos y sus posiciones
-         * 
+         * Solucion: Identificar todos los globos y sus posiciones (HOJA-ZONA) y generar un PDF para montadores:
+         *   - Hojas del dibujo con las lineas de zona (0.1 mm, punteadas) y la etiqueta de cada zona
+         *   - Paginas A4 con la LDM + columna POSICION ("1-A4, 2-C3")
+         * El dibujo NO se modifica: las lineas se dibujan sobre el PDF exportado (PdfSharp).
          */
 
 
 
+        private SldWorks swApp;
         private ModelDoc2 modelDoc2;
         private DrawingDoc drawingDoc;
 
 
-        public BalloonLocation(ModelDoc2 modelDoc2)
+        public BalloonLocation(SldWorks swApp)
         {
-            this.modelDoc2 = modelDoc2;
+            this.swApp = swApp;
+            modelDoc2 = swApp.ActiveDoc as ModelDoc2;
             drawingDoc = modelDoc2 as DrawingDoc;
         }
 
         public void Execute()
         {
-            if (drawingDoc == null) return;
-
-            List<SheetWrapper> sheet = SetSheetWrappers();
-
-            foreach (SheetWrapper sheetWrapper in sheet)
+            if (drawingDoc == null)
             {
-                // seteamos los globos 
-                sheetWrapper.SetBalloons(drawingDoc);
-
-                // seteamos las zonas
-                sheetWrapper.SetZones();
+                Console.WriteLine("El documento activo no es un dibujo.");
+                return;
             }
 
+            string activeSheet = ((Sheet)drawingDoc.GetCurrentSheet()).GetName();
+
+            List<SheetWrapper> sheets = SetSheetWrappers();
+            List<BomWrapper> boms = new List<BomWrapper>();
+
+            foreach (SheetWrapper sheetWrapper in sheets)
+            {
+                // seteamos las zonas
+                sheetWrapper.SetZones();
+
+                // seteamos los globos y las LDM de la hoja
+                sheetWrapper.SetBalloons(drawingDoc);
+                boms.AddRange(sheetWrapper.GetBoms(drawingDoc));
+            }
+
+            drawingDoc.ActivateSheet(activeSheet);
+
+            PrintDebug(sheets);
+
+            BomWrapper bom = SelectBom(boms);
+            if (bom == null) return;
+
+            Dictionary<string, List<BalloonWrapper>> positions = GroupByItem(sheets);
+            ReportUnmatched(bom, positions);
+
+            string outPdf = GetOutputPath();
+            string basePdf = Path.Combine(Path.GetTempPath(), "veradel_montaje_" + Guid.NewGuid().ToString("N") + ".pdf");
+
+            try
+            {
+                if (!ExportPdf(basePdf, sheets)) return;
+
+                MontadoresPdf.Build(basePdf, outPdf, sheets, bom, positions, modelDoc2.GetTitle());
+                Console.WriteLine("PDF generado: " + outPdf);
+            }
+            finally
+            {
+                if (File.Exists(basePdf)) File.Delete(basePdf);
+            }
         }
 
 
@@ -52,7 +88,7 @@ namespace Veradel.SolidworksConsole.BalloonLocation
 
             List<SheetWrapper> sheets = new List<SheetWrapper>();
 
-            string[] names = drawingDoc.GetSheetNames();
+            string[] names = (string[])drawingDoc.GetSheetNames();
 
             for (int i = 0; i < names.Length; i++)
             {
@@ -62,6 +98,116 @@ namespace Veradel.SolidworksConsole.BalloonLocation
 
 
             return sheets;
+        }
+
+
+        // Si hay varias LDM se pregunta cual usar
+        private BomWrapper SelectBom(List<BomWrapper> boms)
+        {
+            if (boms.Count == 0)
+            {
+                Console.WriteLine("El dibujo no tiene ninguna LDM.");
+                return null;
+            }
+
+            if (boms.Count == 1) return boms[0];
+
+            Console.WriteLine("Hay varias LDM:");
+            for (int i = 0; i < boms.Count; i++)
+                Console.WriteLine("  " + (i + 1) + ") " + boms[i].Title + "  (hoja " + boms[i].SheetIndex + " - " + boms[i].SheetName + ", " + boms[i].Rows.Count + " filas)");
+
+            while (true)
+            {
+                Console.Write("Elige LDM [1-" + boms.Count + "]: ");
+                int choice;
+                if (int.TryParse(Console.ReadLine(), out choice) && choice >= 1 && choice <= boms.Count)
+                    return boms[choice - 1];
+            }
+        }
+
+
+        // Nº de posicion -> globos que lo referencian
+        private Dictionary<string, List<BalloonWrapper>> GroupByItem(List<SheetWrapper> sheets)
+        {
+            Dictionary<string, List<BalloonWrapper>> positions = new Dictionary<string, List<BalloonWrapper>>();
+
+            foreach (BalloonWrapper balloon in sheets.SelectMany(s => s.Balloons))
+            {
+                if (string.IsNullOrEmpty(balloon.Text)) continue;
+
+                List<BalloonWrapper> list;
+                if (!positions.TryGetValue(balloon.Text, out list))
+                {
+                    list = new List<BalloonWrapper>();
+                    positions.Add(balloon.Text, list);
+                }
+                list.Add(balloon);
+            }
+
+            return positions;
+        }
+
+
+        private void ReportUnmatched(BomWrapper bom, Dictionary<string, List<BalloonWrapper>> positions)
+        {
+            HashSet<string> items = new HashSet<string>(bom.Rows.Select(r => bom.GetItem(r)));
+
+            List<string> noBalloon = items.Where(i => !positions.ContainsKey(i)).ToList();
+            List<string> noBomRow = positions.Keys.Where(k => !items.Contains(k)).ToList();
+
+            if (noBalloon.Count > 0)
+                Console.WriteLine("Posiciones SIN GLOBO: " + string.Join(", ", noBalloon));
+            if (noBomRow.Count > 0)
+                Console.WriteLine("Globos que no estan en la LDM: " + string.Join(", ", noBomRow));
+        }
+
+
+        private bool ExportPdf(string path, List<SheetWrapper> sheets)
+        {
+            ExportPdfData pdfData = (ExportPdfData)swApp.GetExportFileData((int)swExportDataFileType_e.swExportPdfData);
+            pdfData.SetSheets((int)swExportDataSheetsToExport_e.swExportData_ExportAllSheets, sheets.Select(s => s.SheetName).ToArray());
+
+            int errors = 0, warnings = 0;
+            bool ok = modelDoc2.Extension.SaveAs3(path, (int)swSaveAsVersion_e.swSaveAsCurrentVersion,
+                (int)swSaveAsOptions_e.swSaveAsOptions_Silent, pdfData, null, ref errors, ref warnings);
+
+            if (!ok || !File.Exists(path))
+            {
+                Console.WriteLine("Error exportando PDF. errors=" + errors + " warnings=" + warnings);
+                return false;
+            }
+            return true;
+        }
+
+
+        // Junto al dibujo: <nombre>_montaje.pdf (si no esta guardado, al escritorio)
+        private string GetOutputPath()
+        {
+            string drawingPath = modelDoc2.GetPathName();
+            string dir = string.IsNullOrEmpty(drawingPath)
+                ? System.Environment.GetFolderPath(System.Environment.SpecialFolder.Desktop)
+                : Path.GetDirectoryName(drawingPath);
+            string name = string.IsNullOrEmpty(drawingPath)
+                ? modelDoc2.GetTitle()
+                : Path.GetFileNameWithoutExtension(drawingPath);
+
+            return Path.Combine(dir, name + "_montaje.pdf");
+        }
+
+
+        private void PrintDebug(List<SheetWrapper> sheets)
+        {
+            foreach (SheetWrapper s in sheets)
+            {
+                Console.WriteLine(string.Format("Hoja {0} '{1}': {2:0.#}x{3:0.#} mm, marco X[{4:0.##}..{5:0.##}] Y[{6:0.##}..{7:0.##}] mm",
+                    s.SheetIndex, s.SheetName, s.Width * 1000, s.Height * 1000,
+                    s.FrameLeft * 1000, s.FrameRight * 1000, s.FrameBottom * 1000, s.FrameTop * 1000));
+                Console.WriteLine("  Lineas X (mm): " + string.Join(", ", s.LineX.Select(x => (x * 1000).ToString("0.##"))));
+                Console.WriteLine("  Lineas Y (mm): " + string.Join(", ", s.LineY.Select(y => (y * 1000).ToString("0.##"))));
+                foreach (BalloonWrapper b in s.Balloons)
+                    Console.WriteLine(string.Format("  Globo '{0}' en ({1:0.#}, {2:0.#}) mm -> {3}  [vista {4}]",
+                        b.Text, b.PosX * 1000, b.PosY * 1000, b.Position, b.ViewName));
+            }
         }
 
 
@@ -78,18 +224,29 @@ namespace Veradel.SolidworksConsole.BalloonLocation
         public string ViewName;
         public string Zone;
 
+        // Formato PAGINA-REGION, ej: 1-A4
+        public string Position { get { return Page + "-" + Zone; } }
 
-        public BalloonWrapper(int Page, double PosX, double PosY, string Text, string Zone)
+
+        public BalloonWrapper(int Page, double PosX, double PosY, string Text, string Zone, string ViewName)
         {
             this.Page = Page;
             this.PosX = PosX;
             this.PosY = PosY;
             this.Text = Text;
             this.Zone = Zone;
-
+            this.ViewName = ViewName;
         }
 
 
+    }
+
+
+    // Celda de zona (coordenadas de hoja, metros)
+    public class ZoneCell
+    {
+        public double X1, Y1, X2, Y2;
+        public string Label;
     }
 
 
@@ -98,15 +255,21 @@ namespace Veradel.SolidworksConsole.BalloonLocation
         public List<BalloonWrapper> Balloons;
         public List<double> LineY;
         public List<double> LineX;
+        public List<ZoneCell> Cells;
         public string SheetName;
         public int SheetIndex;
-        public int Width = 0;
-        public int Height = 0;
 
+        // metros
+        public double Width = 0;
+        public double Height = 0;
+        public double FrameLeft, FrameRight, FrameBottom, FrameTop;
 
 
         private Sheet SheetSw;
-        private object[] Views;
+
+        // Paso del barrido para encontrar cambios de zona y precision de la biseccion (metros)
+        private const double ScanStep = 0.002;
+        private const double Tolerance = 0.00001;
 
 
         public SheetWrapper(Sheet SheetSw, int SheetIndex)
@@ -125,82 +288,192 @@ namespace Veradel.SolidworksConsole.BalloonLocation
             Balloons = new List<BalloonWrapper>();
             doc.ActivateSheet(SheetName);
 
-            if (Views == null)
-                SetView();
-
-            foreach (View view in Views)
+            // La primera "vista" es la propia hoja: asi tambien salen los globos puestos sobre la hoja
+            View view = (View)doc.GetFirstView();
+            while (view != null)
             {
-
-                object[] oNotes = view.GetNotes();
-                foreach (Note balloon in oNotes)
+                object[] oNotes = (object[])view.GetNotes();
+                if (oNotes != null)
                 {
-                    if (balloon == null || !balloon.HasBalloon()) continue;
+                    foreach (object o in oNotes)
+                    {
+                        Note note = o as Note;
+                        if (note == null) continue;
 
-                    // Se rellena los globos
+                        if (note.IsStackedBalloon())
+                        {
+                            // El maestro trae toda la pila; los repetidos dan igual (se agrupa por HOJA-ZONA)
+                            AddBalloon(note, view);
+                            if (note.IsStackedBalloonMaster())
+                            {
+                                BalloonStack stack = note.GetBalloonStack();
+                                object[] members = stack == null ? null : (object[])stack.Stack;
+                                if (members != null)
+                                    foreach (object m in members)
+                                        if (m is Note) AddBalloon((Note)m, view);
+                            }
+                            continue;
+                        }
 
-                    double[] info = balloon.GetBalloonInfo();
-                    Balloons.Add(new BalloonWrapper(SheetIndex, info[0], info[1], balloon.GetText(), SheetSw.GetDrawingZone(info[0], info[1])));
+                        if (!note.HasBalloon() && !note.IsBomBalloon()) continue;
+
+                        AddBalloon(note, view);
+                    }
                 }
+
+                view = (View)view.GetNextView();
             }
         }
 
 
+        private void AddBalloon(Note note, View view)
+        {
+            // Centro del circulo (coordenadas de hoja, metros). La posicion de la anotacion es el punto
+            // del texto y, si el globo esta junto a un limite de zona, cae en la zona vecina
+            double[] pos = (double[])note.GetBalloonInfo();
+            if (pos == null || pos.Length < 2)
+            {
+                Annotation annotation = (Annotation)note.GetAnnotation();
+                pos = annotation == null ? null : (double[])annotation.GetPosition();
+            }
+            if (pos == null) return;
 
-        // TODO: Set the lines and the views 
+            string text = GetBalloonText(note);
+            Balloons.Add(new BalloonWrapper(SheetIndex, pos[0], pos[1], text, SheetSw.GetDrawingZone(pos[0], pos[1]), view.GetName2()));
+        }
+
+
+        private static string GetBalloonText(Note note)
+        {
+            string text = null;
+
+            // Globo de LDM: texto superior = nº de posicion
+            if (note.IsBomBalloon())
+                text = note.GetBomBalloonText(true);
+
+            if (string.IsNullOrWhiteSpace(text))
+                text = note.GetText();
+
+            return text == null ? "" : text.Trim();
+        }
+
+
+        public List<BomWrapper> GetBoms(DrawingDoc doc)
+        {
+            List<BomWrapper> boms = new List<BomWrapper>();
+            doc.ActivateSheet(SheetName);
+
+            View view = (View)doc.GetFirstView();
+            while (view != null)
+            {
+                object[] tables = (object[])view.GetTableAnnotations();
+                if (tables != null)
+                {
+                    foreach (object o in tables)
+                    {
+                        TableAnnotation table = o as TableAnnotation;
+                        if (table != null && table.Type == (int)swTableAnnotationType_e.swTableAnnotation_BillOfMaterials)
+                            boms.Add(new BomWrapper(table, SheetIndex, SheetName));
+                    }
+                }
+
+                view = (View)view.GetNextView();
+            }
+
+            return boms;
+        }
+
+
         public void SetZones()
         {
+            double w = 0, h = 0;
+            SheetSw.GetSize(ref w, ref h);
+            Width = w;
+            Height = h;
 
-            SheetSw.GetSize(Width, Height);
+            // Marco de zonas = hoja menos margenes del editor de zonas
+            FrameLeft = SheetSw.GetZoneMargin((int)swZoneMargin_e.swZoneLeftMargin);
+            FrameRight = w - SheetSw.GetZoneMargin((int)swZoneMargin_e.swZoneRightMargin);
+            FrameBottom = SheetSw.GetZoneMargin((int)swZoneMargin_e.swZoneBottomMargin);
+            FrameTop = h - SheetSw.GetZoneMargin((int)swZoneMargin_e.swZoneTopMargin);
 
-
-            double step = 20 / 1000.0;
-
-            string firstZone = SheetSw.GetDrawingZone(0, 0);
-
-
-            string zoneToReview = SheetSw.GetDrawingZone(0, 0);
-
-
-
-
-
-
-            for (int i = 0; i< Width; i++)
+            if (FrameRight <= FrameLeft || FrameTop <= FrameBottom)
             {
-
-                // Cambio de zona
-                if (zoneToReview != SheetSw.GetDrawingZone(i, 0))
-                {
-                    double lowerLimit = i - step;
-                    double upperLimit = i;
-
-                    while (true)
-                    {
-                        double mean = (lowerLimit + upperLimit);
-
-                        if (zoneToReview == )
-
-                                
-                    }
-
-                }
-
-
-
-
-
+                FrameLeft = 0; FrameRight = w;
+                FrameBottom = 0; FrameTop = h;
             }
 
+            double xMid = (FrameLeft + FrameRight) / 2;
+            double yMid = (FrameBottom + FrameTop) / 2;
 
+            // En horizontal solo cambia la columna, en vertical solo la fila
+            LineX = FindBoundaries(FrameLeft, FrameRight, x => SheetSw.GetDrawingZone(x, yMid));
+            LineY = FindBoundaries(FrameBottom, FrameTop, y => SheetSw.GetDrawingZone(xMid, y));
 
-
-
+            SetCells();
         }
 
 
-        private void SetView()
+        // Barrido + biseccion sobre GetDrawingZone: sirve para zonas uniformes y "50 mm desde el centro"
+        private static List<double> FindBoundaries(double from, double to, Func<double, string> zoneAt)
         {
-            Views = (object[])SheetSw.GetViews();
+            List<double> boundaries = new List<double>();
+
+            double prevPos = from + Tolerance;
+            string prevZone = zoneAt(prevPos);
+
+            for (double pos = from + ScanStep; pos < to - Tolerance; pos += ScanStep)
+            {
+                string zone = zoneAt(pos);
+
+                if (zone != prevZone)
+                {
+                    double lowerLimit = prevPos;
+                    double upperLimit = pos;
+
+                    while (upperLimit - lowerLimit > Tolerance)
+                    {
+                        double mean = (lowerLimit + upperLimit) / 2;
+
+                        if (zoneAt(mean) == prevZone)
+                            lowerLimit = mean;
+                        else
+                            upperLimit = mean;
+                    }
+
+                    boundaries.Add((lowerLimit + upperLimit) / 2);
+                    prevZone = zone;
+                }
+
+                prevPos = pos;
+            }
+
+            return boundaries;
+        }
+
+
+        private void SetCells()
+        {
+            Cells = new List<ZoneCell>();
+
+            List<double> xs = new List<double> { FrameLeft };
+            xs.AddRange(LineX);
+            xs.Add(FrameRight);
+
+            List<double> ys = new List<double> { FrameBottom };
+            ys.AddRange(LineY);
+            ys.Add(FrameTop);
+
+            for (int i = 0; i < xs.Count - 1; i++)
+            {
+                for (int j = 0; j < ys.Count - 1; j++)
+                {
+                    string label = SheetSw.GetDrawingZone((xs[i] + xs[i + 1]) / 2, (ys[j] + ys[j + 1]) / 2);
+                    if (string.IsNullOrEmpty(label)) continue;
+
+                    Cells.Add(new ZoneCell { X1 = xs[i], X2 = xs[i + 1], Y1 = ys[j], Y2 = ys[j + 1], Label = label });
+                }
+            }
         }
 
     }

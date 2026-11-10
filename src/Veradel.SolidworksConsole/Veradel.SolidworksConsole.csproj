@@ -53,7 +53,11 @@
       <HintPath>..\..\packages\SolidWorks.Interop.swpublished.30.5.1\lib\SolidWorks.Interop.swpublished.dll</HintPath>
       <EmbedInteropTypes>True</EmbedInteropTypes>
     </Reference>
+    <Reference Include="PdfSharp, Version=1.50.5147.0, Culture=neutral, PublicKeyToken=f94615aa0424f9eb, processorArchitecture=MSIL">
+      <HintPath>..\..\packages\PDFsharp.1.50.5147\lib\net20\PdfSharp.dll</HintPath>
+    </Reference>
     <Reference Include="System" />
+    <Reference Include="System.Drawing" />
     <Reference Include="System.Core" />
     <Reference Include="System.Xml.Linq" />
     <Reference Include="System.Data.DataSetExtensions" />
@@ -64,6 +68,8 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="BalloonLocation\BalloonLocation.cs" />
+    <Compile Include="BalloonLocation\BomWrapper.cs" />
+    <Compile Include="BalloonLocation\MontadoresPdf.cs" />
     <Compile Include="Boilmaker\Boilermaker.cs" />
     <Compile Include="EdgeColoringDebug.cs" />
     <Compile Include="PartCreation\BoltCreation.cs" />
