@@ -36,7 +36,7 @@ namespace Veradel.SolidworksConsole.BalloonLocation
 
 
         public static void Build(string basePdf, string outPdf, List<SheetWrapper> sheets, BomWrapper bom,
-            Dictionary<string, List<BalloonWrapper>> positions, string docTitle)
+            Dictionary<string, List<BalloonWrapper>> positions)
         {
             using (PdfDocument doc = PdfReader.Open(basePdf, PdfDocumentOpenMode.Modify))
             {
@@ -46,7 +46,7 @@ namespace Veradel.SolidworksConsole.BalloonLocation
                 for (int i = 0; i < Math.Min(doc.PageCount, sheets.Count); i++)
                     DrawZones(doc.Pages[i], sheets[i]);
 
-                AddBomPages(doc, sheets, bom, positions, docTitle);
+                AddBomPages(doc, sheets, bom, positions);
 
                 doc.Save(outPdf);
             }
@@ -125,20 +125,18 @@ namespace Veradel.SolidworksConsole.BalloonLocation
         }
 
 
-        private static void AddBomPages(PdfDocument doc, List<SheetWrapper> sheets, BomWrapper bom, Dictionary<string, List<BalloonWrapper>> positions, string docTitle)
+        private static void AddBomPages(PdfDocument doc, List<SheetWrapper> sheets, BomWrapper bom, Dictionary<string, List<BalloonWrapper>> positions)
         {
             XPdfFontOptions unicode = new XPdfFontOptions(PdfFontEncoding.Unicode);
             XFont font = new XFont("Arial", FontSize, XFontStyle.Regular, unicode);
             XFont bold = new XFont("Arial", FontSize, XFontStyle.Bold, unicode);
-            XFont titleFont = new XFont("Arial", 11, XFontStyle.Bold, unicode);
 
             List<string> headers = new List<string>(bom.Headers) { PositionHeader };
 
             BomLayout layout = new BomLayout { Doc = doc, Sheets = sheets };
             layout.ColumnWidths = GetColumnWidths(bom, A4Width() - 2 * Mm(A4MarginMm));
 
-            string title = docTitle + "  —  " + bom.Title;
-            NewPage(layout, title, titleFont, headers, bold);
+            NewPage(layout, headers, bold);
 
             foreach (string[] row in bom.Rows)
             {
@@ -151,7 +149,7 @@ namespace Veradel.SolidworksConsole.BalloonLocation
 
                 double height = MeasureRow(layout.Gfx, font, cells, tokens, layout.ColumnWidths);
                 if (layout.Y + height > layout.Bottom)
-                    NewPage(layout, title, titleFont, headers, bold);
+                    NewPage(layout, headers, bold);
 
                 DrawRow(layout, font, cells, zones, height);
             }
@@ -163,7 +161,7 @@ namespace Veradel.SolidworksConsole.BalloonLocation
             {
                 using (XGraphics gfx = XGraphics.FromPdfPage(layout.Pages[i], XGraphicsPdfPageOptions.Append))
                 {
-                    string footer = "LDM " + (i + 1) + " / " + layout.Pages.Count;
+                    string footer = (i + 1) + " / " + layout.Pages.Count;
                     gfx.DrawString(footer, font, XBrushes.Gray,
                         new XRect(layout.Left, layout.Bottom + Mm(3), layout.Width, FontSize), XStringFormats.TopRight);
                 }
@@ -194,7 +192,7 @@ namespace Veradel.SolidworksConsole.BalloonLocation
         }
 
 
-        private static void NewPage(BomLayout layout, string title, XFont titleFont, List<string> headers, XFont bold)
+        private static void NewPage(BomLayout layout, List<string> headers, XFont bold)
         {
             if (layout.Gfx != null) layout.Gfx.Dispose();
 
@@ -209,8 +207,7 @@ namespace Veradel.SolidworksConsole.BalloonLocation
             layout.Width = A4Width() - 2 * Mm(A4MarginMm);
             layout.Bottom = A4Height() - Mm(A4MarginMm) - Mm(6);
 
-            layout.Gfx.DrawString(title, titleFont, XBrushes.Black, new XRect(layout.Left, layout.Top, layout.Width, 14), XStringFormats.TopLeft);
-            layout.Y = layout.Top + Mm(8);
+            layout.Y = layout.Top;
 
             // Cabecera repetida en cada pagina
             double height = MeasureRow(layout.Gfx, bold, headers, null, layout.ColumnWidths);

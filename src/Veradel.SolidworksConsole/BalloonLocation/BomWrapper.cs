@@ -2,6 +2,7 @@ using SolidWorks.Interop.sldworks;
 using SolidWorks.Interop.swconst;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 
 namespace Veradel.SolidworksConsole.BalloonLocation
 {
@@ -37,7 +38,7 @@ namespace Veradel.SolidworksConsole.BalloonLocation
             int lastData = headerAtBottom ? rowCount - headerCount - 1 : rowCount - 1;
 
             for (int c = 0; c < columnCount; c++)
-                Headers.Add(headerRow >= 0 ? Clean(table.DisplayedText2[headerRow, c, false]) : table.GetColumnTitle2(c, false));
+                Headers.Add(StripTags(Clean(headerRow >= 0 ? table.DisplayedText2[headerRow, c, false] : table.GetColumnTitle2(c, false))));
 
             for (int r = firstData; r <= lastData; r++)
             {
@@ -81,6 +82,14 @@ namespace Veradel.SolidworksConsole.BalloonLocation
         private static string Clean(string text)
         {
             return text == null ? "" : text.Replace("\r", "").Trim();
+        }
+
+
+        // Si la cabecera tiene formato parcial SolidWorks devuelve el texto con codigos tipo <FONT size=2>:
+        // se quita cualquier etiqueta <XXX ...>, </XXX> o <\XXX> y se deja el texto
+        private static string StripTags(string text)
+        {
+            return Regex.Replace(text, @"<[/\\]?[A-Za-z][^<>]*>", "").Trim();
         }
     }
 }

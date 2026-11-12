@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 
 namespace Veradel.SolidworksConsole.BalloonLocation
 {
@@ -73,7 +74,7 @@ namespace Veradel.SolidworksConsole.BalloonLocation
             {
                 if (!ExportPdf(basePdf, sheets)) return;
 
-                MontadoresPdf.Build(basePdf, outPdf, sheets, bom, positions, modelDoc2.GetTitle());
+                MontadoresPdf.Build(basePdf, outPdf, sheets, bom, positions);
                 Console.WriteLine("PDF generado: " + outPdf);
             }
             finally
@@ -392,12 +393,7 @@ namespace Veradel.SolidworksConsole.BalloonLocation
             Height = h;
 
             // Marco de zonas = hoja menos margenes del editor de zonas
-            FrameLeft = SheetSw.GetZoneMargin((int)swZoneMargin_e.swZoneLeftMargin);
-            FrameRight = w - SheetSw.GetZoneMargin((int)swZoneMargin_e.swZoneRightMargin);
-            FrameBottom = SheetSw.GetZoneMargin((int)swZoneMargin_e.swZoneBottomMargin);
-            FrameTop = h - SheetSw.GetZoneMargin((int)swZoneMargin_e.swZoneTopMargin);
-
-            if (FrameRight <= FrameLeft || FrameTop <= FrameBottom)
+            if (!SetFrameFromMargins(w, h) || FrameRight <= FrameLeft || FrameTop <= FrameBottom)
             {
                 FrameLeft = 0; FrameRight = w;
                 FrameBottom = 0; FrameTop = h;
@@ -407,10 +403,59 @@ namespace Veradel.SolidworksConsole.BalloonLocation
             double yMid = (FrameBottom + FrameTop) / 2;
 
             // En horizontal solo cambia la columna, en vertical solo la fila
-            LineX = FindBoundaries(FrameLeft, FrameRight, x => SheetSw.GetDrawingZone(x, yMid));
-            LineY = FindBoundaries(FrameBottom, FrameTop, y => SheetSw.GetDrawingZone(xMid, y));
+            Func<double, string> zoneAtX = x => SheetSw.GetDrawingZone(x, yMid);
+            Func<double, string> zoneAtY = y => SheetSw.GetDrawingZone(xMid, y);
+
+            LineX = FindBoundaries(FrameLeft, FrameRight, zoneAtX);
+            LineY = FindBoundaries(FrameBottom, FrameTop, zoneAtY);
+
+            TrimFrame(LineX, zoneAtX, ref FrameLeft, ref FrameRight);
+            TrimFrame(LineY, zoneAtY, ref FrameBottom, ref FrameTop);
 
             SetCells();
+        }
+
+
+        // GetZoneMargin no existe en la API de SW 2021 (si desde 2022): se llama por IDispatch
+        // para que compile con cualquier interop y en 2021 se cae al barrido de la hoja entera
+        private bool SetFrameFromMargins(double w, double h)
+        {
+            try
+            {
+                FrameLeft = GetZoneMargin(3);       // swZoneLeftMargin
+                FrameRight = w - GetZoneMargin(2);  // swZoneRightMargin
+                FrameBottom = GetZoneMargin(1);     // swZoneBottomMargin
+                FrameTop = h - GetZoneMargin(0);    // swZoneTopMargin
+                return true;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+
+        private double GetZoneMargin(int margin)
+        {
+            return Convert.ToDouble(SheetSw.GetType().InvokeMember("GetZoneMargin", BindingFlags.InvokeMethod, null, SheetSw, new object[] { margin }));
+        }
+
+
+        // Si el barrido empezo en el borde de la hoja y ahi no hay zona (margen), el primer/ultimo
+        // cambio es el borde del marco y no una linea de zona
+        private void TrimFrame(List<double> lines, Func<double, string> zoneAt, ref double start, ref double end)
+        {
+            if (lines.Count > 0 && string.IsNullOrEmpty(zoneAt(start + Tolerance)))
+            {
+                start = lines[0];
+                lines.RemoveAt(0);
+            }
+
+            if (lines.Count > 0 && string.IsNullOrEmpty(zoneAt(end - Tolerance)))
+            {
+                end = lines[lines.Count - 1];
+                lines.RemoveAt(lines.Count - 1);
+            }
         }
 
 
