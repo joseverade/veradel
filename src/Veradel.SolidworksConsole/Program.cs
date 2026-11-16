@@ -26,20 +26,12 @@ namespace Veradel.SolidworksConsole
 
              */
             //new EdgeColoringDebug(swApp).Run();
-            /*
-             
-            // "uniforme" => una sola escala para todo el despiece; por defecto, una por cuerpo
-            DespieceScaleMode scaleMode =
-                args != null && args.Length > 0 &&
-                string.Equals(args[0], "uniforme", System.StringComparison.OrdinalIgnoreCase)
-                    ? DespieceScaleMode.Uniform
-                    : DespieceScaleMode.PerBody;
 
-            new Boilermaker(swApp, scaleMode).Run();
              
-             */
+            new Boilermaker(swApp).Run();
 
-            new BalloonLocation.BalloonLocation(swApp).Execute();
+
+            //new BalloonLocation.BalloonLocation(swApp).Execute();
 
 
         }

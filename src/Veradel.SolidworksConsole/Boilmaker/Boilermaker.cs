@@ -25,19 +25,30 @@ namespace Veradel.SolidworksConsole.Boilmaker
         // Distribucion de las vistas en la hoja
         private const double ViewGap = 0.015;
 
-        // Rejilla fija: el reparto no depende del tamano de las piezas, asi que el orden de la
-        // lista de cortes se respeta y la celda que le toca a cada cuerpo se conoce de antemano.
-        private const int GridColumns = 3;
-        private const int GridRows = 2;
+        // Area util de la hoja: offset para quedar dentro del marco por los cuatro lados, mas la
+        // banda del cajetin medida desde el marco inferior.
+        private const double FrameOffset = 0.020;
+        private const double TitleBlockBand = 0.060;
 
-        // Area util de la hoja. El margen inferior reserva la banda del cajetin.
-        private const double MarginLeft = 0.015;
-        private const double MarginRight = 0.015;
-        private const double MarginTop = 0.015;
-        private const double MarginBottom = 0.060;
+        // Limites de la escala de hoja. Por encima de MaxScale no se amplia aunque sobre papel;
+        // por debajo de MinScale se prefiere un papel mayor y, agotado el A0, mas hojas.
+        private const double MaxScale = 1.0;
+        private const double MinScale = 1.0 / 10.0;
 
-        // Aire entre el bloque de vistas y el borde de su celda
-        private const double CellPadding = 0.005;
+        private const double Eps = 1e-9;
+
+        // Formatos apaisados A4..A0: { swDwgPaperSizes_e (mismo valor en swDwgTemplates_e), ancho, alto }
+        private static readonly double[][] StandardPapers =
+        {
+            new[] { 6.0, 0.297, 0.210 },
+            new[] { 8.0, 0.420, 0.297 },
+            new[] { 9.0, 0.594, 0.420 },
+            new[] { 10.0, 0.841, 0.594 },
+            new[] { 11.0, 1.189, 0.841 }
+        };
+
+        // Aire entre el bloque de vistas y el borde de su region
+        private const double RegionPadding = 0.008;
 
         // Corte de seguridad: un despiece de cientos de piezas no debe llenar el disco de hojas
         private const int MaxSheets = 50;
@@ -68,21 +79,10 @@ namespace Veradel.SolidworksConsole.Boilmaker
         // A false manda el diedro de la hoja (primer diedro => perfil a la izquierda).
         private static readonly bool ProfileOnRight = true;
 
-        /// <summary>
-        /// Politica de escala del despiece. La elige quien llama; por defecto cada cuerpo lleva la
-        /// suya, que es lo que aprovecha la hoja.
-        /// </summary>
-        public DespieceScaleMode ScaleMode { get; set; }
-
-        public Boilermaker(SldWorks swApp) : this(swApp, DespieceScaleMode.PerBody)
-        {
-        }
-
-        public Boilermaker(SldWorks swApp, DespieceScaleMode scaleMode)
+        public Boilermaker(SldWorks swApp)
         {
             _swApp = swApp;
             _math = (MathUtility)swApp.GetMathUtility();
-            ScaleMode = scaleMode;
         }
 
         public void Run()
@@ -128,7 +128,12 @@ namespace Veradel.SolidworksConsole.Boilmaker
             // Se verifica la operacion is weldment
             FeatureManager featureManager = modelPart.FeatureManager;
             if (!partDoc.IsWeldment())
+            {
                 featureManager.InsertWeldmentFeature();
+
+                // La lista de cortes no existe hasta que la pieza se reconstruye
+                modelPart.ForceRebuild3(false);
+            }
 
             // una vez verificada que sea weldment, se recorre todas las carpetas y se extrae una pieza
 
@@ -146,6 +151,19 @@ namespace Veradel.SolidworksConsole.Boilmaker
             for (int i = 0; i < bodies.Count; i++)
                 orientations.Add(SolveOrientation(bodies[i], i));
 
+            // Fase 1: medir. El bloque de cada cuerpo (alzado + perfil + planta) se mide sobre la
+            // geometria, sin vistas: la escala y el reparto en hojas hay que decidirlos ANTES de
+            // crear nada, porque una vista no se puede mover de hoja. Los cuerpos sin par de caras
+            // valido se descartan aqui para que no reserven region.
+            List<BodyRegion> regions = new List<BodyRegion>();
+            for (int i = 0; i < bodies.Count; i++)
+            {
+                if (orientations[i].FrontFace != null && orientations[i].RightFace != null)
+                    regions.Add(MeasureRegion(bodies[i], orientations[i], i));
+                else
+                    Console.WriteLine($"[cuerpo {i}] sin par de caras valido, se omite");
+            }
+
             // regresamos al dibujo
 
             int errors = 0;
@@ -153,75 +171,329 @@ namespace Veradel.SolidworksConsole.Boilmaker
 
             SelectionMgr sel = modelPart.SelectionManager;
 
-            // Los cuerpos sin par de caras valido se descartan antes de paginar: si no, dejarian
-            // huecos en la rejilla.
-            List<int> printable = new List<int>();
-            for (int i = 0; i < bodies.Count; i++)
+            if (regions.Count == 0)
             {
-                if (orientations[i].FrontFace != null && orientations[i].RightFace != null)
-                    printable.Add(i);
-                else
-                    Console.WriteLine($"[cuerpo {i}] sin par de caras valido, se omite");
+                Console.WriteLine("ningun cuerpo imprimible, no se crea el despiece");
+                return;
             }
 
-            int perSheet = GridColumns * GridRows;
-            int sheetCount = (printable.Count + perSheet - 1) / perSheet;
+            // Fase 2: papel y escala DE HOJA, unica para todo el despiece. Se decide solo con
+            // numeros, antes de crear ninguna hoja ni vista.
+            SheetSetup setup = ChooseSheetSetup(regions, activeSheet);
+
+            // Fase 3: una region por cuerpo, sin solapes, en las hojas que hagan falta.
+            int sheetCount = PackRegions(regions, setup.Scale, setup.Width, setup.Height);
 
             if (sheetCount > MaxSheets)
             {
-                Console.WriteLine($"{printable.Count} cuerpos necesitan {sheetCount} hojas, el tope es {MaxSheets}: se recorta el despiece");
+                Console.WriteLine($"{regions.Count} cuerpos necesitan {sheetCount} hojas, el tope es {MaxSheets}: se recorta el despiece");
                 sheetCount = MaxSheets;
             }
 
-            Console.WriteLine($"{printable.Count} cuerpos, rejilla {GridColumns}x{GridRows}, {sheetCount} hoja(s)");
+            Console.WriteLine($"{regions.Count} cuerpos, papel {setup.Width * 1000.0:F0} x {setup.Height * 1000.0:F0} mm, " +
+                $"escala de hoja {setup.Scale[0]}:{setup.Scale[1]}, {sheetCount} hoja(s)");
 
-            // Fase 1: crear las vistas y medir cada bloque a escala 1:1. La escala no se puede
-            // decidir antes porque el tamano del bloque solo se conoce con las vistas hechas.
-            List<BodyViewSet> sets = new List<BodyViewSet>();
-
+            // Fase 4: crear las vistas de cada hoja y centrarlas en su region. Nacen ya a la
+            // escala de la hoja, no hay que escalar vista por vista.
             for (int sheetIndex = 0; sheetIndex < sheetCount; sheetIndex++)
             {
-                // Todo el despiece va a hojas nuevas con las mismas propiedades que la de partida:
-                // el dibujo original no se toca y las vistas no se mezclan con las que ya habia.
-                Sheet despieceSheet = CreateDespieceSheet(drawing, activeSheet, DespieceSheetName);
-                if (despieceSheet == null)
+                // Todo el despiece va a hojas nuevas: el dibujo original no se toca y las vistas
+                // no se mezclan con las que ya habia.
+                if (CreateDespieceSheet(drawing, setup, DespieceSheetName) == null)
                 {
                     Console.WriteLine("no se pudo crear la hoja del despiece, se aborta");
                     return;
                 }
 
-                despieceSheet.GetSize(ref width, ref height);
-
-                for (int slot = 0; slot < perSheet; slot++)
+                List<BodyViewSet> sets = new List<BodyViewSet>();
+                for (int r = 0; r < regions.Count; r++)
                 {
-                    int flat = sheetIndex * perSheet + slot;
-                    if (flat >= printable.Count) break;
+                    if (regions[r].Sheet != sheetIndex) continue;
 
-                    int i = printable[flat];
+                    int i = regions[r].Index;
 
                     BodyViewSet views = CreateBodyViews(drawing, modelDrawing, modelPart, sel,
                         referencedDrawingPathName, bodies[i], orientations[i], i);
 
                     if (views == null) continue;
 
-                    views.Column = slot % GridColumns;
-                    views.Row = slot / GridColumns;
-
-                    MeasureBlock(views);
+                    views.Region = regions[r];
                     sets.Add(views);
+                }
+
+                // Hasta que el dibujo no se reconstruye, GetOutline sigue dando el contorno de la
+                // pieza ENTERA y no el del cuerpo filtrado: centrar con ese contorno es lo que
+                // sacaba las vistas de su region. Una reconstruccion por hoja, no por cuerpo.
+                modelDrawing.ForceRebuild3(false);
+
+                for (int s = 0; s < sets.Count; s++)
+                    PlaceInRegion(modelDrawing, sets[s]);
+            }
+
+            modelDrawing.GraphicsRedraw2();
+        }
+
+        /// <summary>
+        /// Tamano del bloque de vistas de un cuerpo a 1:1, medido sobre la geometria en los ejes
+        /// que tendra el alzado: horizontal = arista dominante, profundidad = normal de la cara
+        /// principal. El perfil suma la profundidad al ancho y la planta la suma al alto.
+        /// </summary>
+        private BodyRegion MeasureRegion(Body2 body, BodyOrientation orientation, int index)
+        {
+            double[] normal = orientation.FrontNormal;
+            double[] right = VeraDelMathClass.Normalize(GetNormal(orientation.RightFace));
+
+            // Sin arista recta no hay giro posterior: el eje horizontal es el de la cara secundaria.
+            double[] horizontal = orientation.DominantDirection ?? right;
+
+            if (!AlignDominantEdgeHorizontal && orientation.DominantDirection != null)
+            {
+                // Giro minimo: queda horizontal el eje de la cara que ya estaba mas cerca de serlo.
+                double[] across = VeraDelMathClass.CrossProduct(normal, horizontal);
+                if (Math.Abs(VeraDelMathClass.DotProduct(across, right)) > Math.Abs(VeraDelMathClass.DotProduct(horizontal, right)))
+                    horizontal = across;
+            }
+
+            double[] vertical = VeraDelMathClass.CrossProduct(normal, horizontal);
+
+            double frontWidth = Extent(body, horizontal);
+            double frontHeight = Extent(body, vertical);
+            double depth = Extent(body, normal);
+
+            BodyRegion region = new BodyRegion();
+            region.Index = index;
+            region.ModelWidth = frontWidth + depth;
+            region.ModelHeight = frontHeight + depth;
+
+            Console.WriteLine($"[cuerpo {index}] bloque 1:1 = {region.ModelWidth * 1000.0:F1} x {region.ModelHeight * 1000.0:F1} mm");
+
+            return region;
+        }
+
+        /// <summary>
+        /// Longitud del cuerpo a lo largo de una direccion unitaria. GetExtremePoint da el extent
+        /// exacto en cualquier direccion; si falla se proyecta la caja del cuerpo, que nunca
+        /// queda corta.
+        /// </summary>
+        private static double Extent(Body2 body, double[] direction)
+        {
+            double x1, y1, z1, x2, y2, z2;
+
+            if (body.GetExtremePoint(direction[0], direction[1], direction[2], out x1, out y1, out z1) &&
+                body.GetExtremePoint(-direction[0], -direction[1], -direction[2], out x2, out y2, out z2))
+            {
+                return Math.Abs((x1 - x2) * direction[0] + (y1 - y2) * direction[1] + (z1 - z2) * direction[2]);
+            }
+
+            double[] box = (double[])body.GetBodyBox();
+            if (box == null) return 0.0;
+
+            return Math.Abs(direction[0]) * (box[3] - box[0])
+                 + Math.Abs(direction[1]) * (box[4] - box[1])
+                 + Math.Abs(direction[2]) * (box[5] - box[2]);
+        }
+
+        /// <summary>
+        /// Papel y escala de hoja del despiece. Objetivo: TODO en una sola hoja.
+        ///
+        ///   1. Del papel de partida hacia el A0, el primer papel en el que todo cabe en una hoja
+        ///      sin bajar de MinScale; dentro de ese papel, la mayor escala normalizada.
+        ///   2. Si ni el A0 lo consigue: A0 a MinScale y las hojas que hagan falta. Solo se baja
+        ///      de MinScale si algun cuerpo no cabe el solo en la hoja.
+        /// </summary>
+        private SheetSetup ChooseSheetSetup(List<BodyRegion> regions, Sheet source)
+        {
+            List<SheetSetup> papers = CandidatePapers(source);
+
+            for (int p = 0; p < papers.Count; p++)
+            {
+                for (int s = 0; s < NormalizedScales.Length; s++)
+                {
+                    double value = (double)NormalizedScales[s][0] / NormalizedScales[s][1];
+                    if (value > MaxScale + Eps) continue;
+                    if (value < MinScale - Eps) break;
+
+                    if (PackRegions(regions, NormalizedScales[s], papers[p].Width, papers[p].Height) == 1)
+                    {
+                        papers[p].Scale = NormalizedScales[s];
+                        return papers[p];
+                    }
                 }
             }
 
-            // Fase 2: escala. Una sola pasada sobre todo el despiece, porque el modo uniforme
-            // necesita conocer la pieza mas exigente antes de fijar nada.
-            ApplyScales(sets, width, height);
-            modelDrawing.GraphicsRedraw2();
+            SheetSetup largest = papers[papers.Count - 1];
+            largest.Scale = NormalizedScales[NormalizedScales.Length - 1];
 
-            // Fase 3: colocacion, ya con el tamano definitivo de cada vista.
-            for (int i = 0; i < sets.Count; i++)
-                PlaceInCell(modelDrawing, sets[i], width, height);
+            for (int s = 0; s < NormalizedScales.Length; s++)
+            {
+                double value = (double)NormalizedScales[s][0] / NormalizedScales[s][1];
+                if (value > MinScale + Eps) continue;
 
-            modelDrawing.GraphicsRedraw2();
+                if (PackRegions(regions, NormalizedScales[s], largest.Width, largest.Height) > 0)
+                {
+                    largest.Scale = NormalizedScales[s];
+                    break;
+                }
+            }
+
+            Console.WriteLine("no cabe todo en una hoja ni en el papel mayor: se reparte en varias");
+            return largest;
+        }
+
+        /// <summary>
+        /// Papeles a probar, de menor a mayor: el de la hoja de partida (con su propio formato) y
+        /// los normalizados mayores que el. Un papel distinto del de partida no puede reutilizar
+        /// su formato de hoja (el marco no encajaria), asi que lleva el estandar de su tamano.
+        /// </summary>
+        private List<SheetSetup> CandidatePapers(Sheet source)
+        {
+            SheetSetup original = new SheetSetup();
+            original.PaperSize = (int)swDwgPaperSizes_e.swDwgPaperA3size;
+            original.Template = (int)swDwgTemplates_e.swDwgTemplateNone;
+            original.TemplateName = source.GetTemplateName();
+
+            // Mismo orden que ISheet::SetProperties: papel, plantilla, escala1, escala2, diedro.
+            Array properties = SheetProperties(source);
+            if (properties != null && properties.Length >= 2)
+            {
+                original.PaperSize = Convert.ToInt32(properties.GetValue(0));
+                original.Template = Convert.ToInt32(properties.GetValue(1));
+            }
+            else
+            {
+                Console.WriteLine("no se pudieron leer las propiedades de la hoja de partida, se usan valores por defecto");
+            }
+
+            // El ancho y el alto se leen de GetSize: en papel a medida no vienen en las propiedades.
+            source.GetSize(ref original.Width, ref original.Height);
+
+            List<SheetSetup> papers = new List<SheetSetup>();
+            papers.Add(original);
+
+            for (int i = 0; i < StandardPapers.Length; i++)
+            {
+                if (StandardPapers[i][1] <= original.Width + 1e-6) continue;
+
+                SheetSetup paper = new SheetSetup();
+                paper.PaperSize = (int)StandardPapers[i][0];
+                paper.Template = (int)StandardPapers[i][0];
+                paper.TemplateName = string.Empty;
+                paper.Width = StandardPapers[i][1];
+                paper.Height = StandardPapers[i][2];
+                papers.Add(paper);
+            }
+
+            return papers;
+        }
+
+        /// <summary>
+        /// Reparte las regiones en hojas sin que se pisen: estantes de izquierda a derecha, con
+        /// los bloques ordenados de mas alto a mas bajo (first-fit decreasing height), que es lo
+        /// que mejor llena la hoja. El papel que sobra se reparte entre regiones y entre estantes,
+        /// asi el despiece queda centrado y los solidos lo mas separados posible.
+        ///
+        /// Devuelve el numero de hojas, o 0 si algun bloque no cabe el solo en la hoja. No toca
+        /// SolidWorks: se llama tantas veces como haga falta para tantear papel y escala.
+        /// </summary>
+        private static int PackRegions(List<BodyRegion> regions, int[] scale, double sheetWidth, double sheetHeight)
+        {
+            double factor = (double)scale[0] / scale[1];
+            double usableWidth = UsableWidth(sheetWidth);
+            double usableHeight = UsableHeight(sheetHeight);
+
+            // Los huecos entre vistas y el aire de la region van en unidades de papel: no escalan.
+            for (int i = 0; i < regions.Count; i++)
+            {
+                regions[i].Width = regions[i].ModelWidth * factor + ViewGap + 2.0 * RegionPadding;
+                regions[i].Height = regions[i].ModelHeight * factor + ViewGap + 2.0 * RegionPadding;
+
+                if (regions[i].Width > usableWidth + Eps || regions[i].Height > usableHeight + Eps) return 0;
+            }
+
+            List<BodyRegion> order = new List<BodyRegion>(regions);
+            order.Sort((a, b) =>
+            {
+                int byHeight = b.Height.CompareTo(a.Height);
+                return byHeight != 0 ? byHeight : a.Index.CompareTo(b.Index);
+            });
+
+            List<Shelf> shelves = new List<Shelf>();
+            List<double> usedHeight = new List<double>();  // alto ocupado de cada hoja
+            List<int> shelfCount = new List<int>();        // estantes de cada hoja
+
+            for (int i = 0; i < order.Count; i++)
+            {
+                BodyRegion region = order[i];
+
+                // Al ir de mas alto a mas bajo, en un estante abierto solo hay que mirar el ancho.
+                Shelf shelf = null;
+                for (int s = 0; s < shelves.Count && shelf == null; s++)
+                {
+                    if (shelves[s].Width + region.Width <= usableWidth + Eps) shelf = shelves[s];
+                }
+
+                if (shelf == null)
+                {
+                    int sheet = 0;
+                    while (sheet < usedHeight.Count && usedHeight[sheet] + region.Height > usableHeight + Eps) sheet++;
+
+                    if (sheet == usedHeight.Count)
+                    {
+                        usedHeight.Add(0.0);
+                        shelfCount.Add(0);
+                    }
+
+                    shelf = new Shelf();
+                    shelf.Sheet = sheet;
+                    shelf.Row = shelfCount[sheet]++;
+                    shelf.Top = usedHeight[sheet];
+                    shelf.Height = region.Height;
+                    shelves.Add(shelf);
+
+                    usedHeight[sheet] += region.Height;
+                }
+
+                shelf.Regions.Add(region);
+                shelf.Width += region.Width;
+            }
+
+            for (int s = 0; s < shelves.Count; s++)
+            {
+                Shelf shelf = shelves[s];
+
+                double extraY = (usableHeight - usedHeight[shelf.Sheet]) / shelfCount[shelf.Sheet];
+                double extraX = (usableWidth - shelf.Width) / shelf.Regions.Count;
+
+                double slotHeight = shelf.Height + extraY;
+                double top = shelf.Top + shelf.Row * extraY;
+                double x = 0.0;
+
+                for (int i = 0; i < shelf.Regions.Count; i++)
+                {
+                    BodyRegion region = shelf.Regions[i];
+                    double slotWidth = region.Width + extraX;
+
+                    // La Y de la hoja crece hacia arriba y los estantes se llenan desde el marco superior.
+                    region.Sheet = shelf.Sheet;
+                    region.CenterX = FrameOffset + x + slotWidth / 2.0;
+                    region.CenterY = sheetHeight - FrameOffset - top - slotHeight / 2.0;
+
+                    x += slotWidth;
+                }
+            }
+
+            return usedHeight.Count;
+        }
+
+        /// <summary>Fila de regiones dentro de una hoja, durante el reparto.</summary>
+        private sealed class Shelf
+        {
+            public int Sheet;
+            public int Row;        // posicion del estante dentro de su hoja, 0 = arriba
+            public double Top;     // distancia desde el borde superior del area util
+            public double Height;
+            public double Width;   // ancho ya ocupado
+            public readonly List<BodyRegion> Regions = new List<BodyRegion>();
         }
 
         /// <summary>
@@ -264,7 +536,7 @@ namespace Veradel.SolidworksConsole.Boilmaker
             BodyViewSet views = CreateProjectedViews(drawing, modelDrawing, vista, body, index);
             views.Index = index;
 
-            modelDrawing.GraphicsRedraw2();
+            UseSheetScale(views);
 
             return views;
         }
@@ -290,7 +562,7 @@ namespace Veradel.SolidworksConsole.Boilmaker
 
                         object[] oBodies = folder.GetBodies();
 
-                        if (oBodies != null)
+                        if (oBodies != null && oBodies.Length > 0)
                             bodies.Add((Body2)oBodies[0]);
 
                         break;
@@ -310,43 +582,16 @@ namespace Veradel.SolidworksConsole.Boilmaker
         }
 
         /// <summary>
-        /// Hoja nueva para el despiece, clonando las propiedades de la hoja de partida: tamano de
-        /// papel, formato, escala y diedro. Se activa por nombre porque tanto CreateRelativeView
-        /// como CreateUnfoldedViewAt3 crean siempre en la hoja activa.
+        /// Hoja nueva para el despiece con el papel y la ESCALA DE HOJA ya decididos; el diedro
+        /// es el de la hoja de partida. Se activa por nombre porque tanto CreateRelativeView como
+        /// CreateUnfoldedViewAt3 crean siempre en la hoja activa.
         /// </summary>
-        private Sheet CreateDespieceSheet(DrawingDoc drawing, Sheet source, string baseName)
+        private Sheet CreateDespieceSheet(DrawingDoc drawing, SheetSetup setup, string baseName)
         {
-            int paperSize = (int)swDwgPaperSizes_e.swDwgPaperA3size;
-            int template = (int)swDwgTemplates_e.swDwgTemplateNone;
-            double scale1 = 1.0, scale2 = 1.0;
-            bool firstAngle = _firstAngleProjection;
-
-            // Mismo orden que ISheet::SetProperties: papel, plantilla, escala1, escala2, diedro.
-            object rawProperties = source.GetProperties2();
-            if (rawProperties == null) rawProperties = source.GetProperties();
-
-            Array properties = rawProperties as Array;
-            if (properties != null && properties.Length >= 5)
-            {
-                paperSize = Convert.ToInt32(properties.GetValue(0));
-                template = Convert.ToInt32(properties.GetValue(1));
-                scale1 = Convert.ToDouble(properties.GetValue(2));
-                scale2 = Convert.ToDouble(properties.GetValue(3));
-                firstAngle = Convert.ToDouble(properties.GetValue(4)) != 0.0;
-            }
-            else
-            {
-                Console.WriteLine("no se pudieron leer las propiedades de la hoja de partida, se usan valores por defecto");
-            }
-
-            // El ancho y el alto se leen de GetSize: en papel a medida no vienen en las propiedades.
-            double sourceWidth = 0.0, sourceHeight = 0.0;
-            source.GetSize(ref sourceWidth, ref sourceHeight);
-
             string name = UniqueSheetName(drawing, baseName);
 
-            if (!drawing.NewSheet3(name, paperSize, template, scale1, scale2, firstAngle,
-                    source.GetTemplateName(), sourceWidth, sourceHeight, string.Empty))
+            if (!drawing.NewSheet3(name, setup.PaperSize, setup.Template, setup.Scale[0], setup.Scale[1],
+                    _firstAngleProjection, setup.TemplateName, setup.Width, setup.Height, string.Empty))
             {
                 Console.WriteLine($"NewSheet3 fallo para la hoja '{name}'");
                 return null;
@@ -355,9 +600,17 @@ namespace Veradel.SolidworksConsole.Boilmaker
             if (!drawing.ActivateSheet(name))
                 Console.WriteLine($"no se pudo activar la hoja '{name}'");
 
-            Console.WriteLine($"hoja del despiece: '{name}', escala {scale1}:{scale2}, {sourceWidth:F3} x {sourceHeight:F3} m");
+            Console.WriteLine($"hoja del despiece: '{name}'");
 
             return drawing.GetCurrentSheet() as Sheet;
+        }
+
+        private static Array SheetProperties(Sheet sheet)
+        {
+            object properties = sheet.GetProperties2();
+            if (properties == null) properties = sheet.GetProperties();
+
+            return properties as Array;
         }
 
         /// <summary>
@@ -877,127 +1130,42 @@ namespace Veradel.SolidworksConsole.Boilmaker
         }
 
         /// <summary>
-        /// Tamano del bloque de vistas a escala 1:1, en metros de papel. GetOutline devuelve el
-        /// contorno YA escalado, asi que se divide por la escala con la que se creo la vista.
+        /// La escala manda desde la HOJA: el alzado sigue la de la hoja y el perfil y la planta
+        /// la del alzado. Ninguna vista lleva escala propia.
         /// </summary>
-        private static void MeasureBlock(BodyViewSet views)
+        private static void UseSheetScale(BodyViewSet views)
         {
-            views.FrontWidth = OutlineSize(views.Front, true);
-            views.FrontHeight = OutlineSize(views.Front, false);
-            views.ProfileWidth = OutlineSize(views.Profile, true);
-            views.PlanHeight = OutlineSize(views.Plan, false);
-        }
-
-        private static double OutlineSize(View view, bool horizontal)
-        {
-            if (view == null) return 0.0;
-
-            double[] outline = (double[])view.GetOutline();
-            if (outline == null) return 0.0;
-
-            double scale = view.ScaleDecimal;
-            if (scale <= 0.0) scale = 1.0;
-
-            return (horizontal ? outline[2] - outline[0] : outline[3] - outline[1]) / scale;
-        }
-
-        /// <summary>
-        /// Fija la escala de cada bloque segun <see cref="ScaleMode"/> y la aplica al alzado. El
-        /// perfil y la planta no se tocan: con UseParentScale heredan la del padre.
-        /// </summary>
-        private void ApplyScales(List<BodyViewSet> sets, double sheetWidth, double sheetHeight)
-        {
-            double innerWidth = CellWidth(sheetWidth) - 2.0 * CellPadding;
-            double innerHeight = CellHeight(sheetHeight) - 2.0 * CellPadding;
-
-            Console.WriteLine($"celda util = {innerWidth * 1000.0:F1} x {innerHeight * 1000.0:F1} mm, modo de escala: {ScaleMode}");
-
-            double worst = double.PositiveInfinity;
-            for (int i = 0; i < sets.Count; i++)
+            try
             {
-                sets[i].FitScale = FitScale(sets[i], innerWidth, innerHeight);
-                if (sets[i].FitScale < worst) worst = sets[i].FitScale;
-            }
-
-            // Uniforme: manda la pieza mas exigente, para que los tamanos sean comparables a ojo.
-            int[] uniform = ScaleMode == DespieceScaleMode.Uniform && sets.Count > 0 ? SnapDown(worst) : null;
-
-            if (uniform != null)
-                Console.WriteLine($"escala unica del despiece: {uniform[0]}:{uniform[1]}");
-
-            for (int i = 0; i < sets.Count; i++)
-            {
-                BodyViewSet views = sets[i];
-                views.Scale = uniform ?? SnapDown(views.FitScale);
-
-                Console.WriteLine($"[cuerpo {views.Index}] cabe hasta 1:{1.0 / views.FitScale:F2} -> escala {views.Scale[0]}:{views.Scale[1]}");
-
-                try
-                {
-                    views.Front.UseSheetScale = 0;
-                    views.Front.ScaleRatio = new double[] { views.Scale[0], views.Scale[1] };
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[cuerpo {views.Index}] no se pudo fijar la escala ({ex.Message})");
-                }
-
+                views.Front.UseSheetScale = 1;
                 if (views.Profile != null) views.Profile.UseParentScale = true;
                 if (views.Plan != null) views.Plan.UseParentScale = true;
             }
-        }
-
-        /// <summary>
-        /// Mayor escala (en crudo, sin normalizar) con la que el bloque cabe en la celda. Los huecos
-        /// entre vistas van en unidades de papel, no escalan con la pieza, asi que se restan antes.
-        /// </summary>
-        private static double FitScale(BodyViewSet views, double innerWidth, double innerHeight)
-        {
-            double needWidth = views.FrontWidth + views.ProfileWidth;
-            double needHeight = views.FrontHeight + views.PlanHeight;
-
-            if (needWidth <= 0.0 || needHeight <= 0.0) return 1.0;
-
-            double freeWidth = innerWidth - (views.Profile == null ? 0.0 : ViewGap);
-            double freeHeight = innerHeight - (views.Plan == null ? 0.0 : ViewGap);
-
-            return Math.Min(freeWidth / needWidth, freeHeight / needHeight);
-        }
-
-        /// <summary>
-        /// Escalon normalizado inmediatamente inferior al valor medido: siempre hacia abajo, para
-        /// que la pieza quepa de verdad.
-        /// </summary>
-        private static int[] SnapDown(double target)
-        {
-            for (int i = 0; i < NormalizedScales.Length; i++)
+            catch (Exception ex)
             {
-                double value = (double)NormalizedScales[i][0] / NormalizedScales[i][1];
-                if (value <= target) return NormalizedScales[i];
+                Console.WriteLine($"[cuerpo {views.Index}] no se pudo ligar la escala a la hoja ({ex.Message})");
             }
-
-            int[] smallest = NormalizedScales[NormalizedScales.Length - 1];
-            Console.WriteLine($"ninguna escala normalizada baja de 1:{1.0 / target:F0}, se usa {smallest[0]}:{smallest[1]}");
-            return smallest;
         }
 
-        private static double CellWidth(double sheetWidth)
+        private static double UsableWidth(double sheetWidth)
         {
-            return (sheetWidth - MarginLeft - MarginRight) / GridColumns;
+            return sheetWidth - 2.0 * FrameOffset;
         }
 
-        private static double CellHeight(double sheetHeight)
+        private static double UsableHeight(double sheetHeight)
         {
-            return (sheetHeight - MarginTop - MarginBottom) / GridRows;
+            return sheetHeight - 2.0 * FrameOffset - TitleBlockBand;
         }
 
         /// <summary>
-        /// Centra el bloque de vistas en su celda de la rejilla. El alzado no va al centro de la
-        /// celda: se descuenta el hueco que ocupan perfil y planta a su lado, que es lo que centra
-        /// el conjunto y no la vista principal.
+        /// Centra el bloque de vistas en su region. El alzado no va al centro de la region: se
+        /// descuenta el hueco que ocupan perfil y planta a su lado, que es lo que centra el
+        /// conjunto y no la vista principal.
         /// </summary>
-        private void PlaceInCell(ModelDoc2 modelDrawing, BodyViewSet views, double sheetWidth, double sheetHeight)
+        private void PlaceInRegion(ModelDoc2 modelDrawing, BodyViewSet views)
         {
+            BodyRegion region = views.Region;
+
             double[] frontOutline = (double[])views.Front.GetOutline();
             if (frontOutline == null) return;
 
@@ -1021,15 +1189,8 @@ namespace Veradel.SolidworksConsole.Boilmaker
             double topPad = PlanSign < 0.0 ? 0.0 : stackSpace;
             double bottomPad = PlanSign < 0.0 ? stackSpace : 0.0;
 
-            double cellWidth = CellWidth(sheetWidth);
-            double cellHeight = CellHeight(sheetHeight);
-
-            // Fila 0 arriba: la Y de la hoja crece hacia arriba y el margen se mide desde el borde.
-            double cellCenterX = MarginLeft + (views.Column + 0.5) * cellWidth;
-            double cellCenterY = sheetHeight - MarginTop - (views.Row + 0.5) * cellHeight;
-
-            double frontCenterX = cellCenterX - (rightPad - leftPad) / 2.0;
-            double frontCenterY = cellCenterY - (topPad - bottomPad) / 2.0;
+            double frontCenterX = region.CenterX - (rightPad - leftPad) / 2.0;
+            double frontCenterY = region.CenterY - (topPad - bottomPad) / 2.0;
 
             MoveViewCenterTo(views.Front, frontCenterX, frontCenterY);
 
@@ -1046,8 +1207,9 @@ namespace Veradel.SolidworksConsole.Boilmaker
             double blockWidth = leftPad + frontWidth + rightPad;
             double blockHeight = topPad + frontHeight + bottomPad;
 
-            if (blockWidth > cellWidth - 2.0 * CellPadding + 1e-9 || blockHeight > cellHeight - 2.0 * CellPadding + 1e-9)
-                Console.WriteLine($"[cuerpo {views.Index}] el bloque se sale de su celda a {views.Scale[0]}:{views.Scale[1]}");
+            if (blockWidth > region.Width + 1e-9 || blockHeight > region.Height + 1e-9)
+                Console.WriteLine($"[cuerpo {views.Index}] el bloque real ({blockWidth * 1000.0:F1} x {blockHeight * 1000.0:F1} mm) " +
+                    $"no cabe en su region ({region.Width * 1000.0:F1} x {region.Height * 1000.0:F1} mm)");
         }
 
         /// <summary>
@@ -1077,10 +1239,7 @@ namespace Veradel.SolidworksConsole.Boilmaker
         /// </summary>
         private static bool IsFirstAngleProjection(Sheet sheet)
         {
-            object properties = sheet.GetProperties2();
-            if (properties == null) properties = sheet.GetProperties();
-
-            Array values = properties as Array;
+            Array values = SheetProperties(sheet);
             if (values == null || values.Length < 5)
             {
                 Console.WriteLine("no se pudo leer el diedro de la hoja, se asume primer diedro");
@@ -1135,15 +1294,36 @@ namespace Veradel.SolidworksConsole.Boilmaker
 
 
     /// <summary>
-    /// Politica de escala del despiece.
+    /// Papel y escala de las hojas del despiece.
     /// </summary>
-    public enum DespieceScaleMode
+    public class SheetSetup
     {
-        /// <summary>Cada cuerpo lleva la mayor escala normalizada que cabe en su celda.</summary>
-        PerBody,
+        public int PaperSize;        // swDwgPaperSizes_e
+        public int Template;         // swDwgTemplates_e
+        public string TemplateName;  // formato de hoja; vacio = el estandar del tamano
+        public double Width;
+        public double Height;
+        public int[] Scale;          // escala de hoja: {numerador, denominador}
+    }
 
-        /// <summary>Una sola escala para todo el despiece: la que exige la pieza mas grande.</summary>
-        Uniform
+
+    /// <summary>
+    /// Region de la hoja reservada a un cuerpo del despiece: su bloque de vistas mas el aire.
+    /// </summary>
+    public class BodyRegion
+    {
+        public int Index;           // cuerpo de la lista de cortes al que pertenece
+
+        // Tamano del bloque a 1:1, en metros de modelo (sin huecos entre vistas)
+        public double ModelWidth;
+        public double ModelHeight;
+
+        // Hoja del despiece (0 = la primera) y recuadro dentro de ella, en metros de papel
+        public int Sheet;
+        public double CenterX;
+        public double CenterY;
+        public double Width;
+        public double Height;
     }
 
 
@@ -1159,18 +1339,7 @@ namespace Veradel.SolidworksConsole.Boilmaker
 
         public int Index;     // cuerpo de la lista de cortes al que pertenece
 
-        // Celda de la rejilla que le toca dentro de su hoja
-        public int Column;
-        public int Row;
-
-        // Tamano del bloque a escala 1:1, en metros de papel
-        public double FrontWidth;
-        public double FrontHeight;
-        public double ProfileWidth;
-        public double PlanHeight;
-
-        public double FitScale;  // escala en crudo con la que el bloque llena la celda
-        public int[] Scale;      // escala normalizada aplicada: {numerador, denominador}
+        public BodyRegion Region;  // recuadro de la hoja reservado a este bloque
     }
 
 
