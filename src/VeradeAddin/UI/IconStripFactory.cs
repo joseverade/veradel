@@ -133,6 +133,8 @@ namespace VeradeAddin.UI
                 case CommandIcon.Breakdown: Breakdown(g, r, unit); break;
                 case CommandIcon.Configure: Gear(g, r, unit); break;
                 case CommandIcon.Measure: Caliper(g, r, unit); break;
+                case CommandIcon.Locate: Reticle(g, r, unit); break;
+                case CommandIcon.ShowAll: Eye(g, r, unit); break;
                 default: BrandV(g, cell); break;
             }
         }
@@ -463,6 +465,64 @@ namespace VeradeAddin.UI
                     g.DrawString("Ø", font, ink,
                         new RectangleF(r.Left, r.Top - r.Height * 0.02f, r.Width, r.Height * 0.34f), fmt);
                 }
+            }
+        }
+
+        // Locate a part in the assembly: aiming reticle (ring + four ticks) around a green part.
+        private static void Reticle(Graphics g, RectangleF r, float unit)
+        {
+            float cx = r.Left + r.Width * 0.5f, cy = r.Top + r.Height * 0.5f;
+            float ring = r.Width * 0.36f;
+            float tickIn = ring * 0.70f, tickOut = r.Width * 0.50f; // ticks cross the ring
+            float part = r.Width * 0.17f;
+
+            using (var ringPen = new Pen(Ink, Math.Max(1.5f, unit * 0.08f)))
+            using (var tick = new Pen(Ink, Math.Max(1.5f, unit * 0.09f)) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            using (var fill = new SolidBrush(Green))
+            using (var edge = new Pen(Ink, Math.Max(1f, unit * 0.05f)))
+            {
+                g.DrawEllipse(ringPen, cx - ring, cy - ring, ring * 2, ring * 2);
+
+                g.DrawLine(tick, cx, cy - tickOut, cx, cy - tickIn);
+                g.DrawLine(tick, cx, cy + tickIn, cx, cy + tickOut);
+                g.DrawLine(tick, cx - tickOut, cy, cx - tickIn, cy);
+                g.DrawLine(tick, cx + tickIn, cy, cx + tickOut, cy);
+
+                g.FillRectangle(fill, cx - part, cy - part, part * 2, part * 2);
+                g.DrawRectangle(edge, cx - part, cy - part, part * 2, part * 2);
+            }
+        }
+
+        // Show all: an open eye (almond outline, blue iris, dark pupil with a light glint).
+        private static void Eye(Graphics g, RectangleF r, float unit)
+        {
+            float cx = r.Left + r.Width * 0.5f, cy = r.Top + r.Height * 0.5f;
+            float hw = r.Width * 0.50f;   // half width of the almond
+            float lid = r.Height * 0.48f; // control-point offset of each lid (peak = 0.75 of it)
+            float iris = r.Width * 0.20f;
+            float pupil = r.Width * 0.09f;
+
+            var left = new PointF(cx - hw, cy);
+            var right = new PointF(cx + hw, cy);
+
+            using (var almond = new GraphicsPath())
+            using (var white = new SolidBrush(Background))
+            using (var blue = new SolidBrush(Blue))
+            using (var ink = new SolidBrush(Ink))
+            using (var outline = new Pen(Ink, Math.Max(1.5f, unit * 0.08f)) { LineJoin = LineJoin.Round })
+            {
+                almond.AddBezier(left, new PointF(cx - hw * 0.45f, cy - lid), new PointF(cx + hw * 0.45f, cy - lid), right);
+                almond.AddBezier(right, new PointF(cx + hw * 0.45f, cy + lid), new PointF(cx - hw * 0.45f, cy + lid), left);
+                almond.CloseFigure();
+
+                g.FillPath(white, almond);
+                g.FillEllipse(blue, cx - iris, cy - iris, iris * 2, iris * 2);
+                g.FillEllipse(ink, cx - pupil, cy - pupil, pupil * 2, pupil * 2);
+
+                float glint = pupil * 0.45f;
+                g.FillEllipse(white, cx + pupil * 0.15f, cy - pupil * 0.85f, glint * 2, glint * 2);
+
+                g.DrawPath(outline, almond);
             }
         }
 

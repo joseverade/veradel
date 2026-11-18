@@ -19,6 +19,8 @@ namespace VeradeAddin.Models
         ClearColors,
         Breakdown,
         Configure,
-        Measure
+        Measure,
+        Locate,
+        ShowAll
     }
 }

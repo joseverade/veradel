@@ -92,8 +92,11 @@
     <Compile Include="Commands\DespieceCalderiaCommand.cs" />
     <Compile Include="Commands\ConfigurarPiezaCommand.cs" />
     <Compile Include="Commands\LicenciaCommand.cs" />
+    <Compile Include="Commands\LocalizarEnVistaCommand.cs" />
+    <Compile Include="Commands\MostrarTodoCommand.cs" />
     <Compile Include="Infrastructure\CompositionRoot.cs" />
     <Compile Include="Infrastructure\CommandRegistrar.cs" />
+    <Compile Include="Infrastructure\ContextToolbarRegistrar.cs" />
     <Compile Include="Infrastructure\ComRelease.cs" />
     <Compile Include="Infrastructure\RibbonIds.cs" />
     <Compile Include="Licensing\ILicenseService.cs" />
@@ -124,6 +127,9 @@
     <Compile Include="Models\ShaftBuildResult.cs" />
     <Compile Include="Models\PartConfiguratorSelection.cs" />
     <Compile Include="Models\DocumentKind.cs" />
+    <Compile Include="Models\ContextToolbarTarget.cs" />
+    <Compile Include="Models\LocateComponentResult.cs" />
+    <Compile Include="Models\ShowAllResult.cs" />
     <Compile Include="Services\Din471Table.cs" />
     <Compile Include="Services\IDialogService.cs" />
     <Compile Include="Services\IFileSystemService.cs" />
@@ -136,6 +142,7 @@
     <Compile Include="Services\SolidWorksService.Boilermaking.cs" />
     <Compile Include="Services\SolidWorksService.PartBuilderCommon.cs" />
     <Compile Include="Services\SolidWorksService.ShaftBuilder.cs" />
+    <Compile Include="Services\SolidWorksService.Locate.cs" />
     <Compile Include="Services\PartRegistry.cs" />
     <Compile Include="Services\IScreenCaptureService.cs" />
     <Compile Include="Services\ScreenCaptureService.cs" />

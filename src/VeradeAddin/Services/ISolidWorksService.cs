@@ -149,5 +149,24 @@ namespace VeradeAddin.Services
         /// <see cref="IsActivePartEmpty"/> and <see cref="ShaftSpec.IsValid"/>.
         /// </summary>
         ShaftBuildResult CreateShaft(ShaftSpec spec);
+
+        /// <summary>
+        /// True when the active document is an assembly and EXACTLY one object is selected and it belongs
+        /// to a component. Gates "Localizar en vista" (greyed out on a multiple selection).
+        /// </summary>
+        bool IsSingleComponentSelectedInActiveAssembly();
+
+        /// <summary>
+        /// "Localizar en vista": fires a bundle of rays from the selected component (origin, box centre and
+        /// inset box corners) towards the camera, hides every other visible part whose solid one of them
+        /// crosses, then selects the component and zooms to it. Returns a COM-free summary.
+        /// </summary>
+        LocateComponentResult LocateSelectedComponentInView();
+
+        /// <summary>
+        /// "Mostrar todo": runs SolidWorks' "Mostrar con dependientes" on the top-level assembly, then shows
+        /// one by one anything still hidden (safety net). Suppressed components stay suppressed.
+        /// </summary>
+        ShowAllResult ShowAllComponents();
     }
 }

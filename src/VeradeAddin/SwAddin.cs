@@ -47,6 +47,7 @@ namespace VeradeAddin
             {
                 _root.Logger.Log("AddIn", "n/a", LogOutcome.Success, "ConnectToSW");
                 _root.CommandRegistrar.Register();
+                _root.ContextToolbarRegistrar.Register();
                 return true;
             }
             catch (Exception ex)
@@ -60,6 +61,7 @@ namespace VeradeAddin
         {
             try
             {
+                _root?.ContextToolbarRegistrar.Unregister();
                 _root?.CommandRegistrar.Unregister();
                 _root?.Logger.Log("AddIn", "n/a", LogOutcome.Success, "DisconnectFromSW");
             }
@@ -97,6 +99,20 @@ namespace VeradeAddin
         {
             return _root?.CanExecute(commandIndex) ?? 0;
         }
+
+        // Context-toolbar slots, wired by ContextToolbarRegistrar as "ContextRun{i}" / "ContextEnable{i}"
+        // (i = index in the context registry). AddMenuPopupIcon3 calls them by bare name with no argument,
+        // hence one method per slot: ContextToolbarRegistrar.SlotCount of each.
+
+        public void ContextRun0() { _root?.ExecuteContext(0); }
+        public void ContextRun1() { _root?.ExecuteContext(1); }
+        public void ContextRun2() { _root?.ExecuteContext(2); }
+        public void ContextRun3() { _root?.ExecuteContext(3); }
+
+        public int ContextEnable0() { return _root?.CanExecuteContext(0) ?? 0; }
+        public int ContextEnable1() { return _root?.CanExecuteContext(1) ?? 0; }
+        public int ContextEnable2() { return _root?.CanExecuteContext(2) ?? 0; }
+        public int ContextEnable3() { return _root?.CanExecuteContext(3) ?? 0; }
 
         #endregion
 

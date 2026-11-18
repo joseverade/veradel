@@ -181,7 +181,7 @@ namespace VeradeAddin.Infrastructure
             return false;
         }
 
-        private static int SwDocType(DocumentKind kind)
+        internal static int SwDocType(DocumentKind kind)
         {
             // AddCommandTab takes a SINGLE swDocumentTypes_e value (not a bitmask), so the raw
             // enum values are correct here: Part = 1, Assembly = 2, Drawing = 3.
