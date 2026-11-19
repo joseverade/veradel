@@ -8,9 +8,10 @@ namespace VeradeAddin.Commands
 {
     /// <summary>
     /// "Localizar en vista" (assembly context toolbar only): shows where the selected component is.
-    /// Fires a bundle of rays from the component (origin, box centre and inset box corners) towards the
-    /// camera, hides every other part they cross, then selects the component and zooms to it.
-    /// Greyed out unless EXACTLY one component is selected. <see cref="MostrarTodoCommand"/> undoes it.
+    /// Zooms to it, then fires a bundle of rays from the component (origin, box centre and inset box corners)
+    /// towards the current camera and along the 26 standard directions. If some direction is free the camera
+    /// turns to it; otherwise every part covering the component in the current view is hidden.
+    /// Greyed out unless EXACTLY one component is selected. <see cref="MostrarTodoCommand"/> undoes the hiding.
     ///
     /// Pure dispatch + logging; all SolidWorks work goes through <see cref="ISolidWorksService"/>.
     /// </summary>
@@ -28,8 +29,8 @@ namespace VeradeAddin.Commands
         }
 
         public string Name { get { return "Localizar en vista"; } }
-        public string Tooltip { get { return "Oculta lo que tapa el componente seleccionado y amplía hacia él"; } }
-        public string Hint { get { return "Oculta las piezas que hay entre el componente seleccionado y la cámara y amplía la vista hacia él"; } }
+        public string Tooltip { get { return "Muestra el componente seleccionado: gira la vista o oculta lo que lo tapa"; } }
+        public string Hint { get { return "Amplía hacia el componente seleccionado y gira la cámara a una vista libre; si no la hay, oculta las piezas que lo tapan"; } }
         public CommandIcon Icon { get { return CommandIcon.Locate; } }
 
         public IReadOnlyList<DocumentKind> DocumentTypes
@@ -65,9 +66,13 @@ namespace VeradeAddin.Commands
                 ? string.Format(CultureInfo.InvariantCulture, "({0:0.###}, {1:0.###}, {2:0.###})", v[0], v[1], v[2])
                 : "(?)";
             _log.Log(Name, docType, LogOutcome.Success,
-                "Located '" + result.ComponentName + "': rays=" + result.RayCount + " view=" + view +
+                "Located '" + result.ComponentName + "': rays=" + result.RayCount +
+                " (discarded=" + result.StartPointsDiscarded + ") sightlines=" + result.SightlinesTested +
+                " view=" + view + (result.ViewRotated ? " rotated" : " current") +
+                " free=" + result.FreeRays + "/" + result.RayCount +
                 " candidates=" + result.Candidates +
                 " hidden=" + result.HiddenComponents.Count + " (boxOnly=" + result.HiddenByBoxOnly + ")" +
+                " ms=" + result.ElapsedMs +
                 (result.HiddenComponents.Count > 0 ? ": " + string.Join(", ", result.HiddenComponents) : ""));
         }
     }
