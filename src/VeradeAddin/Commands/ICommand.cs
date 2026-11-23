@@ -46,4 +46,16 @@ namespace VeradeAddin.Commands
         /// <summary>True when the toggle is currently on (button drawn pressed).</summary>
         bool IsActive { get; }
     }
+
+    /// <summary>
+    /// A command with an icon in the right-click CONTEXT TOOLBAR (the small icon box that pops up over
+    /// the shortcut menu in the FeatureManager tree and the graphics area). Registered from the
+    /// composition root's context registry by <c>ContextToolbarRegistrar</c>; it only gets a ribbon
+    /// button as well when it is ALSO added to the ribbon registry.
+    /// </summary>
+    public interface IContextToolbarCommand : ICommand
+    {
+        /// <summary>What the user right-clicks for the icon to appear (in each of <see cref="ICommand.DocumentTypes"/>).</summary>
+        IReadOnlyList<ContextToolbarTarget> ContextTargets { get; }
+    }
 }

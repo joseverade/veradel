@@ -18,6 +18,7 @@ namespace VeradeAddin.Infrastructure
     public sealed class CompositionRoot
     {
         private readonly CommandRegistry _registry;
+        private readonly CommandRegistry _contextRegistry;
         private readonly IDialogService _dialog;
         private readonly ILicenseService _license;
         private bool _trialReminderShown;
@@ -25,6 +26,8 @@ namespace VeradeAddin.Infrastructure
         public ILogger Logger { get; private set; }
 
         public CommandRegistrar CommandRegistrar { get; private set; }
+
+        public ContextToolbarRegistrar ContextToolbarRegistrar { get; private set; }
 
         public CompositionRoot(ISldWorks sw, int cookie)
         {
@@ -47,11 +50,15 @@ namespace VeradeAddin.Infrastructure
             IPartRegistry partRegistry = new JsonPartRegistry();
             _dialog = new WinFormsDialogService();
 
+            // "Mostrar todo" has both a ribbon button and a context-toolbar icon: one instance, two registries.
+            var mostrarTodo = new MostrarTodoCommand(swService, _dialog, Logger);
+
             // --- Commands (register new commands here, nothing else) -----------------
             _registry = new CommandRegistry()
                 .Add(new OpenFolderCommand(swService, fsService, _dialog, Logger))
                 .Add(new MostrarRoscaCommand(swService, _dialog, Logger))
                 .Add(new ExtraerPiezaCommand(swService, _dialog, Logger))
+                .Add(mostrarTodo)
                 .Add(new IdentificarRoscaCommand(swService, _dialog, Logger))
                 .Add(new CapturaPantallaCommand(swService, captureService, fsService, _dialog, Logger))
                 .Add(new ExportarCommand(swService, _dialog, Logger))
@@ -62,8 +69,15 @@ namespace VeradeAddin.Infrastructure
                 .Add(new ConfigurarPiezaCommand(swService, _dialog, partRegistry, Logger))
                 .Add(new LicenciaCommand(_dialog, _license, Logger));
 
-            // --- Ribbon registrar ----------------------------------------------------
+            // --- Context-toolbar commands (right-click icon box) ---------------------
+            // Max ContextToolbarRegistrar.SlotCount; each needs IContextToolbarCommand.
+            _contextRegistry = new CommandRegistry()
+                .Add(new LocalizarEnVistaCommand(swService, _dialog, Logger))
+                .Add(mostrarTodo);
+
+            // --- Ribbon + context-toolbar registrars ---------------------------------
             CommandRegistrar = new CommandRegistrar(sw, cookie, _registry, Logger);
+            ContextToolbarRegistrar = new ContextToolbarRegistrar(sw, cookie, _contextRegistry, Logger);
         }
 
         /// <summary>
@@ -78,8 +92,22 @@ namespace VeradeAddin.Infrastructure
                 return;
             }
 
-            var command = _registry[commandIndex];
+            Run(_registry[commandIndex]);
+        }
 
+        /// <summary>Same as <see cref="Execute"/> for a context-toolbar icon (index into the context registry).</summary>
+        public void ExecuteContext(int commandIndex)
+        {
+            if (commandIndex < 0 || commandIndex >= _contextRegistry.Count)
+            {
+                return;
+            }
+
+            Run(_contextRegistry[commandIndex]);
+        }
+
+        private void Run(ICommand command)
+        {
             // The license command is exempt from the gate: it opens the activation dialog
             // itself and must stay reachable while the add-in is blocked.
             if (!(command is LicenciaCommand))
@@ -125,7 +153,22 @@ namespace VeradeAddin.Infrastructure
                 return 0;
             }
 
-            var command = _registry[commandIndex];
+            return EnableState(_registry[commandIndex]);
+        }
+
+        /// <summary>Same as <see cref="CanExecute"/> for a context-toolbar icon (index into the context registry).</summary>
+        public int CanExecuteContext(int commandIndex)
+        {
+            if (commandIndex < 0 || commandIndex >= _contextRegistry.Count)
+            {
+                return 0;
+            }
+
+            return EnableState(_contextRegistry[commandIndex]);
+        }
+
+        private static int EnableState(ICommand command)
+        {
             bool enabled = command.CanExecute();
 
             var toggle = command as IToggleCommand;
